@@ -160,6 +160,22 @@ export function createObject(boardId, type, point = { x: 0, y: 0 }) {
     annotations: [],
   };
 }
+// A manually sized inspiration board is distinct from an auto-fitting group.
+// Every creation entry uses the same shape so styling and resize agree.
+export function createInspirationBoard(
+  boardId,
+  rect = {},
+  title = "新的灵感板",
+) {
+  return {
+    ...createObject(boardId, "frame", { x: rect.x ?? 0, y: rect.y ?? 0 }),
+    fixedBounds: true,
+    title,
+    width: Math.max(240, rect.width ?? 640),
+    height: Math.max(180, rect.height ?? 480),
+  };
+}
+
 export function ensureProjectCollections(state) {
   const missing = state.boards.filter(
     (board) => !primaryCollection(state, board.id),

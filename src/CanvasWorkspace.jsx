@@ -38,7 +38,7 @@ import {
   Modal,
 } from "./canvas/Panels.jsx";
 import {
-  createObject,
+  createInspirationBoard,
   patchObjects,
   deleteObjects,
   duplicateObjects,
@@ -49,14 +49,18 @@ import {
   objectLabel,
 } from "./canvas/model.js";
 import { primaryCollection } from "./canvas/collectionDock.js";
-import { ancestors, effectivelyLocked } from "./canvas/layout.js";
+import {
+  ancestors,
+  effectivelyLocked,
+  placeBoardObjects,
+} from "./canvas/layout.js";
 import {
   buildCanvasMenu,
   applyCanvasMenuAction,
   groupTargets,
   noteColors,
 } from "./canvas/context-menu.js";
-import { fitView } from "./canvas/geometry.js";
+import { fitView, screenToWorld } from "./canvas/geometry.js";
 import { exportArchive, downloadBlob } from "./canvas/backup.js";
 import { useRoomWorkspace } from "./sync/useRoomWorkspace.js";
 import { api, inviteLink } from "./api.js";
@@ -161,6 +165,7 @@ export default function CanvasWorkspace({
       { record: false, navigation: true },
     );
   const add = (kind, point, frameId) => {
+    if (readOnly) return;
     exitEdit();
     if (kind === "image") {
       imagePoint.current = point;
@@ -169,9 +174,41 @@ export default function CanvasWorkspace({
     }
     if (kind === "text" || kind === "checklist")
       canvas.current?.addNote(kind, point, frameId);
-    else {
-      const object = createObject(room.id, kind, canvas.current?.getPoint());
-      update((s) => ({ ...s, objects: [...s.objects, object] }));
+    else if (kind === "frame") {
+      const size = canvas.current?.getSize() || {
+        width: innerWidth,
+        height: innerHeight - 64,
+      };
+      const center = screenToWorld(
+        { x: size.width / 2, y: size.height / 2 },
+        view,
+      );
+      const object = createInspirationBoard(room.id);
+      object.x = point?.x ?? center.x - object.width / 2;
+      object.y = point?.y ?? center.y - object.height / 2;
+      update((s) =>
+        placeBoardObjects({ ...s, objects: [...s.objects, object] }, [
+          object.id,
+        ]),
+      );
+      const placed = workspace.current.current.objects.find(
+        (o) => o.id === object.id,
+      );
+      if (!placed) return;
+      const scale = Math.max(
+        0.1,
+        Math.min(
+          view.scale,
+          (size.width - 128) / placed.width,
+          (size.height - 100) / placed.height,
+        ),
+      );
+      onView({
+        ...view,
+        scale,
+        x: size.width / 2 - (placed.x + placed.width / 2) * scale,
+        y: size.height / 2 - (placed.y + placed.height / 2) * scale,
+      });
       setSelection([object.id]);
     }
   };
@@ -277,9 +314,8 @@ export default function CanvasWorkspace({
   };
   const applyMenuAction = (action) => {
     exitEdit();
-    const previousIds = new Set(
-      workspace.current.current.objects.map((o) => o.id),
-    );
+    const before = workspace.current.current;
+    const previousIds = new Set(before.objects.map((o) => o.id));
     update((s) =>
       applyCanvasMenuAction(s, action, { boardId: room.id, readOnly }),
     );
@@ -289,7 +325,10 @@ export default function CanvasWorkspace({
         .filter((o) => !previousIds.has(o.id))
         .map((o) => o.id);
       if (created.length) setSelection(created);
-    } else if (["delete", "dissolve"].includes(action.id)) {
+    } else if (action.id === "delete") {
+      canvas.current?.animateCollection(before, workspace.current.current);
+      setSelection([]);
+    } else if (action.id === "dissolve") {
       setSelection((previous) =>
         previous.filter((id) => objects.some((o) => o.id === id)),
       );
@@ -604,6 +643,19 @@ export default function CanvasWorkspace({
               <Trash2 size={17} />
             </button>
             <button
+              className="help-button"
+              aria-label="帮助"
+              aria-haspopup="dialog"
+              title="轻单使用 tips"
+              onClick={() => {
+                exitEdit();
+                setPanel("help");
+              }}
+            >
+              <HelpCircle size={17} />
+              <span>帮助</span>
+            </button>
+            <button
               className="primary share-button"
               disabled={room.role !== "owner"}
               title={
@@ -735,13 +787,6 @@ export default function CanvasWorkspace({
               <Maximize size={16} />
             </button>
             <span>{Math.round(view.scale * 100)}%</span>
-            <button
-              onClick={() => setPanel("help")}
-              title="操作帮助"
-              aria-label="操作帮助"
-            >
-              <HelpCircle size={17} />
-            </button>
           </div>
         )}
         {workspace.error && !workspace.conflict && (

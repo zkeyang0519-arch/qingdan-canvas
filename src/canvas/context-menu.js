@@ -3,6 +3,7 @@ import {
   groupObjects,
   patchObjects,
   deleteObjects,
+  collectObjects,
   convertNote,
   reparentObjects,
   isContainer,
@@ -49,7 +50,8 @@ export function buildCanvasMenu({
     ...options,
   });
   const locked = object && effectivelyLocked(state.objects, object.id);
-  const includesDock = ids.includes(primaryCollection(state, boardId)?.id);
+  const dock = primaryCollection(state, boardId);
+  const includesDock = ids.includes(dock?.id);
   const items = [
     item("new-note", "在此新建便签", {
       shortcut: "N",
@@ -119,15 +121,25 @@ export function buildCanvasMenu({
         readOnly || ancestors(state.objects, object.id).some((o) => o.locked),
     }),
     { separator: true },
-    item(
-      isContainer(object) ? "dissolve" : "delete",
-      isContainer(object)
-        ? "解散并保留内容"
-        : `删除${ids.length > 1 ? ` ${ids.length} 个对象` : ""}`,
-      {
+  );
+  if (isContainer(object))
+    items.push(
+      item("dissolve", "解散并保留内容", {
         disabled: disabled || includesDock,
         danger: true,
-        shortcut: "Delete",
+      }),
+    );
+  items.push(
+    item(
+      "delete",
+      ids.length > 1 ? `删除 ${ids.length} 个元素` : "删除此元素",
+      {
+        disabled:
+          disabled ||
+          includesDock ||
+          !dock ||
+          effectivelyLocked(state.objects, dock.id),
+        danger: true,
       },
     ),
   );
@@ -249,7 +261,7 @@ export function applyCanvasMenuAction(
         movable.filter(isContainer).map((o) => o.id),
       );
     case "delete":
-      return deleteObjects(state, ids);
+      return collectObjects(state, ids, dockId);
     default:
       return state;
   }

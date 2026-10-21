@@ -11,9 +11,19 @@
     "run_worker_first": ["/api/*"],
   },
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "CanvasRoom",
+      },
+    ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CanvasRoom"] }],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CanvasRoom"],
+    },
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -22,7 +32,33 @@
       "migrations_dir": "migrations",
     },
   ],
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "qingdan-canvas-files" }],
-  "vars": { "APP_ENV": "production" },
-  "observability": { "enabled": true },
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "qingdan-canvas-files",
+    },
+  ],
+  "vars": {
+    "APP_ENV": "production",
+  },
+  "observability": {
+    "enabled": true,
+  },
+  "previews": {
+    "vars": { "APP_ENV": "preview" },
+    "durable_objects": {
+      "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "qingdan-canvas-preview",
+        "database_id": "9cb763c2-d1dc-41a6-8899-d38cec0e0060",
+        "migrations_dir": "migrations",
+      },
+    ],
+    "r2_buckets": [
+      { "binding": "FILES", "bucket_name": "qingdan-canvas-preview-files" },
+    ],
+  },
 }
