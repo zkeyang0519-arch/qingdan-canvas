@@ -118,6 +118,48 @@ npm run deploy
 
 ## 排查
 
+### Git 分支预览构建
+
+Cloudflare Workers Builds 的非生产分支使用 `npx wrangler preview`。这个命令要求 `wrangler.jsonc` 声明 `previews`，并显式提供 `APP_ENV`、`DB`、`FILES`、`ROOMS`；顶层的这些设置不会自动继承到预览环境。
+
+首次连接 `develop` 预览时，由你在项目目录执行：
+
+```powershell
+npx wrangler d1 create qingdan-canvas-preview
+npx wrangler r2 bucket create qingdan-canvas-preview-files
+```
+
+两个命令询问自动修改配置时都选 **No**，避免把预览资源追加到生产绑定。将新 D1 返回的 `database_id` 填入这两处：
+
+- `wrangler.jsonc` → `previews.d1_databases[0].database_id`。
+- `wrangler.preview-migrations.jsonc` → `d1_databases[0].database_id`。
+
+当前预览库为 `qingdan-canvas-preview`（`9cb763c2-d1dc-41a6-8899-d38cec0e0060`），配置已填写；已创建资源后直接初始化预览数据库：
+
+```powershell
+npm run db:preview
+```
+
+确认命令目标为 `qingdan-canvas-preview`，首次会应用 `0001_initial.sql` 和 `0002_accounts.sql`。这个命令使用独立的迁移配置，操作预览数据库。用于生产库的命令仍是 `npm run db:remote`。
+
+完成后提交并推送配置到 `develop`，让 Workers Builds 重新运行。Cloudflare 的构建设置应为：
+
+| 设置                                | 值                     |
+| ----------------------------------- | ---------------------- |
+| Build command                       | `npm run build`        |
+| Production deploy command（`main`） | `npx wrangler deploy`  |
+| Preview deploy command（`develop`） | `npx wrangler preview` |
+
+`ROOMS` 使用本 Worker 导出的 `CanvasRoom`，没有 `script_name`，Cloudflare 会为每个预览自动创建独立的 Durable Object 命名空间。保留顶层现有的 `v1` 迁移即可，不需要手动创建 DO。静态文件 `assets` 也保留在顶层。
+
+预览站有独立的账号和画布，需要重新注册。以上 D1 和 R2 用于 `develop` 预览；若同时预览其他分支，为那些分支配置各自的 D1 和 R2，保持画布目录与各分支独立的 DO 数据一致。
+
+`npm run deploy:check` 只验证生产配置的本地打包，不能验证预览资源是否已创建或云端部署权限。预览部署继续使用 `wrangler preview`；`wrangler deploy` 会发布生产站。
+
+配置依据：[预览配置](https://developers.cloudflare.com/workers/previews/configuration/)、[Durable Object 隔离](https://developers.cloudflare.com/workers/previews/resources/#durable-objects)、[预览 D1 迁移](https://developers.cloudflare.com/workers/previews/resources/#d1-migrations)。
+
+### 线上运行日志
+
 ```powershell
 npx wrangler tail
 ```

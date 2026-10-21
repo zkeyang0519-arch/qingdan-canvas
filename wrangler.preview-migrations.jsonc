@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "d6997d4bf6dea6be5f3a1ddfe225cab0",
+  // D1 迁移命令读取顶层绑定，不会读取 wrangler.jsonc 的 previews。
+  "d1_databases": [
+    {
+      "binding": "PREVIEW_DB",
+      "database_name": "qingdan-canvas-preview",
+      // 必须与 wrangler.jsonc 的 previews.d1_databases 指向同一个预览库。
+      "database_id": "9cb763c2-d1dc-41a6-8899-d38cec0e0060",
+      "migrations_dir": "migrations",
+    },
+  ],
+}
