@@ -453,7 +453,7 @@ test(
     const note = {
       ...createObject(room.id, "note", { x: 200, y: 180 }),
       noteKind: "checklist",
-      blocks: [makeBlock("一起完成")],
+      blocks: [{ ...makeBlock("一起完成"), dueAt: "2026-10-22T02:00:00.000Z" }],
       height: 165.5,
       fixedHeight: true,
       layoutHeight: 200,
@@ -468,9 +468,14 @@ test(
     assert.equal(ack.rows[0].revision, 1);
     assert.equal(ack.rows[0].data.fixedHeight, true);
     assert.equal(ack.rows[0].data.height, 165.5);
+    assert.equal(ack.rows[0].data.blocks[0].dueAt, "2026-10-22T02:00:00.000Z");
     assert.equal(Object.hasOwn(ack.rows[0].data, "layoutHeight"), false);
     const remote = await sb.next((m) => m.type === "changes");
     assert.equal(remote.rows[0].data.blocks[0].runs[0].text, "一起完成");
+    assert.equal(
+      remote.rows[0].data.blocks[0].dueAt,
+      "2026-10-22T02:00:00.000Z",
+    );
     assert.equal(remote.rows[0].data.fixedHeight, true);
     sa.send(op);
     assert.equal(
@@ -592,6 +597,10 @@ test(
       await request(`/api/rooms/${room.id}/snapshot`, a)
     ).json();
     assert.equal(restored.rows.find((r) => r.id === note.id).revision, 1);
+    assert.equal(
+      restored.rows.find((r) => r.id === note.id).data.blocks[0].dueAt,
+      "2026-10-22T02:00:00.000Z",
+    );
     assert.equal(
       (await request(`/api/rooms/${room.id}/assets/${asset}`, b)).status,
       200,

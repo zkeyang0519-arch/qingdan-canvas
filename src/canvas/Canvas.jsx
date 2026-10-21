@@ -1336,7 +1336,22 @@ export default function Canvas({
     const onFixedBoard = roots.some((o) =>
       isInspirationBoard(g.snapshot.objects.find((p) => p.id === o.parentId)),
     );
-    const barriers = frameDragBarriers(g.snapshot.objects, roots);
+    // Notes and checklists retain their board while freely following the
+    // pointer. Apply their board bounds and placement only on pointerup.
+    const freeBoardNotes = new Set(
+      roots
+        .filter(
+          (o) =>
+            o.type === "note" &&
+            isInspirationBoard(
+              g.snapshot.objects.find((p) => p.id === o.parentId),
+            ),
+        )
+        .map((o) => o.id),
+    );
+    const barriers = frameDragBarriers(g.snapshot.objects, roots).filter(
+      ({ object }) => !freeBoardNotes.has(object.id),
+    );
     const protectedIds = descendantIds(
       g.snapshot.objects,
       barriers
@@ -1361,6 +1376,7 @@ export default function Canvas({
           (o) =>
             o.boardId === boardId &&
             o.type !== "collection" &&
+            !(freeBoardNotes.size && o.type === "frame") &&
             !movingIds.has(o.id) &&
             !parentIds.has(o.id) &&
             !protectedIds.has(o.id) &&
@@ -1398,19 +1414,7 @@ export default function Canvas({
       nextGuides.push(...limited.guides);
       delta = { x: limited.x, y: limited.y };
     }
-    if (!overDock) {
-      for (const note of roots) {
-        const parent = g.snapshot.objects.find((o) => o.id === note.parentId);
-        if (
-          note.type === "note" &&
-          isInspirationBoard(parent) &&
-          !movingIds.has(parent.id)
-        ) {
-          delta.x = Math.max(delta.x, boardLeftLimit(parent, note) - note.x);
-        }
-      }
-    }
-    // Board separation and member limits win over attraction on either axis.
+    // Board separation wins over attraction on either axis.
     for (const axis of ["x", "y"]) {
       if (
         moveSnap?.snaps[axis] &&

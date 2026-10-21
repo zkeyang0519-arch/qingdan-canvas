@@ -37,7 +37,15 @@ import {
   deletePageTasks,
   takeOutToPage,
   writablePage,
+  setPageDeadline,
 } from "./arranged-model.js";
+import { deadlineInfo } from "../../shared/deadline.js";
+import {
+  TaskDeadlineButton,
+  TaskDeadlineDialog,
+  formatDeadline,
+  useDeadlineClock,
+} from "./TaskDeadline.jsx";
 import { BoardPicker, HoverText } from "./ChecklistParts.jsx";
 import { EditableBlock, RichText } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
@@ -147,6 +155,8 @@ function ChecklistPane({
   objectMap,
   apiRef,
   onToast,
+  clock,
+  onDeadline,
 }) {
   const { state, update } = workspace;
   const root = useRef(null),
@@ -213,6 +223,7 @@ function ChecklistPane({
   }, [located]);
   const renderTask = (task) => {
     const text = blockText(task.block),
+      deadline = deadlineInfo(task.block, clock),
       isEditing =
         editing?.noteId === task.note.id && editing.blockId === task.key;
     return (
@@ -220,6 +231,7 @@ function ChecklistPane({
         key={task.key}
         data-task-id={task.key}
         data-object-id={task.note.id}
+        data-deadline={deadline.status}
         className={`todo-row ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""}`}
         onContextMenu={(e) => {
           if (!isEditor(e.target))
@@ -237,6 +249,7 @@ function ChecklistPane({
             );
         }}
       >
+        <span className="todo-deadline-glow" aria-hidden="true" />
         <button
           className="todo-circle"
           role="checkbox"
@@ -271,65 +284,77 @@ function ChecklistPane({
         >
           {task.block.done && <Check size={12} />}
         </button>
-        <div className="todo-copy" onDoubleClick={() => edit(task)}>
-          {isEditing && !frozen && !task.locked ? (
-            <EditableBlock
-              key={`${task.key}:${revision}`}
-              block={task.block}
-              index={task.index}
-              checklist
-              objects={objectMap}
-              onChange={(block) => {
-                if (!workspace.readOnly)
+        <div className="todo-main">
+          <div className="todo-copy" onDoubleClick={() => edit(task)}>
+            {isEditing && !frozen && !task.locked ? (
+              <EditableBlock
+                key={`${task.key}:${revision}`}
+                block={task.block}
+                index={task.index}
+                checklist
+                objects={objectMap}
+                onChange={(block) => {
+                  if (!workspace.readOnly)
+                    update((s) =>
+                      editPageBlock(
+                        s,
+                        boardId,
+                        page.id,
+                        task.note.id,
+                        task.key,
+                        block.runs,
+                      ),
+                    );
+                }}
+                onNew={(block, rest, extra) => {
+                  const added = extra || [
+                    {
+                      ...makeBlock(),
+                      runs: rest?.length ? rest : [{ type: "text", text: "" }],
+                    },
+                  ];
+                  if (workspace.readOnly) return;
                   update((s) =>
-                    editPageBlock(
+                    insertPageBlocks(
                       s,
                       boardId,
                       page.id,
                       task.note.id,
                       task.key,
-                      block.runs,
+                      block,
+                      added,
                     ),
                   );
-              }}
-              onNew={(block, rest, extra) => {
-                const added = extra || [
-                  {
-                    ...makeBlock(),
-                    runs: rest?.length ? rest : [{ type: "text", text: "" }],
-                  },
-                ];
-                if (workspace.readOnly) return;
-                update((s) =>
-                  insertPageBlocks(
-                    s,
-                    boardId,
-                    page.id,
-                    task.note.id,
-                    task.key,
-                    block,
-                    added,
-                  ),
-                );
-                setRevision((v) => v + 1);
-                onEdit(task.note.id, added.at(-1)?.id || task.key);
-              }}
-              onRemove={() => todoTools?.remove(task.note.id, task.key, frozen)}
-              onExit={onExit}
-              onReference={onReference}
-              onReferencePicker={() =>
-                onReferencePicker(task.note.id, task.key)
-              }
-              autoFocus
-            />
-          ) : (
-            <HoverText label={text || "空白待办"}>
-              <RichText
-                runs={task.block.runs}
-                objects={objectMap}
+                  setRevision((v) => v + 1);
+                  onEdit(task.note.id, added.at(-1)?.id || task.key);
+                }}
+                onRemove={() =>
+                  todoTools?.remove(task.note.id, task.key, frozen)
+                }
+                onExit={onExit}
                 onReference={onReference}
+                onReferencePicker={() =>
+                  onReferencePicker(task.note.id, task.key)
+                }
+                autoFocus
               />
-            </HoverText>
+            ) : (
+              <HoverText label={text || "空白待办"}>
+                <RichText
+                  runs={task.block.runs}
+                  objects={objectMap}
+                  onReference={onReference}
+                />
+              </HoverText>
+            )}
+          </div>
+          {deadline.status !== "none" && (
+            <div className="todo-deadline-meta">
+              <time dateTime={task.block.dueAt}>
+                {formatDeadline(task.block.dueAt)}
+              </time>
+              <span className="todo-deadline-status">{deadline.relative}</span>
+            </div>
           )}
         </div>
         <div className="todo-row-tools">
@@ -352,6 +377,13 @@ function ChecklistPane({
             <Archive size={14} />
           </button>
         </div>
+        <TaskDeadlineButton
+          info={deadline}
+          dueAt={task.block.dueAt}
+          text={text}
+          disabled={frozen || task.locked || workspace.readOnly}
+          onClick={() => onDeadline(page.id, task)}
+        />
       </div>
     );
   };
@@ -637,6 +669,7 @@ export default function ArrangedWorkspace({
   dockedCollectionId,
 }) {
   const { state, update } = workspace;
+  const clock = useDeadlineClock(state.objects);
   const resolved = panePages(state, boardId);
   const panes = useRef({ left: { current: null }, right: { current: null } });
   const main = useRef(null),
@@ -1077,6 +1110,19 @@ export default function ArrangedWorkspace({
             objectMap={objectMap}
             apiRef={panes.current[side]}
             onToast={onToast}
+            clock={clock}
+            onDeadline={(pageId, task) =>
+              navigate(() =>
+                setDialog({
+                  type: "deadline",
+                  pageId,
+                  noteId: task.note.id,
+                  blockId: task.key,
+                  dueAt: task.block.dueAt ?? null,
+                  title: blockText(task.block),
+                }),
+              )
+            }
           />
         ))}
       </div>
@@ -1091,7 +1137,53 @@ export default function ArrangedWorkspace({
           e.target.value = "";
         }}
       />
-      {dialog && (
+      {dialog?.type === "deadline" && (
+        <TaskDeadlineDialog
+          key={dialog.blockId}
+          task={dialog}
+          disabled={
+            blocked ||
+            workspace.readOnly ||
+            !writablePage(state, boardId, dialog.pageId)?.tasks.some(
+              (task) =>
+                task.note.id === dialog.noteId &&
+                task.key === dialog.blockId &&
+                !task.locked,
+            )
+          }
+          onClose={() => setDialog(null)}
+          onSave={(dueAt) => {
+            if (blocked || workspace.readOnly) return "这条待办当前无法编辑。";
+            update((s) =>
+              setPageDeadline(
+                s,
+                boardId,
+                dialog.pageId,
+                dialog.noteId,
+                dialog.blockId,
+                dueAt,
+                dialog.dueAt,
+              ),
+            );
+            const latest = writablePage(
+              workspace.current.current,
+              boardId,
+              dialog.pageId,
+            )?.tasks.find(
+              (task) =>
+                task.note.id === dialog.noteId &&
+                task.key === dialog.blockId &&
+                !task.locked,
+            );
+            if (!latest) return "这条待办已被锁定、收纳或删除，请关闭后重试。";
+            if ((latest.block.dueAt ?? null) !== dueAt)
+              return "截止时间已被协作者修改，请关闭弹窗后重新设置。";
+            setDialog(null);
+            return "";
+          }}
+        />
+      )}
+      {dialog && dialog.type !== "deadline" && (
         <Modal
           title={dialog.type === "create" ? "新建灵感板" : "重命名灵感板"}
           onClose={() => setDialog(null)}

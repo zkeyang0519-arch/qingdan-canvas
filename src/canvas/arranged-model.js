@@ -9,6 +9,7 @@ import {
 import { todoPages } from "./todoPages.js";
 import { ancestors, effectivelyLocked, normalizeLayout } from "./layout.js";
 import { deleteTask } from "./taskRecords.js";
+import { validDeadline } from "../../shared/deadline.js";
 
 function changeView(state, boardId, change) {
   const views = state.preferences.views;
@@ -183,6 +184,28 @@ function pageTask(state, boardId, pageId, noteId, blockId) {
   return writablePage(state, boardId, pageId)?.tasks.find(
     (t) => t.note.id === noteId && t.key === blockId && !t.locked,
   );
+}
+
+export function setPageDeadline(
+  state,
+  boardId,
+  pageId,
+  noteId,
+  blockId,
+  dueAt,
+  expectedDueAt = null,
+) {
+  if (dueAt !== null && !validDeadline(dueAt)) return state;
+  const task = pageTask(state, boardId, pageId, noteId, blockId);
+  if (!task || (task.block.dueAt ?? null) === dueAt) return state;
+  if ((task.block.dueAt ?? null) !== (expectedDueAt ?? null)) return state;
+  return patchObjects(state, {
+    [noteId]: {
+      blocks: task.note.blocks.map((block) =>
+        block.id === blockId ? { ...block, dueAt } : block,
+      ),
+    },
+  });
 }
 
 export function editPageBlock(state, boardId, pageId, noteId, blockId, runs) {

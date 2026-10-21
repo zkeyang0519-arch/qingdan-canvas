@@ -1,0 +1,238 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  createWorkspace,
+  createObject,
+  makeBlock,
+  validateWorkspace,
+} from "../src/canvas/model.js";
+import { sharedObject } from "../shared/canvas-contract.js";
+import { prepareEdit } from "../src/sync/workspace-changes.js";
+import { mergeData, undoChanges } from "../src/sync/replica.js";
+import * as deadlines from "../shared/deadline.js";
+import * as arranged from "../src/canvas/arranged-model.js";
+import { todoPages } from "../src/canvas/todoPages.js";
+
+const dueAt = "2026-10-22T02:00:00.000Z";
+function fixture() {
+  const state = createWorkspace();
+  const note = {
+    ...createObject(state.boards[0].id, "note"),
+    blocks: [makeBlock("提交设计"), makeBlock("整理资料")],
+  };
+  state.objects = [note];
+  return { state, note };
+}
+
+test("每条截止时间经过共享清理和备份读取后仍然保留", () => {
+  const { state, note } = fixture();
+  note.blocks[0].dueAt = dueAt;
+  note.blocks[1].dueAt = null;
+  const shared = prepareEdit(state)[0];
+  assert.equal(shared.blocks[0].dueAt, dueAt);
+  assert.equal(shared.blocks[1].dueAt, null);
+  const restored = validateWorkspace(JSON.parse(JSON.stringify(state)));
+  assert.equal(restored.objects[0].blocks[0].dueAt, dueAt);
+});
+
+test("没有截止时间的旧待办仍然有效", () => {
+  const { state, note } = fixture();
+  assert.equal(sharedObject(note).blocks[0].dueAt, undefined);
+  assert.doesNotThrow(() => validateWorkspace(state));
+});
+
+test("服务器和备份都拒绝无效日期、含糊的时区和非日期截止时间", () => {
+  for (const value of [
+    "",
+    "tomorrow",
+    0,
+    {},
+    "2026-02-30T02:00:00.000Z",
+    "2026-10-22T10:00",
+    "2026-10-22",
+  ]) {
+    const { state, note } = fixture();
+    note.blocks[0].dueAt = value;
+    assert.throws(() => sharedObject(note), undefined, String(value));
+    assert.throws(() => validateWorkspace(state), undefined, String(value));
+  }
+});
+
+test("设置截止时间与协作者编辑正文和完成事项能够合并，撤销只撤销截止时间", () => {
+  const { state } = fixture();
+  const base = prepareEdit(state)[0];
+  const changed = structuredClone(state);
+  changed.objects[0].blocks[0].dueAt = dueAt;
+  const local = prepareEdit(changed)[0];
+  const remote = structuredClone(base);
+  remote.blocks[0].runs[0].text = "协作者补充正文";
+  remote.blocks[0].done = true;
+  remote.blocks[0].completedAt = "2026-10-21T12:00:00.000Z";
+  const merged = mergeData(base, local, remote);
+  assert.equal(merged.blocks[0].dueAt, dueAt);
+  assert.equal(merged.blocks[0].runs[0].text, "协作者补充正文");
+  assert.equal(merged.blocks[0].done, true);
+  const undone = undoChanges([base], [local], [merged])[0];
+  assert.equal(undone.blocks[0].dueAt, undefined);
+  assert.equal(undone.blocks[0].done, true);
+  assert.equal(undone.blocks[0].runs[0].text, "协作者补充正文");
+});
+
+test("同时修改同一截止时间会提示冲突，不会静默覆盖", () => {
+  const { state, note } = fixture();
+  note.blocks[0].dueAt = dueAt;
+  const base = prepareEdit(state)[0];
+  const local = structuredClone(state),
+    remote = structuredClone(state);
+  local.objects[0].blocks[0].dueAt = "2026-10-23T02:00:00.000Z";
+  remote.objects[0].blocks[0].dueAt = null;
+  assert.throws(
+    () => mergeData(base, prepareEdit(local)[0], prepareEdit(remote)[0]),
+    /冲突/,
+  );
+});
+
+test("截止前24小时开始提醒，到时切换超时，完成后的待办不再提醒", () => {
+  const end = Date.parse(dueAt);
+  const block = { dueAt, done: false };
+  assert.equal(deadlines.deadlineInfo(block, end - 86400001).status, "normal");
+  assert.equal(deadlines.deadlineInfo(block, end - 86400000).status, "urgent");
+  const twoHours = deadlines.deadlineInfo(block, end - 7200000);
+  assert.equal(twoHours.status, "urgent");
+  assert.equal(twoHours.ratio, 1 / 12);
+  assert.equal(twoHours.compact, "2h");
+  assert.equal(deadlines.deadlineInfo(block, end).status, "late");
+  assert.equal(
+    deadlines.deadlineInfo(block, end + 7200000).relative,
+    "已超时 2 小时",
+  );
+  assert.equal(
+    deadlines.deadlineInfo({ ...block, done: true }, end + 7200000).status,
+    "done",
+  );
+  assert.equal(deadlines.deadlineInfo({ done: false }, end).status, "none");
+});
+
+test("时间按天小时分钟显示，不会把未到一分钟错误显示为零", () => {
+  const end = Date.parse(dueAt);
+  const block = { dueAt };
+  assert.equal(
+    deadlines.deadlineInfo(block, end - 30000).relative,
+    "剩余不足 1 分钟",
+  );
+  assert.equal(
+    deadlines.deadlineInfo(block, end + 30000).relative,
+    "已超时不足 1 分钟",
+  );
+  assert.equal(
+    deadlines.deadlineInfo(block, end + 90060000).relative,
+    "已超时 1 天 1 小时 1 分钟",
+  );
+  assert.equal(deadlines.deadlineInfo(block, end - 172800000).compact, "2天");
+});
+
+test("日期输入按本机时区转换，重开时还原且拒绝不存在的日期", () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "Asia/Shanghai";
+  try {
+    assert.equal(deadlines.parseDeadlineInput("2026-10-22T10:00"), dueAt);
+    assert.equal(deadlines.deadlineInputValue(dueAt), "2026-10-22T10:00");
+    assert.equal(deadlines.deadlineInputValue(null), "");
+    for (const invalid of [
+      "",
+      "2026-02-30T10:00",
+      "2026-10-22T25:00",
+      "invalid",
+    ])
+      assert.throws(() => deadlines.parseDeadlineInput(invalid));
+    process.env.TZ = "America/New_York";
+    assert.throws(() => deadlines.parseDeadlineInput("2026-03-08T02:30"));
+    assert.equal(
+      deadlines.deadlineInputValue(
+        deadlines.parseDeadlineInput("2026-10-22T10:00"),
+      ),
+      "2026-10-22T10:00",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
+test("提醒时钟会在跨入24小时和刚超时的边界刷新", () => {
+  const end = Date.parse(dueAt);
+  assert.equal(deadlines.nextDeadlineTick([end], end - 86400100), 100);
+  assert.equal(deadlines.nextDeadlineTick([end], end - 500), 500);
+  assert.equal(deadlines.nextDeadlineTick([end], end), 30000);
+});
+
+test("设置和移除截止时间保留其他行、正文、备注和完成状态", () => {
+  const { state, note } = fixture();
+  const pageId = todoPages(state, state.boards[0].id)[0].id;
+  note.blocks[0].remark = { text: "协作者的备注", updatedAt: dueAt };
+  const next = arranged.setPageDeadline(
+    state,
+    state.boards[0].id,
+    pageId,
+    note.id,
+    note.blocks[0].id,
+    dueAt,
+    null,
+  );
+  assert.equal(next.objects[0].blocks[0].dueAt, dueAt);
+  assert.equal(next.objects[0].blocks[0].remark.text, "协作者的备注");
+  assert.strictEqual(next.objects[0].blocks[1], note.blocks[1]);
+  const cleared = arranged.setPageDeadline(
+    next,
+    state.boards[0].id,
+    pageId,
+    note.id,
+    note.blocks[0].id,
+    null,
+    dueAt,
+  );
+  assert.equal(cleared.objects[0].blocks[0].dueAt, null);
+  assert.equal(cleared.objects[0].blocks[0].done, false);
+});
+
+test("截止弹窗打开后协作者修改了时间，旧弹窗不能覆盖它；锁定或移走的事项也不接收修改", () => {
+  const { state, note } = fixture();
+  const board = state.boards[0].id,
+    pageId = todoPages(state, board)[0].id,
+    key = note.blocks[0].id;
+  note.blocks[0].dueAt = dueAt;
+  assert.strictEqual(
+    arranged.setPageDeadline(state, board, pageId, note.id, key, null, null),
+    state,
+  );
+  note.locked = true;
+  assert.strictEqual(
+    arranged.setPageDeadline(state, board, pageId, note.id, key, null, dueAt),
+    state,
+  );
+  note.locked = false;
+  assert.strictEqual(
+    arranged.setPageDeadline(
+      state,
+      board,
+      "missing",
+      note.id,
+      key,
+      null,
+      dueAt,
+    ),
+    state,
+  );
+  assert.strictEqual(
+    arranged.setPageDeadline(
+      state,
+      board,
+      pageId,
+      note.id,
+      key,
+      "invalid",
+      dueAt,
+    ),
+    state,
+  );
+});
