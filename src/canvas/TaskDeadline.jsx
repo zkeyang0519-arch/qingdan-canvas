@@ -1,12 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Check } from "lucide-react";
+import { CalendarClock, Check, ChevronDown } from "lucide-react";
 import { Modal } from "./Panels.jsx";
 import {
-  deadlineInputValue,
   nextDeadlineTick,
   parseDeadlineInput,
   validDeadline,
 } from "../../shared/deadline.js";
+import {
+  deadlineSelection,
+  deadlineMonthDays,
+  updateDeadlineSelection,
+  deadlineSelectionValue,
+} from "./deadlineInput.js";
 import "./taskDeadline.css";
 
 const dateFormat = new Intl.DateTimeFormat("zh-CN", {
@@ -100,8 +105,26 @@ export function TaskDeadlineButton({ info, dueAt, text, disabled, onClick }) {
 }
 
 export function TaskDeadlineDialog({ task, disabled, onClose, onSave }) {
-  const [value, setValue] = useState(() => deadlineInputValue(task.dueAt));
+  const [parts, setParts] = useState(() => deadlineSelection(task.dueAt));
   const [error, setError] = useState("");
+  const numbers = (start, count) =>
+    Array.from({ length: count }, (_, index) => start + index);
+  const currentYear = new Date().getFullYear();
+  const years = [...new Set([...numbers(currentYear - 5, 16), parts.year])]
+    .filter((year) => year >= 1 && year <= 9999)
+    .sort((a, b) => a - b);
+  const fields = [
+    { key: "year", label: "年", name: "截止年份", options: years },
+    { key: "month", label: "月", name: "截止月份", options: numbers(1, 12) },
+    {
+      key: "day",
+      label: "日",
+      name: "截止日期",
+      options: numbers(1, deadlineMonthDays(parts)),
+    },
+    { key: "hour", label: "时", name: "截止小时", options: numbers(0, 24) },
+    { key: "minute", label: "分", name: "截止分钟", options: numbers(0, 60) },
+  ];
   const save = (dueAt) => {
     const message = onSave(dueAt);
     if (message) setError(message);
@@ -118,29 +141,47 @@ export function TaskDeadlineDialog({ task, disabled, onClose, onSave }) {
           event.preventDefault();
           if (disabled) return;
           try {
-            save(parseDeadlineInput(value));
+            save(parseDeadlineInput(deadlineSelectionValue(parts)));
           } catch (err) {
             setError(err.message);
           }
         }}
       >
-        <label className="task-deadline-field">
-          截止日期和时间
-          <input
-            type="datetime-local"
-            className="text-field"
-            aria-label="截止日期和时间"
-            value={value}
-            required
-            min="0001-01-01T00:00"
-            max="9999-12-31T23:59"
-            disabled={disabled}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setError("");
-            }}
-          />
-        </label>
+        <fieldset className="task-deadline-fields">
+          <legend>截止日期和时间</legend>
+          <div className="task-deadline-selects">
+            {fields.map((field) => (
+              <label
+                key={field.key}
+                className={`task-deadline-field ${field.key === "hour" || field.key === "minute" ? "is-time" : ""}`}
+              >
+                <span>{field.label}</span>
+                <span className="task-deadline-select-wrap">
+                  <select
+                    className="text-field"
+                    aria-label={field.name}
+                    value={parts[field.key]}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setParts((previous) =>
+                        updateDeadlineSelection(previous, field.key, value),
+                      );
+                      setError("");
+                    }}
+                  >
+                    {field.options.map((option) => (
+                      <option key={option} value={option}>
+                        {String(option).padStart(2, "0")}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={15} aria-hidden="true" />
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <p className="task-deadline-hint">
           按本机时区设置；提前 24 小时开始提醒。
         </p>
@@ -168,11 +209,7 @@ export function TaskDeadlineDialog({ task, disabled, onClose, onSave }) {
           <button className="button" type="button" onClick={onClose}>
             取消
           </button>
-          <button
-            className="button primary"
-            type="submit"
-            disabled={disabled || !value}
-          >
+          <button className="button primary" type="submit" disabled={disabled}>
             保存截止时间
           </button>
         </div>

@@ -12,6 +12,7 @@ import { mergeData, undoChanges } from "../src/sync/replica.js";
 import * as deadlines from "../shared/deadline.js";
 import * as arranged from "../src/canvas/arranged-model.js";
 import { todoPages } from "../src/canvas/todoPages.js";
+import * as selection from "../src/canvas/deadlineInput.js";
 
 const dueAt = "2026-10-22T02:00:00.000Z";
 function fixture() {
@@ -164,6 +165,53 @@ test("提醒时钟会在跨入24小时和刚超时的边界刷新", () => {
   assert.equal(deadlines.nextDeadlineTick([end], end - 86400100), 100);
   assert.equal(deadlines.nextDeadlineTick([end], end - 500), 500);
   assert.equal(deadlines.nextDeadlineTick([end], end), 30000);
+});
+
+test("切换截止月份和年份会限制日期，处理大小月与闰年并保留时间", () => {
+  const january = { year: 2028, month: 1, day: 31, hour: 22, minute: 5 };
+  const february = selection.updateDeadlineSelection(january, "month", 2);
+  assert.deepEqual(february, { ...january, month: 2, day: 29 });
+  assert.equal(selection.deadlineMonthDays(february), 29);
+  assert.equal(
+    selection.updateDeadlineSelection(february, "year", 2027).day,
+    28,
+  );
+  assert.equal(selection.updateDeadlineSelection(january, "month", 4).day, 30);
+  assert.equal(selection.deadlineMonthDays({ year: 2100, month: 2 }), 28);
+  assert.equal(selection.deadlineMonthDays({ year: 2000, month: 2 }), 29);
+  assert.equal(january.day, 31);
+});
+
+test("截止下拉框按本地时间回显，支持零点和逐分钟选择，新设置默认当天23:59", () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "Asia/Shanghai";
+  try {
+    const parts = selection.deadlineSelection("2026-10-21T16:05:00.000Z");
+    assert.deepEqual(parts, {
+      year: 2026,
+      month: 10,
+      day: 22,
+      hour: 0,
+      minute: 5,
+    });
+    assert.equal(
+      deadlines.parseDeadlineInput(selection.deadlineSelectionValue(parts)),
+      "2026-10-21T16:05:00.000Z",
+    );
+    const midnight = selection.updateDeadlineSelection(parts, "minute", 0);
+    assert.equal(
+      selection.deadlineSelectionValue(midnight),
+      "2026-10-22T00:00",
+    );
+    const fresh = selection.deadlineSelection(
+      null,
+      Date.parse("2026-12-31T16:01:00.000Z"),
+    );
+    assert.equal(selection.deadlineSelectionValue(fresh), "2027-01-01T23:59");
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
 });
 
 test("设置和移除截止时间保留其他行、正文、备注和完成状态", () => {

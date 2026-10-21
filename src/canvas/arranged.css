@@ -7,7 +7,7 @@
 .arranged-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   flex-shrink: 0;
   height: 35px;
@@ -46,18 +46,6 @@
   font-variant-numeric: tabular-nums;
   color: #9ca78f;
 }
-.arranged-mark {
-  display: flex;
-  gap: 3px;
-  margin-right: 2px;
-}
-.arranged-mark > span {
-  display: block;
-  width: 7px;
-  height: 12px;
-  border: 1px solid #99a58d;
-  border-radius: 2px;
-}
 .arranged-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(330px, 1fr));
@@ -86,24 +74,6 @@
   gap: 3px;
   flex: 1;
   min-width: 0;
-}
-.pane-side {
-  font-size: 10px;
-  color: #9aa58e;
-  white-space: nowrap;
-  padding-left: 2px;
-}
-.checklist-pane.is-active .pane-side {
-  color: #62784f;
-}
-.checklist-pane.is-active .pane-side::before {
-  content: "";
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #8b9f76;
-  margin: 0 4px 2px 0;
 }
 .arranged-workspace .todo-pagebar .checklist-page-actions {
   gap: 4px;
@@ -230,11 +200,6 @@
   color: #687b5c;
   margin: 8px 0 0;
 }
-.checklist-empty p {
-  font-size: 12px;
-  line-height: 1.8;
-  margin: 0 0 8px;
-}
 .checklist-empty .button {
   display: flex;
   align-items: center;
@@ -306,9 +271,6 @@
 @media (max-width: 600px) {
   .arranged-workspace {
     padding: 10px 12px 14px;
-  }
-  .arranged-toolbar > div:first-child {
-    font-size: 11px;
   }
   .arranged-columns {
     grid-template-columns: repeat(2, minmax(310px, 1fr));

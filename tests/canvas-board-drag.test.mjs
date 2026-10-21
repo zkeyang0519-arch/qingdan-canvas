@@ -28,6 +28,12 @@ function drag(
   t,
   { noteKind = "text", selected = ["note"], scale = 1, extra = [] } = {},
 ) {
+  let now = 1000;
+  class DragDate extends Date {
+    static now() {
+      return now;
+    }
+  }
   const state = model.createWorkspace();
   const boardId = state.boards[0].id;
   const home = {
@@ -75,6 +81,13 @@ function drag(
       anchorId: selected[0],
       snapshot: state,
       pointerId: 1,
+      alignmentMotion: {
+        x: 300,
+        y: 350,
+        at: now,
+        slowSince: null,
+        enabled: false,
+      },
     },
   };
   const timers = { alignmentTimer: {}, groupTimer: {}, longPress: {} };
@@ -87,6 +100,7 @@ function drag(
     ...geometry,
     ...boards,
     ...timers,
+    Date: DragDate,
     collectionTouches,
     state,
     boardId,
@@ -144,8 +158,22 @@ function drag(
     ...modifiers,
   });
   return {
-    move: (x, y, modifiers = {}) => move(event(x, y, modifiers)),
-    up: (x, y, modifiers = {}) => up(event(x, y, modifiers)),
+    move: (x, y, modifiers = {}) => {
+      now += modifiers.elapsedMs ?? 16;
+      move(event(x, y, modifiers));
+    },
+    up: (x, y, modifiers = {}) => {
+      now += modifiers.elapsedMs ?? 16;
+      up(event(x, y, modifiers));
+    },
+    replay: (elapsedMs) => {
+      now += elapsedMs;
+      move(gesture.current.lastPointer);
+    },
+    tick: (elapsedMs) => {
+      now += elapsedMs;
+      t.mock.timers.tick(elapsedMs);
+    },
     get: (id = "note") =>
       workspace.current.current.objects.find((o) => o.id === id),
     home,
@@ -220,4 +248,104 @@ test("dragging an inspiration board still stops at its neighbor with its members
   assert.equal(ui.get().x, 286);
   assert.equal(ui.get().parentId, "home");
   assert.deepEqual(ui.get("neighbor"), ui.neighbor);
+});
+
+function alignmentScene(t, options = {}) {
+  const loose = {
+    ...model.createObject("", options.type || "note", { x: 100, y: 1000 }),
+    id: "loose",
+    width: 200,
+    height: 180,
+    layoutHeight: 180,
+  };
+  const target = { ...loose, id: "target", x: 500, y: 1200 };
+  return drag(t, { selected: ["loose"], extra: [loose, target], ...options });
+}
+
+test("fast drags pass alignment lines without pausing at every zoom", (t) => {
+  for (const scale of [0.5, 1, 2]) {
+    const ui = alignmentScene(t, { scale });
+    ui.move(220, 0);
+    assert.equal(ui.get("loose").x, 320);
+    ui.up(220, 0);
+    assert.equal(ui.get("loose").x, 320);
+  }
+});
+
+test("fast release near an edge keeps the pointer position instead of enabling alignment", (t) => {
+  const ui = alignmentScene(t);
+  ui.move(195, 0);
+  assert.equal(ui.get("loose").x, 295);
+  ui.up(195, 0);
+  assert.equal(ui.get("loose").x, 295);
+});
+
+test("slowing down enables edge alignment and accelerating releases an active hold immediately", (t) => {
+  for (const scale of [0.5, 1, 2]) {
+    const ui = alignmentScene(t, { scale });
+    ui.move(190, 0);
+    ui.move(191, 0, { elapsedMs: 40 });
+    ui.move(197, 0, { elapsedMs: 80 });
+    assert.equal(ui.get("loose").x, 300, `slow alignment at scale ${scale}`);
+    ui.move(220, 0);
+    assert.equal(ui.get("loose").x, 320);
+  }
+});
+
+test("stopping near an edge aligns after settling but does not recapture a distant crossed line", (t) => {
+  const near = alignmentScene(t);
+  near.move(195, 0);
+  near.replay(60);
+  assert.equal(near.get("loose").x, 295);
+  near.replay(61);
+  assert.equal(near.get("loose").x, 300);
+  const crossed = alignmentScene(t);
+  crossed.move(220, 0);
+  crossed.replay(121);
+  assert.equal(crossed.get("loose").x, 320);
+});
+
+test("board boundary attraction waits for a slow drag while collision prevention remains intact", (t) => {
+  const fast = drag(t, { selected: ["home"] });
+  fast.move(21, 0);
+  assert.equal(fast.get("home").x, 221);
+  fast.up(21, 0);
+  assert.equal(fast.get("home").x, 221);
+  const slow = drag(t, { selected: ["home"] });
+  slow.move(15, 0);
+  slow.move(16, 0, { elapsedMs: 40 });
+  slow.move(21, 0, { elapsedMs: 80 });
+  assert.equal(slow.get("home").x, 226);
+  assert.equal(slow.get().x, 286);
+});
+
+test("images also bypass edge attraction when moving fast and align when slowed", (t) => {
+  const ui = alignmentScene(t, { type: "image" });
+  ui.move(195, 0);
+  assert.equal(ui.get("loose").x, 295);
+  ui.move(196, 0, { elapsedMs: 40 });
+  ui.move(197, 0, { elapsedMs: 80 });
+  assert.equal(ui.get("loose").x, 300);
+  ui.move(220, 0);
+  assert.equal(ui.get("loose").x, 320);
+});
+
+test("the settling timer aligns a stopped pointer and is cancelled on release", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ui = alignmentScene(t);
+  ui.move(195, 0);
+  ui.tick(119);
+  assert.equal(ui.get("loose").x, 295);
+  ui.tick(1);
+  assert.equal(ui.get("loose").x, 300);
+  ui.move(215, 0);
+  ui.up(215, 0);
+  ui.tick(1000);
+  assert.equal(ui.get("loose").x, 315);
+});
+
+test("a long pointerdown pause cannot make a subsequent fast jump look slow", (t) => {
+  const ui = alignmentScene(t);
+  ui.move(195, 0, { elapsedMs: 5000 });
+  assert.equal(ui.get("loose").x, 295);
 });

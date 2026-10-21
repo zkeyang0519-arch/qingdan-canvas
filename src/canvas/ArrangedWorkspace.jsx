@@ -367,7 +367,12 @@ function ChecklistPane({
           >
             <Pencil size={13} />
           </button>
-          <TodoActions note={task.note} block={task.block} frozen={frozen} />
+          <TodoActions
+            note={task.note}
+            block={task.block}
+            frozen={frozen}
+            showMenu={false}
+          />
           <button
             aria-label={`收纳便签：${text || "空白待办"}`}
             title="收纳此便签的全部事项"
@@ -399,7 +404,6 @@ function ChecklistPane({
     >
       <header className="todo-pagebar">
         <div className="checklist-page-heading">
-          <span className="pane-side">{label}</span>
           <BoardPicker
             pages={pages}
             page={page}
@@ -445,7 +449,6 @@ function ChecklistPane({
         <div className="checklist-empty">
           <Frame size={30} strokeWidth={1.25} />
           <h2>再打开一块灵感板</h2>
-          <p>两份清单并排，想法与行动各有位置。</p>
           <button
             className="button"
             disabled={workspace.readOnly}
@@ -1022,10 +1025,6 @@ export default function ArrangedWorkspace({
     >
       <div className="arranged-toolbar">
         <div>
-          <ListMark />
-          <span>两份清单，一起推进</span>
-        </div>
-        <div>
           {importing > 0 && <span role="status">正在读取图片…</span>}
           <button
             aria-label="排列撤销"
@@ -1230,14 +1229,5 @@ export default function ArrangedWorkspace({
         </Modal>
       )}
     </main>
-  );
-}
-
-function ListMark() {
-  return (
-    <span className="arranged-mark" aria-hidden="true">
-      <span />
-      <span />
-    </span>
   );
 }

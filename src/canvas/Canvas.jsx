@@ -64,6 +64,8 @@ import {
   snapMove,
   snapResize,
   ALIGNMENT_SNAP_RELEASE_PX,
+  DRAG_ALIGNMENT_IDLE_MS,
+  dragAlignmentMotion,
   canDragIntoFrame,
   frameDragBarriers,
   constrainFrameMove,
@@ -1028,6 +1030,7 @@ export default function Canvas({
       gesture.current = {
         kind: "move",
         start: p,
+        alignmentMotion: dragAlignmentMotion(null, p),
         view,
         ids: roots,
         anchorId: key,
@@ -1301,6 +1304,10 @@ export default function Canvas({
       return;
     }
     clearTimeout(alignmentTimer.current);
+    const now = Date.now();
+    const wasAlignmentEnabled = !!g.alignmentMotion?.enabled;
+    g.alignmentMotion = dragAlignmentMotion(g.alignmentMotion, p, now);
+    const allowAlignment = g.alignmentMotion.enabled;
     let delta = { x: dx / g.view.scale, y: dy / g.view.scale };
     const movingIds = movableIds(g.snapshot, g.ids);
     if (!movingIds.size) return;
@@ -1360,12 +1367,17 @@ export default function Canvas({
     );
     const rect = bounds(roots.map(actual));
     const wanted = { ...rect, x: rect.x + delta.x, y: rect.y + delta.y };
-    const previousRect = g.moveRawRect || rect;
+    // Do not capture a line crossed during the preceding fast movement.
+    const previousRect = wasAlignmentEnabled ? g.moveRawRect || rect : wanted;
     g.moveRawRect = wanted;
-    const now = Date.now();
     let moveSnap = null;
     let nextGuides = [];
-    if (!event.altKey && !overDock && (!onFixedBoard || pauseAlignment)) {
+    if (
+      allowAlignment &&
+      !event.altKey &&
+      !overDock &&
+      (!onFixedBoard || pauseAlignment)
+    ) {
       const parentIds = new Set(
         roots.flatMap((o) =>
           ancestors(g.snapshot.objects, o.id).map((p) => p.id),
@@ -1406,7 +1418,7 @@ export default function Canvas({
         barriers,
         g.acceptedDelta || { x: 0, y: 0 },
         unchanged ? g.acceptedDelta : delta,
-        { scale: view.scale, snap: !event.altKey },
+        { scale: view.scale, snap: allowAlignment && !event.altKey },
       );
       nextGuides = nextGuides.filter(
         (guide) => Math.abs(limited[guide.axis] - delta[guide.axis]) < 0.001,
@@ -1428,6 +1440,9 @@ export default function Canvas({
     );
     g.moveSnaps = moveSnap?.snaps || null;
     const resumeAt = Math.min(
+      !allowAlignment && !event.altKey && !overDock
+        ? g.alignmentMotion.at + DRAG_ALIGNMENT_IDLE_MS
+        : Infinity,
       ...["x", "y"].map((axis) => {
         const snap = g.moveSnaps?.[axis];
         return snap?.holdUntil > now &&

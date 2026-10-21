@@ -142,15 +142,56 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.task-deadline-field {
-  display: grid;
-  gap: 8px;
+.task-deadline-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.task-deadline-fields legend {
+  margin-bottom: 12px;
+  padding: 0;
   color: #5c6c51;
   font-size: 13px;
 }
-.task-deadline-field input {
+.task-deadline-selects {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+.task-deadline-field {
+  display: grid;
+  grid-column: span 2;
+  min-width: 0;
+  gap: 6px;
+  color: #5c6c51;
+  font-size: 12px;
+}
+.task-deadline-field.is-time {
+  grid-column: span 3;
+}
+.task-deadline-select-wrap {
+  position: relative;
+}
+.task-deadline-select-wrap select {
+  appearance: none;
   min-width: 0;
   width: 100%;
+  padding-right: 32px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.task-deadline-select-wrap select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.task-deadline-select-wrap > svg {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: #829077;
 }
 .task-deadline-hint {
   margin: 10px 0 0;
