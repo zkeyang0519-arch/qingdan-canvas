@@ -4,6 +4,7 @@ import {
   createWorkspace,
   createObject,
   makeBlock,
+  takeOutObject,
 } from "../src/canvas/model.js";
 import {
   buildCanvasMenu,
@@ -279,4 +280,72 @@ test("固定收纳框可以重命名，但不能从右键菜单删除", () => {
     f,
   );
   assert.ok(retained.objects.some((o) => o.id === "dock"));
+});
+
+test("右键删除将便签收入共享收纳箱，保留内容、身份并可取回", () => {
+  const f = fixture();
+  f.state.objects.push({
+    ...createObject(f.boardId, "collection"),
+    id: "dock",
+  });
+  const next = applyCanvasMenuAction(
+    f.state,
+    menu(f, "note").find((i) => i.id === "delete"),
+    f,
+  );
+  const stored = prepareEdit(next).find((o) => o.id === "note");
+  assert.equal(stored?.parentId, "dock");
+  assert.deepEqual(stored.blocks, f.note.blocks);
+  assert.equal(next.trash.length, 0);
+  const restored = takeOutObject(next, "note", { x: 900, y: 100 }, f.boardId);
+  assert.equal(restored.objects.find((o) => o.id === "note").parentId, null);
+  assert.deepEqual(
+    restored.objects.find((o) => o.id === "note").blocks,
+    f.note.blocks,
+  );
+});
+
+test("右键删除灵感板与选中的子便签时，整个层级一起收纳", () => {
+  const f = fixture();
+  f.state.objects[0] = { ...f.note, parentId: "frame" };
+  f.state.objects.push({
+    ...createObject(f.boardId, "collection"),
+    id: "dock",
+  });
+  const action = menu(f, "frame", ["frame", "note"]).find(
+    (i) => i.id === "delete",
+  );
+  assert.ok(action, "容器也应有删除并收纳的入口");
+  const next = applyCanvasMenuAction(f.state, action, f);
+  assert.equal(next.objects.find((o) => o.id === "frame")?.parentId, "dock");
+  assert.equal(next.objects.find((o) => o.id === "note")?.parentId, "frame");
+  assert.equal(next.objects.find((o) => o.id === "other")?.parentId, null);
+});
+
+test("收纳箱或元素在菜单打开后被锁定时，删除不能绕过最新权限", () => {
+  const f = fixture();
+  f.state.objects.push({
+    ...createObject(f.boardId, "collection"),
+    id: "dock",
+  });
+  const action = menu(f, "note").find((i) => i.id === "delete");
+  for (const key of ["dock", "note"]) {
+    const locked = {
+      ...f.state,
+      objects: f.state.objects.map((o) =>
+        o.id === key ? { ...o, locked: true } : o,
+      ),
+    };
+    assert.equal(applyCanvasMenuAction(locked, action, f), locked);
+    assert.equal(
+      menu({ ...f, state: locked }, "note").find((i) => i.id === "delete")
+        .disabled,
+      true,
+    );
+  }
+  assert.equal(
+    applyCanvasMenuAction(f.state, action, { ...f, readOnly: true }),
+    f.state,
+  );
+  assert.equal(menu(f, "dock").find((i) => i.id === "delete").disabled, true);
 });

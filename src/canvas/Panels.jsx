@@ -649,44 +649,74 @@ export function CollectionPanel({
   );
 }
 export function HelpPanel({ onClose }) {
+  const groups = [
+    {
+      title: "自由画布",
+      Icon: Frame,
+      tips: [
+        ["新建内容", "点左侧工具栏，添加便签、清单、图片或灵感板。"],
+        ["画出灵感板", "按住 Ctrl + 左键拖动空白处。"],
+        ["调整大小", "拖动元素右下角；拖板标题可整板移动。"],
+        ["移动与缩放", "拖空白处平移；Ctrl / ⌘ + 滚轮缩放。"],
+        ["多选元素", "按 Shift 点选，或右键拖动框选。"],
+      ],
+    },
+    {
+      title: "清单与排列",
+      Icon: StickyNote,
+      tips: [
+        ["完成待办", "点击方框；点文字不会勾选。"],
+        ["编辑文字", "双击进入编辑，Esc 结束。"],
+        ["补充备注", "点事项旁的备注图标。"],
+        ["两栏排列", "点顶部「排列」，并排打开两块灵感板。"],
+        ["切换灵感板", "点排列栏顶部的板名。"],
+      ],
+    },
+    {
+      title: "收纳与恢复",
+      Icon: Archive,
+      tips: [
+        ["纸团收纳", "右键「删除此元素」，自动飞入收纳箱。"],
+        ["取回内容", "点左上收纳箱，再点取出。"],
+        ["撤销重做", "Ctrl / ⌘ + Z 撤销；加 Shift 重做。"],
+        ["回收站", "Delete 移入回收站，可在本机恢复。"],
+        ["快速复制", "选中元素，按 Ctrl / ⌘ + D。"],
+      ],
+    },
+    {
+      title: "协作与保存",
+      Icon: Sparkles,
+      tips: [
+        ["邀请协作", "创建者点「邀请协作」，分享链接。"],
+        ["自动保存", "看到「已同步」，表示云端已保存。"],
+        ["切换视图", "画布与排列使用同一份内容。"],
+        ["快速查找", "Ctrl / ⌘ + K 搜索当前画布。"],
+        ["导出备份", "点顶部下载图标，打包画布和图片。"],
+      ],
+    },
+  ];
   return (
-    <Modal title="让画布顺着你的习惯" onClose={onClose}>
-      <div className="shortcut-list">
-        {[
-          ["右键单击", "打开菜单"],
-          ["N", "在指针处新建便签"],
-          ["画布：按住空白处拖动", "移动画布"],
-          ["Ctrl + 左键拖动空白处", "划出灵感板"],
-          ["右键拖动", "框选元素，拖动选中的元素可整体移动"],
-          ["拖动元素右下角", "调整大小，虚线显示边缘对齐参考"],
-          ["空格 + 拖动 / 中键", "从任何位置平移"],
-          ["Ctrl / ⌘ + 滚轮", "以指针为中心缩放"],
-          ["Shift + 拖动", "框选未分组元素，只创建一层分组"],
-          ["Shift + 单击", "多选元素"],
-          ["拖动组标题 / 边线", "整体移动分组与内容"],
-          ["Alt + 拖动", "跳过吸附和自动收纳 / 入组"],
-          ["单击清单文字", "完成或恢复条目"],
-          ["双击 / Enter", "原位编辑"],
-          ["点击画布 / Esc", "保存并结束编辑"],
-          ["Ctrl / ⌘ + K", "搜索当前画布"],
-          ["Ctrl / ⌘ + Z", "撤销"],
-          ["Ctrl / ⌘ + Shift + Z", "重做"],
-          ["Delete / Backspace", "移入回收站"],
-          ["Ctrl / ⌘ + D", "复制一份"],
-          ["[[", "插入便签引用"],
-        ].map(([key, label]) => (
-          <div key={key}>
-            <span>{label}</span>
-            <kbd>{key}</kbd>
-          </div>
+    <Modal title="轻单使用 tips" onClose={onClose} className="help-tips">
+      <p className="help-tips-intro">画布自由整理，排列专注清单。</p>
+      <div className="help-tip-grid">
+        {groups.map(({ title, Icon, tips }) => (
+          <section className="help-tip-group" key={title}>
+            <h3>
+              <Icon size={17} aria-hidden="true" />
+              {title}
+            </h3>
+            <ul>
+              {tips.map(([label, text]) => (
+                <li key={label}>
+                  <strong>{label}：</strong>
+                  <span>{text}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
       </div>
-      <p className="dialog-footnote">
-        未分组元素在灵感板内停留 1 秒后可放入，普通分组为 2
-        秒；分组不能嵌套。便签、图片、整个分组和收纳箱都可收纳，任意边缘碰到收纳图标，松手即可。
-        同伴的编辑会实时同步。画布与图片保存在云端；视口、撤销和回收记录保留在当前浏览器。
-        离线草稿会在重连后尝试合并，冲突时请先导出备份再选择版本。
-      </p>
+      <p className="help-tips-footer">按 Esc 或点击窗口外，继续记录。</p>
     </Modal>
   );
 }

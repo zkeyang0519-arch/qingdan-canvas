@@ -25,6 +25,7 @@ import ImageToolbar from "./ImageToolbar.jsx";
 import CollectionWrap from "./CollectionWrap.jsx";
 import { collectionTouches } from "./collectionWrap.js";
 import CollectionFlight from "./CollectionFlight.jsx";
+import PaperCollectFlight from "./PaperCollectFlight.jsx";
 import RadialCreate, { useRadialCreate } from "./RadialCreate.jsx";
 import useArrangement from "./useArrangement.jsx";
 import useArrangedCollection from "./useArrangedCollection.jsx";
@@ -39,6 +40,7 @@ import {
   takeOutObject,
   patchObjects,
   createObject,
+  createInspirationBoard,
   createImageNote,
   groupObjects,
   movableIds,
@@ -788,6 +790,33 @@ export default function Canvas({
       );
     }
   };
+  const animateCollection = (before, next) => {
+    if (arranged || live.current.blocked || !dockedCollection) return;
+    const stored = new Map(next.objects.map((o) => [o.id, o]));
+    const snapshot = before.objects.map(actual);
+    const visibleIds = new Set(
+      before.objects.filter((o) => isShown(o, before.objects)).map((o) => o.id),
+    );
+    const target = collectionRect(dockedCollection);
+    const flights = snapshot
+      .filter(
+        (o) =>
+          o.boardId === boardId &&
+          visibleIds.has(o.id) &&
+          o.parentId !== target.id &&
+          stored.get(o.id)?.parentId === target.id,
+      )
+      .map((object) => ({
+        token: id(),
+        kind: "crumple",
+        object,
+        snapshot,
+        visibleIds,
+        target,
+        wrapScale: view.scale,
+      }));
+    setCollectionFlights((previous) => [...previous, ...flights]);
+  };
   useEffect(() => {
     apiRef.current = {
       addNote,
@@ -796,6 +825,7 @@ export default function Canvas({
       archiveSelection: arrangedCollection.collect,
       takeOutArranged: arrangedCollection.takeOut,
       animateTakeOut,
+      animateCollection,
       cancel: () => {
         cancelGesture();
         exitImageEdit(true);
@@ -1761,12 +1791,7 @@ export default function Canvas({
         if (g.boardBlocked) {
           onToast("灵感板之间需要保留 24px 间距，请在空白区域创建。");
         } else if (g.rect.width >= 240 && g.rect.height >= 180) {
-          const frame = {
-            ...createObject(boardId, "frame", g.rect),
-            ...g.rect,
-            fixedBounds: true,
-            title: "新的灵感板",
-          };
+          const frame = createInspirationBoard(boardId, g.rect);
           update((s) => ({ ...s, objects: [...s.objects, frame] }));
           setSelection([frame.id]);
         }
@@ -2414,7 +2439,7 @@ export default function Canvas({
       </div>
       {dockedCollection && (
         <div
-          className={`collection-dock object-collection ${dropTarget === dockedCollection.id || arrangedCollection.receiving === dockedCollection.id || activeFlights.some((f) => f.target.id === dockedCollection.id) ? "receiving" : ""}`}
+          className={`collection-dock object-collection ${dropTarget === dockedCollection.id || arrangedCollection.receiving === dockedCollection.id || activeFlights.some((f) => f.target.id === dockedCollection.id) ? "receiving" : ""} ${activeFlights.some((f) => f.kind === "crumple" && f.target.id === dockedCollection.id) ? "is-paper-collecting" : ""}`}
           data-object-id={dockedCollection.id}
           style={{
             left: COLLECTION_DOCK.x,
@@ -2483,15 +2508,19 @@ export default function Canvas({
               scale={view.scale}
             />
           )}
-        {activeFlights.map((flight) => (
-          <CollectionFlight
-            key={flight.token}
-            flight={flight}
-            assetUrls={assetUrls}
-            objects={objects}
-            onDone={finishCollectionFlight}
-          />
-        ))}
+        {activeFlights.map((flight) => {
+          const Flight =
+            flight.kind === "crumple" ? PaperCollectFlight : CollectionFlight;
+          return (
+            <Flight
+              key={flight.token}
+              flight={flight}
+              assetUrls={assetUrls}
+              objects={objects}
+              onDone={finishCollectionFlight}
+            />
+          );
+        })}
         {dragAnchor && (
           <span
             className={`collection-anchor ${dropTarget ? "is-receiving" : ""}`}

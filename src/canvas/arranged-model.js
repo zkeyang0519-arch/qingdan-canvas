@@ -1,5 +1,6 @@
 import {
   createObject,
+  createInspirationBoard,
   patchObjects,
   movableIds,
   takeOutObject,
@@ -89,18 +90,16 @@ export function createChecklistPage(state, boardId, title) {
   const objects = state.objects.filter(
     (o) => o.boardId === boardId && !o.parentId && o.type !== "collection",
   );
-  const frame = {
-    ...createObject(boardId, "frame", {
+  const frame = createInspirationBoard(
+    boardId,
+    {
       x: objects.length
         ? Math.max(...objects.map((o) => o.x + o.width)) + 80
         : 80,
       y: 80,
-    }),
-    title: title.trim().slice(0, 80),
-    fixedBounds: true,
-    width: 640,
-    height: 480,
-  };
+    },
+    title.trim().slice(0, 80),
+  );
   return { ...state, objects: [...state.objects, frame] };
 }
 

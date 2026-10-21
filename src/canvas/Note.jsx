@@ -224,7 +224,6 @@ function Note({
   const ref = useRef(null);
   const checkbox = object.noteKind === "checklist";
   const todoTools = useTodoTools();
-  const lastClick = useRef(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -331,29 +330,8 @@ function Note({
             ) : (
               <div
                 className={`block-copy ${!blockText(block) ? "empty-copy" : ""}`}
-                onClick={(event) => {
-                  if (
-                    event.defaultPrevented ||
-                    event.shiftKey ||
-                    event.ctrlKey ||
-                    event.metaKey ||
-                    event.altKey ||
-                    object.locked ||
-                    block.spacer ||
-                    !checkbox
-                  )
-                    return;
-                  if (event.detail === 1)
-                    lastClick.current = {
-                      blockId: block.id,
-                      cancel: onToggle(block.id),
-                    };
-                }}
                 onDoubleClick={(event) => {
                   event.stopPropagation();
-                  if (lastClick.current?.blockId === block.id)
-                    lastClick.current.cancel?.();
-                  lastClick.current = null;
                   if (!object.locked) onEdit(block.id);
                 }}
               >
