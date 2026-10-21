@@ -21,8 +21,8 @@ interface Account {
 
 function password(value: unknown): asserts value is string {
   check(
-    typeof value === "string" && value.length >= 12 && value.length <= 128,
-    "密码需要 12–128 个字符。",
+    typeof value === "string" && value.length >= 9 && value.length <= 128,
+    "密码需要 9–128 个字符。",
   );
 }
 async function limit(env: Env, key: string, max: number, duration: number) {

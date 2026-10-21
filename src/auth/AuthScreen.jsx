@@ -155,10 +155,10 @@ export default function AuthScreen({
                   }
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  minLength={12}
+                  minLength={9}
                   maxLength={128}
                   required
-                  placeholder="12–128 个字符"
+                  placeholder="9–128 个字符"
                 />
               </label>
               {registering && (
@@ -169,7 +169,7 @@ export default function AuthScreen({
                     autoComplete="new-password"
                     value={confirm}
                     onChange={(e) => setConfirm(e.target.value)}
-                    minLength={12}
+                    minLength={9}
                     maxLength={128}
                     required
                     placeholder="再次输入密码"

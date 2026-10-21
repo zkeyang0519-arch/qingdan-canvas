@@ -25,10 +25,10 @@ function changeView(state, boardId, change) {
 export function setSurface(state, boardId, surface) {
   if (!["canvas", "arranged"].includes(surface)) return state;
   if (surface === "arranged") {
-    const { left, right, active } = panePages(state, boardId);
+    const { page, active } = panePages(state, boardId);
     return changeView(state, boardId, {
       surface,
-      arranged: { left: left?.id, right: right?.id, active },
+      arranged: { pageId: page?.id, active },
     });
   }
   return changeView(state, boardId, { surface });
@@ -43,45 +43,42 @@ export function panePages(state, boardId) {
   );
   const pages = todoPages({ ...state, objects }, boardId);
   const saved = state.preferences.views[boardId]?.arranged || {};
-  const left =
-    pages.find((p) => p.id === saved.left) ||
-    pages.find((p) => p.id !== saved.right) ||
-    pages[0];
-  const right =
-    pages.find((p) => p.id === saved.right && p.id !== left?.id) ||
-    pages.find((p) => p.id !== left?.id) ||
+  // Migrate the old two-project view using the last active pane's project.
+  const preferred = saved.pageId
+    ? [saved.pageId]
+    : [
+        saved[saved.active === "right" ? "right" : "left"],
+        saved.left,
+        saved.right,
+      ];
+  const page =
+    preferred.map((key) => pages.find((p) => p.id === key)).find(Boolean) ||
+    pages[0] ||
     null;
   return {
     pages,
-    left,
-    right,
+    page,
+    left: page,
+    right: page,
     active: saved.active === "right" ? "right" : "left",
   };
 }
 
 export function choosePanePage(state, boardId, side, pageId) {
-  const resolved = panePages(state, boardId),
-    other = side === "left" ? "right" : "left";
+  const resolved = panePages(state, boardId);
   if (
     !["left", "right"].includes(side) ||
     !resolved.pages.some((p) => p.id === pageId)
   )
     return state;
-  const choices = {
-    left: resolved.left?.id,
-    right: resolved.right?.id,
-    active: side,
-  };
-  if (resolved[other]?.id === pageId) choices[other] = resolved[side]?.id;
-  choices[side] = pageId;
-  return changeView(state, boardId, { arranged: choices });
+  return changeView(state, boardId, { arranged: { pageId, active: side } });
 }
 
 export function activatePane(state, boardId, side) {
-  const { left, right, active } = panePages(state, boardId);
+  const { page, active } = panePages(state, boardId);
   if (active === side || !["left", "right"].includes(side)) return state;
   return changeView(state, boardId, {
-    arranged: { left: left?.id, right: right?.id, active: side },
+    arranged: { pageId: page?.id, active: side },
   });
 }
 
