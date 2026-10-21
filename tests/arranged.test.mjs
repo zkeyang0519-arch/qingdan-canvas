@@ -67,19 +67,19 @@ function fixture() {
 }
 const pages = (f) => panePages(f.state, f.boardId);
 
-test("两栏默认选择不同页面，选择另一栏时互换且只修改本机偏好", () => {
+test("两栏始终显示同一项目，切换标签只修改本机偏好", () => {
   const f = fixture();
   assert.equal(pages(f).left.id, "left");
-  assert.equal(pages(f).right.id, "right");
+  assert.equal(pages(f).right.id, "left");
   const next = choosePanePage(f.state, f.boardId, "left", "right");
   const selected = panePages(next, f.boardId);
   assert.equal(selected.left.id, "right");
-  assert.equal(selected.right.id, "left");
+  assert.equal(selected.right.id, "right");
   assert.strictEqual(next.objects, f.state.objects);
   assert.deepEqual(prepareEdit(next), prepareEdit(f.state));
 });
 
-test("服务器返回对象顺序变化时，页面顺序和已选两栏保持稳定", () => {
+test("服务器返回对象顺序变化时，标签顺序和当前项目保持稳定", () => {
   const f = fixture();
   f.left.createdAt = "2026-10-20T00:00:00.000Z";
   f.right.createdAt = "2026-10-21T00:00:00.000Z";
@@ -90,11 +90,11 @@ test("服务器返回对象顺序变化时，页面顺序和已选两栏保持�
     ["left", "right"],
   );
   const saved = setSurface(f.state, f.boardId, "arranged");
-  assert.equal(saved.preferences.views[f.boardId].arranged.left, "left");
-  assert.equal(saved.preferences.views[f.boardId].arranged.right, "right");
+  assert.equal(saved.preferences.views[f.boardId].arranged.pageId, "left");
+  assert.equal(panePages(saved, f.boardId).right.id, "left");
 });
 
-test("页面删除或收纳后选择安全回退，只有一页时右栏为空", () => {
+test("项目删除或收纳后两栏一起回退，只有一页仍有完成栏", () => {
   const f = fixture();
   let next = choosePanePage(f.state, f.boardId, "right", "right");
   next = collectObjects(
@@ -103,8 +103,25 @@ test("页面删除或收纳后选择安全回退，只有一页时右栏为空",
     next.objects.find((o) => o.type === "collection").id,
   );
   assert.equal(panePages(next, f.boardId).left.id, "left");
-  assert.equal(panePages(next, f.boardId).right, null);
+  assert.equal(panePages(next, f.boardId).right.id, "left");
   assert.strictEqual(choosePanePage(next, f.boardId, "right", "missing"), next);
+});
+
+test("旧双栏偏好沿用当前操作项目，迁移和刷新不改变共享内容", () => {
+  const f = fixture();
+  f.state.preferences.views[f.boardId] = {
+    arranged: { left: "left", right: "right", active: "right" },
+  };
+  assert.equal(panePages(f.state, f.boardId).left.id, "right");
+  const migrated = setSurface(f.state, f.boardId, "arranged");
+  assert.deepEqual(migrated.preferences.views[f.boardId].arranged, {
+    pageId: "right",
+    active: "right",
+  });
+  const restored = JSON.parse(JSON.stringify(migrated));
+  assert.equal(panePages(restored, f.boardId).left.id, "right");
+  assert.equal(panePages(restored, f.boardId).right.id, "right");
+  assert.deepEqual(prepareEdit(migrated), prepareEdit(f.state));
 });
 
 test("切换排列模式不改变共享内容、画布位置、缩放或对象尺寸", () => {

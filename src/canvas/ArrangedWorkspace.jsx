@@ -4,6 +4,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useId,
 } from "react";
 import {
   Archive,
@@ -46,7 +47,8 @@ import {
   formatDeadline,
   useDeadlineClock,
 } from "./TaskDeadline.jsx";
-import { BoardPicker, HoverText } from "./ChecklistParts.jsx";
+import { HoverText } from "./ChecklistParts.jsx";
+import ProjectTabs from "./ProjectTabs.jsx";
 import { EditableBlock, RichText } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
 import { Modal } from "./Panels.jsx";
@@ -131,7 +133,6 @@ function DraftRow({ onCommit, onClose, apiRef, label }) {
 function ChecklistPane({
   side,
   page,
-  pages,
   active,
   workspace,
   boardId,
@@ -141,9 +142,7 @@ function ChecklistPane({
   onExit,
   selected,
   onSelect,
-  onChoose,
   onCreate,
-  onRename,
   onCollect,
   onPickImages,
   onReference,
@@ -157,14 +156,15 @@ function ChecklistPane({
   onToast,
   clock,
   onDeadline,
+  activeMotions,
+  onCompletion,
 }) {
   const { state, update } = workspace;
   const root = useRef(null),
     draftApi = useRef(null);
   const [draft, setDraft] = useState(false),
     [revision, setRevision] = useState(0),
-    [located, setLocated] = useState(null),
-    [motions, setMotions] = useState([]);
+    [located, setLocated] = useState(null);
   const todoTools = useTodoTools();
   const frozen =
     blocked ||
@@ -172,9 +172,6 @@ function ChecklistPane({
     (page.group && effectivelyLocked(state.objects, page.group.id));
   const pending = page?.tasks.filter((t) => !t.block.done) || [],
     completed = page?.tasks.filter((t) => t.block.done) || [];
-  const activeMotions = motions.filter((m) =>
-    completed.some((t) => t.key === m.itemId),
-  );
   const label = sideLabel(side);
   const addTodo = (text) => {
     if (workspace.readOnly || !page) return false;
@@ -206,7 +203,9 @@ function ChecklistPane({
     },
     flushDraft: () => draftApi.current?.save() ?? true,
     editSelected: () => {
-      const task = page?.tasks.find((t) => selected.includes(t.key));
+      const task = page?.tasks.find(
+        (t) => selected.includes(t.key) && t.block.done === (side === "right"),
+      );
       if (task) edit(task);
     },
     locate: (objectId) => setLocated(objectId),
@@ -271,15 +270,12 @@ function ChecklistPane({
               captureCompletionSource(e.currentTarget.closest(".todo-row"));
             workspace.toggleBlock(task.note.id, task.key);
             if (source)
-              setMotions((list) => [
-                ...list,
-                {
-                  eventId: id("completion"),
-                  itemId: task.key,
-                  source,
-                  manual: true,
-                },
-              ]);
+              onCompletion({
+                eventId: id("completion"),
+                itemId: task.key,
+                source,
+                manual: true,
+              });
           }}
         >
           {task.block.done && <Check size={12} />}
@@ -392,7 +388,6 @@ function ChecklistPane({
       </div>
     );
   };
-  const index = pages.findIndex((p) => p.id === page?.id);
   return (
     <section
       className={`checklist-pane ${active ? "is-active" : ""}`}
@@ -402,53 +397,10 @@ function ChecklistPane({
       onPointerDownCapture={() => onActivate(side)}
       onFocusCapture={() => onActivate(side)}
     >
-      <header className="todo-pagebar">
-        <div className="checklist-page-heading">
-          <BoardPicker
-            pages={pages}
-            page={page}
-            label={`选择${label}灵感板`}
-            onChoose={(key) => onChoose(side, key)}
-          />
-        </div>
-        <div className="checklist-page-actions">
-          <span className="todo-page-count">
-            {page ? `${index + 1} / ${pages.length}` : "—"}
-          </span>
-          <button
-            aria-label={`${label}新建灵感板`}
-            title="新建灵感板"
-            disabled={workspace.readOnly}
-            onClick={() => onCreate(side)}
-          >
-            <Plus size={15} />
-          </button>
-          {page?.group && (
-            <>
-              <button
-                aria-label={`重命名${label}灵感板`}
-                title="重命名灵感板"
-                disabled={frozen}
-                onClick={() => onRename(side, page)}
-              >
-                <Pencil size={13} />
-              </button>
-              <button
-                aria-label={`收纳${label}灵感板`}
-                title="收纳整个灵感板"
-                disabled={frozen}
-                onClick={() => onCollect(page.id, [page.group.id])}
-              >
-                <Archive size={15} />
-              </button>
-            </>
-          )}
-        </div>
-      </header>
       {!page ? (
         <div className="checklist-empty">
           <Frame size={30} strokeWidth={1.25} />
-          <h2>再打开一块灵感板</h2>
+          <h2>{side === "left" ? "开始一个新项目" : "已完成"}</h2>
           <button
             className="button"
             disabled={workspace.readOnly}
@@ -460,198 +412,192 @@ function ChecklistPane({
         </div>
       ) : (
         <div className="checklist-list">
-          <section
-            className="todo-panel pending-panel"
-            aria-label={`${label}未完成事项`}
-          >
-            <header>
-              <h1>
-                未完成 <small>{pending.length}</small>
-              </h1>
-              <div className="checklist-panel-actions">
-                {page.group &&
-                  effectivelyLocked(state.objects, page.group.id) && (
-                    <LockKeyhole size={14} aria-label="灵感板已锁定" />
-                  )}
-                <button
-                  className="todo-panel-action"
-                  aria-label={`添加${label}图片`}
-                  title="添加本页图片"
-                  disabled={frozen}
-                  onClick={() => onPickImages(page.id)}
-                >
-                  <ImagePlus size={16} />
-                </button>
-                <ChecklistMenu
-                  notes={page.objects.filter((o) => o.type === "note")}
-                  frozen={frozen}
-                />
-              </div>
-            </header>
-            <div
-              className="todo-panel-body"
-              tabIndex={0}
-              aria-label={`${label}未完成清单`}
+          {side === "left" ? (
+            <section
+              className="todo-panel pending-panel"
+              aria-label={`${label}未完成事项`}
             >
-              {page.tasks.map((task) => {
-                if (!task.block.done) return renderTask(task);
-                const motion = activeMotions.find((m) => m.itemId === task.key);
-                return motion ? (
-                  <div
-                    key={task.key}
-                    className="completion-source-placeholder"
-                    data-completion-source={task.key}
-                    aria-hidden="true"
-                    style={{ height: motion.source.fromRect.height }}
+              <header>
+                <h1>
+                  未完成 <small>{pending.length}</small>
+                </h1>
+                <div className="checklist-panel-actions">
+                  {page.group &&
+                    effectivelyLocked(state.objects, page.group.id) && (
+                      <LockKeyhole size={14} aria-label="灵感板已锁定" />
+                    )}
+                  <button
+                    className="todo-panel-action"
+                    aria-label={`添加${label}图片`}
+                    title="添加本页图片"
+                    disabled={frozen}
+                    onClick={() => onPickImages(page.id)}
+                  >
+                    <ImagePlus size={16} />
+                  </button>
+                  <ChecklistMenu
+                    notes={page.objects.filter((o) => o.type === "note")}
+                    frozen={frozen}
                   />
-                ) : null;
-              })}
-              {draft ? (
-                <DraftRow
-                  apiRef={draftApi}
-                  label={label}
-                  onCommit={addTodo}
-                  onClose={() => setDraft(false)}
-                />
-              ) : (
-                <button
-                  className="todo-empty-row"
-                  aria-label={`${label}添加待办`}
-                  disabled={frozen}
-                  onClick={() => {
-                    onExit();
-                    setDraft(true);
-                  }}
-                >
-                  <Plus size={18} />
-                  <span>添加待办</span>
-                </button>
-              )}
-              {page.objects.some((o) => o.type === "image") && (
-                <details className="todo-attachments" open>
-                  <summary>
-                    本页资料 ·{" "}
-                    {page.objects.filter((o) => o.type === "image").length}
-                  </summary>
-                  <div>
-                    {page.objects
-                      .filter((o) => o.type === "image")
-                      .map((o) => (
-                        <article
-                          key={o.id}
-                          data-object-id={o.id}
-                          draggable={
-                            !frozen && !effectivelyLocked(state.objects, o.id)
-                          }
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData(
-                              "application/x-qingdan-object",
-                              JSON.stringify({ id: o.id }),
-                            );
-                            e.dataTransfer.effectAllowed = "move";
-                          }}
-                        >
-                          <button
-                            className="todo-image"
-                            aria-label={`预览图片：${o.alt}`}
-                            onClick={() =>
-                              onImagePreview({
-                                object: o,
-                                url: assetUrls.get(o.assetId),
-                              })
+                </div>
+              </header>
+              <div
+                className="todo-panel-body"
+                tabIndex={0}
+                aria-label={`${label}未完成清单`}
+              >
+                {page.tasks.map((task) => {
+                  if (!task.block.done) return renderTask(task);
+                  const motion = activeMotions.find(
+                    (m) => m.itemId === task.key,
+                  );
+                  return motion ? (
+                    <div
+                      key={task.key}
+                      className="completion-source-placeholder"
+                      data-completion-source={task.key}
+                      aria-hidden="true"
+                      style={{ height: motion.source.fromRect.height }}
+                    />
+                  ) : null;
+                })}
+                {draft ? (
+                  <DraftRow
+                    apiRef={draftApi}
+                    label={label}
+                    onCommit={addTodo}
+                    onClose={() => setDraft(false)}
+                  />
+                ) : (
+                  <button
+                    className="todo-empty-row"
+                    aria-label={`${label}添加待办`}
+                    disabled={frozen}
+                    onClick={() => {
+                      onExit();
+                      setDraft(true);
+                    }}
+                  >
+                    <Plus size={18} />
+                    <span>添加待办</span>
+                  </button>
+                )}
+                {page.objects.some((o) => o.type === "image") && (
+                  <details className="todo-attachments" open>
+                    <summary>
+                      本页资料 ·{" "}
+                      {page.objects.filter((o) => o.type === "image").length}
+                    </summary>
+                    <div>
+                      {page.objects
+                        .filter((o) => o.type === "image")
+                        .map((o) => (
+                          <article
+                            key={o.id}
+                            data-object-id={o.id}
+                            draggable={
+                              !frozen && !effectivelyLocked(state.objects, o.id)
                             }
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData(
+                                "application/x-qingdan-object",
+                                JSON.stringify({ id: o.id }),
+                              );
+                              e.dataTransfer.effectAllowed = "move";
+                            }}
                           >
-                            <ImageContent
-                              object={o}
-                              url={assetUrls.get(o.assetId)}
-                            />
-                          </button>
-                          <div>
-                            <span>{o.alt}</span>
                             <button
-                              aria-label={`收纳图片：${o.alt}`}
-                              disabled={
-                                frozen || effectivelyLocked(state.objects, o.id)
+                              className="todo-image"
+                              aria-label={`预览图片：${o.alt}`}
+                              onClick={() =>
+                                onImagePreview({
+                                  object: o,
+                                  url: assetUrls.get(o.assetId),
+                                })
                               }
-                              onClick={() => onCollect(page.id, [o.id])}
                             >
-                              <Archive size={14} />
+                              <ImageContent
+                                object={o}
+                                url={assetUrls.get(o.assetId)}
+                              />
                             </button>
-                          </div>
-                        </article>
+                            <div>
+                              <span>{o.alt}</span>
+                              <button
+                                aria-label={`收纳图片：${o.alt}`}
+                                disabled={
+                                  frozen ||
+                                  effectivelyLocked(state.objects, o.id)
+                                }
+                                onClick={() => onCollect(page.id, [o.id])}
+                              >
+                                <Archive size={14} />
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                    </div>
+                  </details>
+                )}
+                {page.objects.some((o) => o.type === "collection") && (
+                  <div className="todo-boxes">
+                    {page.objects
+                      .filter((o) => o.type === "collection")
+                      .map((o) => (
+                        <div key={o.id} data-object-id={o.id}>
+                          <button onClick={() => onCollection(o.id)}>
+                            <Archive size={18} />
+                            {o.title || "收纳框"}
+                          </button>
+                          <button
+                            aria-label={`收纳箱子：${o.title}`}
+                            disabled={
+                              frozen || effectivelyLocked(state.objects, o.id)
+                            }
+                            onClick={() => onCollect(page.id, [o.id])}
+                          >
+                            <Archive size={14} />
+                          </button>
+                        </div>
                       ))}
                   </div>
-                </details>
-              )}
-              {page.objects.some((o) => o.type === "collection") && (
-                <div className="todo-boxes">
-                  {page.objects
-                    .filter((o) => o.type === "collection")
-                    .map((o) => (
-                      <div key={o.id} data-object-id={o.id}>
-                        <button onClick={() => onCollection(o.id)}>
-                          <Archive size={18} />
-                          {o.title || "收纳框"}
-                        </button>
-                        <button
-                          aria-label={`收纳箱子：${o.title}`}
-                          disabled={
-                            frozen || effectivelyLocked(state.objects, o.id)
-                          }
-                          onClick={() => onCollect(page.id, [o.id])}
-                        >
-                          <Archive size={14} />
-                        </button>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          </section>
-          <section
-            className="todo-panel done-panel"
-            aria-label={`${label}已完成事项`}
-          >
-            <header>
-              <h1>
-                已完成 <small>{completed.length}</small>
-              </h1>
-            </header>
-            <div
-              className="todo-panel-body"
-              tabIndex={0}
-              aria-label={`${label}已完成清单`}
+                )}
+              </div>
+            </section>
+          ) : (
+            <section
+              className="todo-panel done-panel"
+              aria-label={`${label}已完成事项`}
             >
-              {completed.map((task) => (
-                <div key={task.key}>{renderTask(task)}</div>
-              ))}
-              {!completed.length && (
-                <p className="checklist-empty-done">完成的事项会留在这里</p>
-              )}
-              {activeMotions.map((m) => (
-                <div
-                  key={m.eventId}
-                  className="completion-target-buffer"
-                  data-completion-buffer={m.eventId}
-                  aria-hidden="true"
-                />
-              ))}
-            </div>
-          </section>
+              <header>
+                <h1>
+                  已完成 <small>{completed.length}</small>
+                </h1>
+              </header>
+              <div
+                className="todo-panel-body"
+                tabIndex={0}
+                aria-label={`${label}已完成清单`}
+              >
+                {completed.map((task) => (
+                  <div key={task.key}>{renderTask(task)}</div>
+                ))}
+                {!completed.length && (
+                  <p className="checklist-empty-done">完成的事项会留在这里</p>
+                )}
+                {activeMotions.map((m) => (
+                  <div
+                    key={m.eventId}
+                    className="completion-target-buffer"
+                    data-completion-buffer={m.eventId}
+                    aria-hidden="true"
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
-      {activeMotions.map((entry) => (
-        <TaskCompletionMotion
-          key={entry.eventId}
-          entry={entry}
-          listElement={root.current}
-          onFinished={() =>
-            setMotions((list) =>
-              list.filter((m) => m.eventId !== entry.eventId),
-            )
-          }
-        />
-      ))}
     </section>
   );
 }
@@ -674,6 +620,26 @@ export default function ArrangedWorkspace({
   const { state, update } = workspace;
   const clock = useDeadlineClock(state.objects);
   const resolved = panePages(state, boardId);
+  const panelId = useId();
+  const [motions, setMotions] = useState([]);
+  const activeMotions = motions.filter(
+    (motion) =>
+      motion.pageId === resolved.page?.id &&
+      resolved.page.tasks.some(
+        (task) => task.key === motion.itemId && task.block.done,
+      ),
+  );
+  useEffect(() => {
+    setMotions((list) =>
+      list.filter(
+        (motion) =>
+          motion.pageId === resolved.page?.id &&
+          resolved.page.tasks.some(
+            (task) => task.key === motion.itemId && task.block.done,
+          ),
+      ),
+    );
+  }, [resolved.page?.id, state.objects]);
   const panes = useRef({ left: { current: null }, right: { current: null } });
   const main = useRef(null),
     composing = useRef(false),
@@ -898,8 +864,13 @@ export default function ArrangedWorkspace({
       (p) => p.id === objectId || p.objects.some((o) => o.id === objectId),
     );
     if (page) {
-      choose(resolved.active, page.id);
-      pendingLocate.current = { side: resolved.active, objectId };
+      const tasks = page.tasks.filter((task) => task.note.id === objectId);
+      const side =
+        tasks.length && tasks.every((task) => task.block.done)
+          ? "right"
+          : "left";
+      choose(side, page.id);
+      pendingLocate.current = { side, objectId };
     }
   };
   useLayoutEffect(() => {
@@ -911,7 +882,10 @@ export default function ArrangedWorkspace({
   apiRef.current = {
     isBlocked: () => !!dialog || blocked,
     beforeNavigate: navigate,
-    addNote: () => panes.current[resolved.active].current?.addNote(),
+    addNote: () => {
+      activate("left");
+      panes.current.left.current?.addNote();
+    },
     addImages,
     pasteText,
     takeOutArranged: takeOut,
@@ -924,7 +898,14 @@ export default function ArrangedWorkspace({
       if (blocked || dialog || !page || selected.side !== resolved.active)
         return;
       onExit();
-      update((s) => deletePageTasks(s, boardId, page.id, selected.keys));
+      const keys = page.tasks
+        .filter(
+          (task) =>
+            selected.keys.includes(task.key) &&
+            task.block.done === (resolved.active === "right"),
+        )
+        .map((task) => task.key);
+      update((s) => deletePageTasks(s, boardId, page.id, keys));
       setSelected({ side: resolved.active, keys: [] });
     },
     duplicateSelected: () => {
@@ -932,7 +913,11 @@ export default function ArrangedWorkspace({
       if (blocked || dialog || !page || selected.side !== resolved.active)
         return;
       const blocks = page.tasks
-        .filter((t) => selected.keys.includes(t.key))
+        .filter(
+          (t) =>
+            selected.keys.includes(t.key) &&
+            t.block.done === (resolved.active === "right"),
+        )
         .map((t) => ({ ...structuredClone(t.block), id: id("b") }));
       if (blocks.length)
         update((s) =>
@@ -947,7 +932,9 @@ export default function ArrangedWorkspace({
       if (page)
         setSelected({
           side: resolved.active,
-          keys: page.tasks.map((t) => t.key),
+          keys: page.tasks
+            .filter((t) => t.block.done === (resolved.active === "right"))
+            .map((t) => t.key),
         });
     },
     getPoint: () => {
@@ -960,12 +947,11 @@ export default function ArrangedWorkspace({
           (p) => p.id === objectId || p.objects.some((o) => o.id === objectId),
         );
       if (!page) return;
+      const tasks = page.tasks.filter((task) => task.note.id === objectId);
       const side =
-        live.left?.id === page.id
-          ? "left"
-          : live.right?.id === page.id
-            ? "right"
-            : live.active;
+        tasks.length && tasks.every((task) => task.block.done)
+          ? "right"
+          : "left";
       choose(side, page.id);
       pendingLocate.current = { side, objectId };
     },
@@ -1023,7 +1009,51 @@ export default function ArrangedWorkspace({
         } else void addImages([...e.dataTransfer.files], pageId);
       }}
     >
+      <ProjectTabs
+        pages={resolved.pages}
+        page={resolved.page}
+        onChoose={(pageId) => choose("left", pageId)}
+        onCreate={() => create("left")}
+        readOnly={workspace.readOnly || blocked || !!dialog}
+        panelId={panelId}
+      />
       <div className="arranged-toolbar">
+        <div className="arranged-project-heading">
+          <Frame size={15} aria-hidden="true" />
+          <span title={resolved.page?.title}>
+            {resolved.page?.title || "项目清单"}
+          </span>
+          {resolved.page?.group && (
+            <>
+              <button
+                aria-label="重命名当前灵感板"
+                title="重命名灵感板"
+                disabled={
+                  blocked ||
+                  workspace.readOnly ||
+                  !writablePage(state, boardId, resolved.page.id)
+                }
+                onClick={() => rename("left", resolved.page)}
+              >
+                <Pencil size={13} />
+              </button>
+              <button
+                aria-label="收纳当前灵感板"
+                title="收纳整个灵感板"
+                disabled={
+                  blocked ||
+                  workspace.readOnly ||
+                  !writablePage(state, boardId, resolved.page.id)
+                }
+                onClick={() =>
+                  collect(resolved.page.id, [resolved.page.group.id])
+                }
+              >
+                <Archive size={14} />
+              </button>
+            </>
+          )}
+        </div>
         <div>
           {importing > 0 && <span role="status">正在读取图片…</span>}
           <button
@@ -1073,13 +1103,17 @@ export default function ArrangedWorkspace({
           </button>
         </div>
       </div>
-      <div className="arranged-columns">
+      <div
+        className="arranged-columns"
+        role="tabpanel"
+        id={panelId}
+        aria-label={resolved.page?.title || "项目清单"}
+      >
         {["left", "right"].map((side) => (
           <ChecklistPane
             key={`${side}:${resolved[side]?.id || "empty"}`}
             side={side}
             page={resolved[side]}
-            pages={resolved.pages}
             active={resolved.active === side}
             workspace={workspace}
             boardId={boardId}
@@ -1092,9 +1126,7 @@ export default function ArrangedWorkspace({
               activate(side);
               setSelected({ side, keys });
             }}
-            onChoose={choose}
             onCreate={create}
-            onRename={rename}
             onCollect={collect}
             onPickImages={(pageId) => {
               imagePage.current = pageId;
@@ -1110,6 +1142,13 @@ export default function ArrangedWorkspace({
             apiRef={panes.current[side]}
             onToast={onToast}
             clock={clock}
+            activeMotions={activeMotions}
+            onCompletion={(motion) =>
+              setMotions((list) => [
+                ...list,
+                { ...motion, pageId: resolved.page.id },
+              ])
+            }
             onDeadline={(pageId, task) =>
               navigate(() =>
                 setDialog({
@@ -1125,6 +1164,18 @@ export default function ArrangedWorkspace({
           />
         ))}
       </div>
+      {activeMotions.map((entry) => (
+        <TaskCompletionMotion
+          key={entry.eventId}
+          entry={entry}
+          listElement={main.current}
+          onFinished={() =>
+            setMotions((list) =>
+              list.filter((motion) => motion.eventId !== entry.eventId),
+            )
+          }
+        />
+      ))}
       <input
         type="file"
         ref={input}

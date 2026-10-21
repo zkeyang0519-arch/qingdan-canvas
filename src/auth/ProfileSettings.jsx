@@ -93,7 +93,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              minLength={12}
+              minLength={9}
               maxLength={128}
               required
             />
@@ -105,7 +105,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
               autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
-              minLength={12}
+              minLength={9}
               maxLength={128}
               required
             />

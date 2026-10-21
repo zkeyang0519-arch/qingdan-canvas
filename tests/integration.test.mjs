@@ -185,7 +185,7 @@ test(
       const input = {
         name,
         username: `user_${crypto.randomUUID().slice(0, 16)}`,
-        password: "Test-only-long-password-2026",
+        password: "Qd-test-9",
       };
       const response = await fetch(base + "/api/auth/register", {
         method: "POST",
@@ -244,7 +244,7 @@ test(
         (
           await request("/api/auth/register", "", "POST", {
             username: "bad",
-            password: "short",
+            password: "12345678",
           })
         ).status,
         400,
@@ -663,7 +663,7 @@ test(
         );
         assert.equal(second.status, 200);
         const cookie = second.headers.get("set-cookie").split(";")[0];
-        const newPassword = "Updated-test-password-2026";
+        const newPassword = "Next-pw-9";
         assert.equal(
           (
             await request("/api/auth/password", cookie, "POST", {

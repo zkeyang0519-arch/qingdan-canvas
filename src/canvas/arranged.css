@@ -4,10 +4,107 @@
   padding: 18px clamp(18px, 5vw, 76px) 26px;
   color: #4a5642;
 }
+.project-navigation {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+  border-bottom: 1px solid #bdc9af80;
+  margin-bottom: 14px;
+}
+.project-tabs {
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 5px 2px 0;
+  scrollbar-width: thin;
+  scrollbar-color: #bdc9af80 transparent;
+  isolation: isolate;
+}
+.project-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 176px;
+  min-width: 138px;
+  max-width: 236px;
+  height: 41px;
+  padding: 0 23px 0 17px;
+  border: 1px solid #d5decba6;
+  border-bottom: 0;
+  border-radius: 15px 15px 0 0;
+  background: #e8eddf;
+  color: #859079;
+  transition:
+    background 160ms,
+    color 160ms;
+}
+.project-tab + .project-tab {
+  margin-left: -10px;
+}
+.project-tab:hover {
+  background: #f0f3e9;
+  color: #526447;
+  z-index: 1;
+}
+.project-tab[aria-selected="true"] {
+  z-index: 2;
+  height: 45px;
+  border-color: #bdc9af;
+  background: #fbfcf5;
+  color: #4c6240;
+  box-shadow: 0 -3px 10px #61774206;
+}
+.project-tab > svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.project-tab-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  text-align: left;
+}
+.project-tab-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: #657c4710;
+}
+.project-tab-add {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  margin-bottom: 5px;
+  color: #82916f;
+}
+.project-tab-add:hover:not(:disabled) {
+  background: #ffffff80;
+  color: #526447;
+}
+.project-tab-add:disabled {
+  opacity: 0.35;
+}
+.project-tab:focus-visible,
+.project-tab-add:focus-visible {
+  outline: 2px solid #8fa87a;
+  outline-offset: -4px;
+}
 .arranged-toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
   height: 35px;
@@ -19,6 +116,19 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.arranged-project-heading {
+  min-width: 0;
+}
+.arranged-project-heading > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.arranged-project-heading > svg,
+.arranged-toolbar button {
+  flex-shrink: 0;
 }
 .arranged-toolbar button {
   display: flex;
@@ -48,7 +158,7 @@
 }
 .arranged-columns {
   display: grid;
-  grid-template-columns: repeat(2, minmax(330px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
   flex: 1;
   min-height: 0;
@@ -96,8 +206,8 @@
   background: #fbfbf68f;
 }
 .checklist-list {
-  display: grid;
-  grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  display: flex;
+  flex-direction: column;
 }
 .checklist-pane.is-active .checklist-list {
   border-color: #bcc8ad;
@@ -106,6 +216,7 @@
     0 0 0 1px #aaba9410;
 }
 .checklist-list .todo-panel {
+  flex: 1;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -113,7 +224,6 @@
   backdrop-filter: none;
 }
 .checklist-list .done-panel {
-  border-top: 1px solid #d5ddcbb0;
   background: #f6f8f14d;
 }
 .checklist-list .todo-panel > header {
@@ -210,7 +320,7 @@
   color: #a3ac98;
   padding-top: 8px;
 }
-.checklist-list:has(.completion-source-placeholder) .todo-panel-body {
+.arranged-columns:has(.completion-source-placeholder) .todo-panel-body {
   overflow-anchor: none;
 }
 .cloud-canvas .view-mode-switch {
@@ -273,8 +383,25 @@
     padding: 10px 12px 14px;
   }
   .arranged-columns {
-    grid-template-columns: repeat(2, minmax(310px, 1fr));
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(2, minmax(240px, 1fr));
+    overflow-y: auto;
     gap: 12px;
+  }
+  .project-tab {
+    flex-basis: 156px;
+    min-width: 124px;
+    padding-left: 12px;
+    padding-right: 18px;
+  }
+  .arranged-toolbar {
+    gap: 6px;
+  }
+  .arranged-toolbar > div {
+    gap: 3px;
+  }
+  .arranged-project-heading > svg {
+    display: none;
   }
   .cloud-canvas .board-title,
   .cloud-canvas .nav-divider,
