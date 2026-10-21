@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "sample-web",
+      "name": "网站焕新",
+      "description": "示例 · 让每一次访问，都有好印象",
+      "color": "sage",
+      "createdAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-brand",
+      "name": "品牌设计",
+      "description": "示例 · 把好想法，变成好设计",
+      "color": "sand",
+      "createdAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-product",
+      "name": "产品研发",
+      "description": "示例 · 一点一点，打磨好体验",
+      "color": "lavender",
+      "createdAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-team",
+      "name": "日常协作",
+      "description": "示例 · 让小事有着落，让团队更从容",
+      "color": "blue",
+      "createdAt": "2026-10-13T06:00:44.706Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "sample-task-1",
+      "projectId": "sample-web",
+      "text": "整理首页改版的灵感参考",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-2",
+      "projectId": "sample-web",
+      "text": "和团队确认导航结构",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-3",
+      "projectId": "sample-web",
+      "text": "梳理现有页面与内容",
+      "completed": true,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-task-4",
+      "projectId": "sample-brand",
+      "text": "探索新一季的品牌配色",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-5",
+      "projectId": "sample-brand",
+      "text": "完善社交媒体封面模板",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-6",
+      "projectId": "sample-brand",
+      "text": "收集品牌视觉参考",
+      "completed": true,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-task-7",
+      "projectId": "sample-product",
+      "text": "整理本周用户反馈",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-8",
+      "projectId": "sample-product",
+      "text": "完成核心流程评审",
+      "completed": true,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": "2026-10-13T06:00:44.706Z"
+    },
+    {
+      "id": "sample-task-9",
+      "projectId": "sample-team",
+      "text": "准备周五的项目分享",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    },
+    {
+      "id": "sample-task-10",
+      "projectId": "sample-team",
+      "text": "更新团队协作文档",
+      "completed": false,
+      "createdAt": "2026-10-13T06:00:44.706Z",
+      "completedAt": null
+    }
+  ],
+  "hideCompleted": false
+}

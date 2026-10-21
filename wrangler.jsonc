@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "qingdan-canvas",
+  "account_id": "d6997d4bf6dea6be5f3a1ddfe225cab0",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-19",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CanvasRoom"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "qingdan-canvas",
+      "database_id": "10b38932-94ba-4f29-8b50-9ba2313db9c2",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "qingdan-canvas-files" }],
+  "vars": { "APP_ENV": "production" },
+  "observability": { "enabled": true },
+}
