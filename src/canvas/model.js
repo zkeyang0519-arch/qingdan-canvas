@@ -1,4 +1,5 @@
 import { parseBackup as parseLegacy } from "../store.js";
+import { validDeadline } from "../../shared/deadline.js";
 import { defaultView, bounds } from "./geometry.js";
 import { validateImageData } from "./images.js";
 import { primaryCollection } from "./collectionDock.js";
@@ -359,6 +360,10 @@ export function validateWorkspace(value) {
       );
       for (const b of o.blocks) {
         requireValue(record(b), "清单条目无效。");
+        requireValue(
+          b.dueAt === undefined || b.dueAt === null || validDeadline(b.dueAt),
+          "待办截止时间无效。",
+        );
         unique(b.id);
         identity(b.id, `block:${o.id}`);
         requireValue(

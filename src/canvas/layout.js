@@ -194,6 +194,37 @@ export function marqueeRoots(
 }
 export const ALIGNMENT_SNAP_RELEASE_PX = 12;
 const ALIGNMENT_PAUSE_MS = 160;
+export const DRAG_ALIGNMENT_IDLE_MS = 120;
+
+// Use screen pixels so slowing down feels the same at every canvas zoom.
+// Hysteresis avoids toggling on small speed changes; a fast pull releases now.
+export function dragAlignmentMotion(previous, point, now = Date.now()) {
+  if (!previous) return { ...point, at: now, slowSince: null, enabled: false };
+  const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+  if (distance < 0.001) {
+    const enabled =
+      previous.enabled || now - previous.at >= DRAG_ALIGNMENT_IDLE_MS;
+    return {
+      ...previous,
+      at: enabled ? now : previous.at,
+      enabled,
+    };
+  }
+  // A long pause before moving must not disguise a fast jump as a slow drag.
+  const elapsed = Math.max(1, Math.min(64, now - previous.at));
+  const speed = distance / elapsed;
+  const slowSince =
+    speed <= 0.25 ? (previous.slowSince ?? now - elapsed) : null;
+  return {
+    ...point,
+    at: now,
+    slowSince,
+    enabled:
+      speed <= 0.45 &&
+      (previous.enabled || (slowSince !== null && now - slowSince >= 70)),
+  };
+}
+
 export function snapMove(
   rect,
   targets,

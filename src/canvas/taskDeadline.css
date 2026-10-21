@@ -1,0 +1,226 @@
+.checklist-list .todo-row {
+  isolation: isolate;
+  align-items: center;
+}
+.checklist-list .todo-main {
+  flex: 1;
+  min-width: 0;
+}
+.checklist-list .todo-main .todo-copy {
+  padding-right: 0;
+}
+.checklist-list .todo-row > :not(.todo-deadline-glow) {
+  position: relative;
+  z-index: 1;
+}
+.checklist-list .todo-row-tools {
+  position: static;
+  flex-direction: row;
+  align-self: center;
+  background: transparent;
+}
+.checklist-list .todo-row .todo-circle {
+  margin-top: 2px;
+  align-self: flex-start;
+}
+.checklist-list .todo-row[data-deadline]:not([data-deadline="none"]) {
+  border: 1px solid #dce5d580;
+  border-radius: 10px;
+  padding: 11px 8px;
+  margin: 8px 0;
+  background: #f9fcf6a8;
+}
+.todo-deadline-glow {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+.checklist-list .todo-row[data-deadline="urgent"] .todo-deadline-glow {
+  background: #d3a14e42;
+  border: 1px solid #d3a14ebf;
+  box-shadow:
+    0 0 22px 5px #d3a14e47,
+    inset 0 0 18px #d3a14e1f;
+  animation: task-deadline-breathe 3s ease-in-out infinite;
+}
+.checklist-list .todo-row[data-deadline="late"] .todo-deadline-glow {
+  background: #f2dcd3;
+  border: 1px solid #d5a596;
+  opacity: 1;
+}
+.todo-deadline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 5px;
+  color: #7c8975;
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.todo-deadline-meta time {
+  white-space: nowrap;
+}
+.todo-deadline-button {
+  position: relative;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #829773;
+  background: transparent;
+}
+.todo-deadline-button:hover:not(:disabled) {
+  background: #dce6d34d;
+}
+.todo-deadline-button:focus-visible {
+  outline: 2px solid #8f9f7b;
+  outline-offset: 3px;
+}
+.todo-deadline-button:disabled {
+  cursor: default;
+}
+.todo-deadline-ring {
+  width: 40px;
+  height: 40px;
+}
+.todo-deadline-track {
+  fill: none;
+  stroke: #dce4d5;
+  stroke-width: 2.5;
+}
+.todo-deadline-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 20px 20px;
+  transition: stroke-dashoffset 0.3s ease;
+}
+.todo-deadline-value {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #607354;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+[data-deadline="urgent"] .todo-deadline-button {
+  color: #c89a49;
+}
+[data-deadline="urgent"] .todo-deadline-value,
+[data-deadline="urgent"] .todo-deadline-status {
+  color: #90631e;
+}
+[data-deadline="late"] .todo-deadline-button {
+  color: #b96f5c;
+}
+[data-deadline="late"] .todo-deadline-value,
+[data-deadline="late"] .todo-deadline-status {
+  color: #985040;
+}
+[data-deadline="late"] .todo-deadline-meta {
+  color: #85695f;
+}
+[data-deadline="done"] .todo-deadline-button {
+  color: #afbaa5;
+}
+[data-deadline="done"] .todo-deadline-value {
+  color: #8c9d80;
+}
+.task-deadline-title {
+  margin: 0 0 18px;
+  color: #68795c;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.task-deadline-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.task-deadline-fields legend {
+  margin-bottom: 12px;
+  padding: 0;
+  color: #5c6c51;
+  font-size: 13px;
+}
+.task-deadline-selects {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+.task-deadline-field {
+  display: grid;
+  grid-column: span 2;
+  min-width: 0;
+  gap: 6px;
+  color: #5c6c51;
+  font-size: 12px;
+}
+.task-deadline-field.is-time {
+  grid-column: span 3;
+}
+.task-deadline-select-wrap {
+  position: relative;
+}
+.task-deadline-select-wrap select {
+  appearance: none;
+  min-width: 0;
+  width: 100%;
+  padding-right: 32px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.task-deadline-select-wrap select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.task-deadline-select-wrap > svg {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: #829077;
+}
+.task-deadline-hint {
+  margin: 10px 0 0;
+  color: #829077;
+  font-size: 12px;
+}
+.task-deadline-error {
+  margin: 12px 0 0;
+  color: #a85f4d;
+  font-size: 12px;
+}
+.task-deadline-dialog .modal-actions {
+  flex-wrap: wrap;
+}
+@keyframes task-deadline-breathe {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .checklist-list .todo-row[data-deadline="urgent"] .todo-deadline-glow {
+    animation: none;
+    opacity: 0.65;
+  }
+  .todo-deadline-arc {
+    transition: none;
+  }
+}
