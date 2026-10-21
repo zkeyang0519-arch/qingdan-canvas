@@ -9,6 +9,7 @@ import {
   token,
 } from "./auth";
 import { assetEndpoint } from "./assets";
+import { accountEndpoint } from "./accounts";
 export { CanvasRoom } from "./room";
 
 export default {
@@ -25,7 +26,20 @@ export default {
           services: ["Workers", "Durable Objects", "D1", "R2"],
         });
       if (path === "/api/session") return await sessionEndpoint(request, env);
+      if (path.startsWith("/api/auth/"))
+        return await accountEndpoint(
+          request,
+          env,
+          path.slice("/api/auth/".length),
+        );
       const user = await requireSession(request, env);
+      const expectedUser =
+        request.headers.get("X-QD-Account") || url.searchParams.get("account");
+      check(
+        !expectedUser || expectedUser === user.id,
+        "账号已切换，请重新打开画布。",
+        401,
+      );
       if (path === "/api/rooms") {
         if (request.method === "GET") {
           const { results } = await env.DB.prepare(
@@ -43,16 +57,6 @@ export default {
             input.name.trim().length <= 80,
           "画布名称需要 1–80 个字。",
         );
-        if (env.APP_ENV !== "local") {
-          check(env.CREATE_KEY, "管理员尚未配置画布创建口令。", 503);
-          check(
-            typeof input.createKey === "string" &&
-              (await digest(input.createKey)) ===
-                (await digest(env.CREATE_KEY)),
-            "创建口令不正确。",
-            403,
-          );
-        }
         const id = crypto.randomUUID(),
           invite = token(),
           date = new Date().toISOString();
@@ -133,6 +137,7 @@ export default {
         forwarded.headers.set("X-QD-User", user.id);
         forwarded.headers.set("X-QD-Name", encodeURIComponent(user.name));
         forwarded.headers.set("X-QD-Expires", String(user.expires_at));
+        forwarded.headers.set("X-QD-Session", user.token_hash);
         return await env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(
           forwarded,
         );

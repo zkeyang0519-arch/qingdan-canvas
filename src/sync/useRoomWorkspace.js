@@ -58,6 +58,7 @@ export function useRoomWorkspace(room, user) {
         if (!blob) {
           const response = await fetch(
             `/api/rooms/${room.id}/assets/${assetId}`,
+            { headers: { "X-QD-Account": user.id } },
           );
           if (!response.ok) throw new Error("图片加载失败，点击重试。");
           blob = await response.blob();
@@ -99,6 +100,7 @@ export function useRoomWorkspace(room, user) {
               headers: {
                 "Content-Type": blob.type,
                 "X-File-Name": encodeURIComponent(object.alt || "图片"),
+                "X-QD-Account": user.id,
               },
               body: blob,
             },
@@ -201,6 +203,7 @@ export function useRoomWorkspace(room, user) {
     const connect = () => {
       if (e.closed) return;
       const url = new URL(`/api/rooms/${room.id}/socket`, location.href);
+      url.searchParams.set("account", user.id);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
@@ -229,7 +232,8 @@ export function useRoomWorkspace(room, user) {
         setMembers([]);
         setStatus("offline");
         if (event.code === 1008) {
-          setError("会话已失效，请刷新页面并重新加入。");
+          setError("登录已失效，请重新登录。草稿已保留在当前账号。");
+          window.dispatchEvent(new Event("qingdan-session-expired"));
           return;
         }
         e.reconnect = setTimeout(connect, e.delay + Math.random() * 250);

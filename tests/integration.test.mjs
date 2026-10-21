@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
+import { createHash, randomBytes } from "node:crypto";
 import { createObject, makeBlock } from "../src/canvas/model.js";
 
 const cli = new URL(
@@ -51,6 +52,7 @@ async function socket(url, cookie) {
   });
   return {
     ws,
+    messages,
     send: (data) => ws.send(JSON.stringify(data)),
     async next(predicate) {
       for (let i = 0; i < 100; i++) {
@@ -93,6 +95,33 @@ test(
       "--persist-to",
       state,
     ]);
+    const legacyRaw = randomBytes(32).toString("hex");
+    const legacyLoginRaw = randomBytes(32).toString("hex");
+    const expiredRaw = randomBytes(32).toString("hex");
+    const sha = (value) => createHash("sha256").update(value).digest("hex");
+    const fixture = `${state}/legacy.sql`;
+    await writeFile(
+      fixture,
+      `
+      INSERT INTO sessions VALUES('${sha(legacyRaw)}','legacy-owner','原访客',${Date.now() + 86400000});
+      INSERT INTO sessions VALUES('${sha(legacyLoginRaw)}','legacy-login','另一访客',${Date.now() + 86400000});
+      INSERT INTO sessions VALUES('${sha(expiredRaw)}','expired-visitor','过期访客',${Date.now() - 1000});
+      INSERT INTO rooms VALUES('legacy-room','原有画布','legacy-owner','${sha("legacy-invite")}',datetime('now'));
+      INSERT INTO members VALUES('legacy-room','legacy-owner','owner',datetime('now'));
+      INSERT INTO rooms VALUES('legacy-login-room','待迁移画布','legacy-login','${sha("legacy-login-invite")}',datetime('now'));
+      INSERT INTO members VALUES('legacy-login-room','legacy-login','owner',datetime('now'));
+    `,
+    );
+    await command([
+      "d1",
+      "execute",
+      "qingdan-canvas",
+      "--local",
+      "--persist-to",
+      state,
+      "--file",
+      fixture,
+    ]);
     const port = await freePort(),
       base = `http://127.0.0.1:${port}`;
     let proc,
@@ -111,7 +140,7 @@ test(
           "--persist-to",
           state,
           "--var",
-          "APP_ENV:local",
+          "APP_ENV:production",
           "--inspector-port",
           "0",
         ],
@@ -134,7 +163,12 @@ test(
       throw Error(log);
     };
     const stop = async () => {
-      if (proc && proc.exitCode === null) {
+      if (
+        proc &&
+        proc.exitCode === null &&
+        proc.signalCode === null &&
+        !proc.killed
+      ) {
         const exiting = new Promise((resolve) => proc.once("exit", resolve));
         proc.kill();
         await exiting;
@@ -146,13 +180,24 @@ test(
       await writeFile(state + "/test-runtime.log", log);
     });
     await start();
+    const credentials = new Map();
     async function session(name) {
-      const response = await fetch(base + "/api/session", {
+      const input = {
+        name,
+        username: `user_${crypto.randomUUID().slice(0, 16)}`,
+        password: "Test-only-long-password-2026",
+      };
+      const response = await fetch(base + "/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(input),
       });
-      assert.equal(response.status, 200);
+      assert.equal(response.status, 201, await response.clone().text());
+      credentials.set(name, { ...input, user: (await response.json()).user });
+      assert.match(
+        response.headers.get("set-cookie"),
+        /HttpOnly; SameSite=Lax/,
+      );
       return response.headers.get("set-cookie").split(";")[0];
     }
     const a = await session("甲"),
@@ -167,11 +212,218 @@ test(
         },
         body: body ? JSON.stringify(body) : undefined,
       });
+    await t.test(
+      "未登录不能读取或创建画布，旧匿名接口不再创建身份",
+      async () => {
+        assert.deepEqual(await (await request("/api/session", "")).json(), {
+          user: null,
+          legacyRoomCount: 0,
+        });
+        assert.equal(
+          (await request("/api/session", "", "POST", {})).status,
+          401,
+        );
+        assert.equal((await request("/api/rooms", "")).status, 401);
+        assert.equal(
+          (await request("/api/rooms", "", "POST", { name: "未授权" })).status,
+          401,
+        );
+        assert.equal(
+          (
+            await request(
+              "/api/rooms/legacy-room/snapshot",
+              `qd_session=${legacyRaw}`,
+            )
+          ).status,
+          401,
+        );
+      },
+    );
+    await t.test("注册验证密码和用户名，用户名不区分大小写", async () => {
+      assert.equal(
+        (
+          await request("/api/auth/register", "", "POST", {
+            username: "bad",
+            password: "short",
+          })
+        ).status,
+        400,
+      );
+      assert.equal(
+        (
+          await request("/api/auth/register", "", "POST", {
+            username: "<script>",
+            password: "long-password-1234",
+          })
+        ).status,
+        400,
+      );
+      assert.equal(
+        (
+          await request("/api/auth/register", "", "POST", {
+            ...credentials.get("甲"),
+            username: credentials.get("甲").username.toUpperCase(),
+          })
+        ).status,
+        409,
+      );
+      const csrf = await fetch(base + "/api/auth/register", {
+        method: "POST",
+        headers: {
+          Origin: "https://evil.invalid",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: "csrf",
+          password: "long-password-1234",
+        }),
+      });
+      assert.equal(csrf.status, 403);
+    });
+    await t.test(
+      "有效旧访客注册后保留原画布与创建者身份，认领不可重放",
+      async () => {
+        const oldCookie = `qd_session=${legacyRaw}`;
+        assert.equal(
+          (await (await request("/api/session", oldCookie)).json())
+            .legacyRoomCount,
+          1,
+        );
+        const input = {
+          username: "legacy_owner",
+          password: "legacy-password-1234",
+        };
+        assert.equal(
+          (await request("/api/auth/register", oldCookie, "POST", input))
+            .status,
+          400,
+        );
+        const response = await request(
+          "/api/auth/register",
+          oldCookie,
+          "POST",
+          { ...input, claimLegacy: true },
+        );
+        assert.equal(response.status, 201, await response.clone().text());
+        const result = await response.json();
+        assert.equal(result.user.id, "legacy-owner");
+        const cookie = response.headers.get("set-cookie").split(";")[0];
+        const rooms = (await (await request("/api/rooms", cookie)).json())
+          .rooms;
+        assert.deepEqual(
+          rooms.map((r) => [r.id, r.role]),
+          [["legacy-room", "owner"]],
+        );
+        assert.equal(
+          (await (await request("/api/session", oldCookie)).json())
+            .legacyRoomCount,
+          0,
+        );
+        assert.equal(
+          (await request("/api/rooms/legacy-room", oldCookie)).status,
+          401,
+        );
+        assert.equal(
+          (
+            await (
+              await request("/api/session", `qd_session=${expiredRaw}`)
+            ).json()
+          ).legacyRoomCount,
+          0,
+        );
+      },
+    );
+    await t.test(
+      "登录已有账号可合并有效旧访客画布，密码错误不能迁移",
+      async () => {
+        const oldCookie = `qd_session=${legacyLoginRaw}`;
+        assert.equal(
+          (
+            await request("/api/auth/login", oldCookie, "POST", {
+              ...credentials.get("乙"),
+              password: "wrong-password-1234",
+              claimLegacy: true,
+            })
+          ).status,
+          401,
+        );
+        const response = await request("/api/auth/login", oldCookie, "POST", {
+          ...credentials.get("乙"),
+          claimLegacy: true,
+        });
+        assert.equal(response.status, 200);
+        assert.equal(
+          (await response.json()).user.id,
+          credentials.get("乙").user.id,
+        );
+        const oldRoom = await (
+          await request("/api/rooms/legacy-login-room", b)
+        ).json();
+        assert.equal(oldRoom.room.role, "owner");
+        assert.equal(
+          (await request("/api/rooms/legacy-login-room/invite", b, "POST", {}))
+            .status,
+          200,
+        );
+      },
+    );
     const created = await request("/api/rooms", a, "POST", {
       name: "协作测试",
     });
     assert.equal(created.status, 201);
     const { room, invite } = await created.json();
+    await t.test(
+      "另一设备登录同一账号取回个人画布，其他账号无法直接读取",
+      async () => {
+        const response = await request("/api/auth/login", "", "POST", {
+          ...credentials.get("甲"),
+          username: credentials.get("甲").username.toUpperCase(),
+        });
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        assert.equal(result.user.id, credentials.get("甲").user.id);
+        assert.deepEqual(Object.keys(result.user).sort(), [
+          "id",
+          "name",
+          "username",
+        ]);
+        const otherDevice = response.headers.get("set-cookie").split(";")[0];
+        assert.notEqual(otherDevice, a);
+        const rooms = (await (await request("/api/rooms", otherDevice)).json())
+          .rooms;
+        assert.equal(rooms[0].id, room.id);
+        assert.deepEqual(
+          (await (await request("/api/rooms", outsider)).json()).rooms,
+          [],
+        );
+        assert.equal(
+          (await request(`/api/rooms/${room.id}/snapshot`, outsider)).status,
+          403,
+        );
+        const wrongIdentity = await fetch(
+          base + `/api/rooms/${room.id}/snapshot`,
+          {
+            headers: {
+              Cookie: a,
+              "X-QD-Account": credentials.get("乙").user.id,
+            },
+          },
+        );
+        assert.equal(wrongIdentity.status, 401);
+        assert.equal(
+          (
+            await request(
+              `/api/rooms/${room.id}/socket?account=${credentials.get("乙").user.id}`,
+              a,
+            )
+          ).status,
+          401,
+        );
+        await request("/api/auth/logout", otherDevice, "POST", {});
+        assert.equal((await request("/api/rooms", otherDevice)).status, 401);
+        assert.equal((await request("/api/rooms", a)).status, 200);
+      },
+    );
     assert.equal(
       (await request(`/api/rooms/${room.id}`, outsider)).status,
       403,
@@ -351,6 +603,149 @@ test(
     assert.equal(
       (await reconnected.next((m) => m.type === "ack")).rows[0].revision,
       1,
+    );
+    await t.test(
+      "退出会吊销当前会话，已打开的连接不能继续收到广播",
+      async (subtest) => {
+        const watcher = await socket(`${base}/api/rooms/${room.id}/socket`, b);
+        subtest.after(() => watcher.ws.terminate());
+        await watcher.next((m) => m.type === "snapshot");
+        const loggedOut = await request("/api/auth/logout", b, "POST", {});
+        assert.equal(loggedOut.status, 200);
+        assert.match(loggedOut.headers.get("set-cookie"), /Max-Age=0/);
+        assert.equal(
+          (await request(`/api/rooms/${room.id}/snapshot`, b)).status,
+          401,
+        );
+        assert.equal(
+          (await request(`/api/rooms/${room.id}/assets/${asset}`, b)).status,
+          401,
+        );
+        const added = createObject(room.id, "note", { x: 500, y: 500 });
+        const commit = {
+          type: "commit",
+          opId: crypto.randomUUID(),
+          changes: [{ id: added.id, expectedRevision: 0, data: added }],
+        };
+        reconnected.send(commit);
+        await reconnected.next(
+          (m) => m.type === "ack" && m.opId === commit.opId,
+        );
+        for (let i = 0; i < 50 && watcher.ws.readyState === WebSocket.OPEN; i++)
+          await delay(20);
+        assert.equal(
+          watcher.messages.some((m) => m.type === "changes"),
+          false,
+        );
+        assert.ok(
+          [WebSocket.CLOSING, WebSocket.CLOSED].includes(watcher.ws.readyState),
+          `revoked socket state ${watcher.ws.readyState}`,
+        );
+      },
+    );
+    await t.test(
+      "修改密码需验证旧密码，撤销旧设备会话与旧连接的写入权限",
+      async () => {
+        const second = await request(
+          "/api/auth/login",
+          "",
+          "POST",
+          credentials.get("甲"),
+        );
+        assert.equal(second.status, 200);
+        const cookie = second.headers.get("set-cookie").split(";")[0];
+        const newPassword = "Updated-test-password-2026";
+        assert.equal(
+          (
+            await request("/api/auth/password", cookie, "POST", {
+              currentPassword: "wrong-password-1234",
+              password: newPassword,
+            })
+          ).status,
+          401,
+        );
+        const changed = await request("/api/auth/password", cookie, "POST", {
+          currentPassword: credentials.get("甲").password,
+          password: newPassword,
+        });
+        assert.equal(changed.status, 200, await changed.clone().text());
+        const renewed = changed.headers.get("set-cookie").split(";")[0];
+        assert.notEqual(renewed, cookie);
+        assert.equal((await request("/api/rooms", a)).status, 401);
+        assert.equal((await request("/api/rooms", cookie)).status, 401);
+        assert.equal((await request("/api/rooms", renewed)).status, 200);
+        reconnected.send({ ...op, opId: crypto.randomUUID() });
+        assert.equal(
+          (await reconnected.next((m) => m.type === "error")).status,
+          401,
+        );
+        assert.equal(
+          (await request("/api/auth/login", "", "POST", credentials.get("甲")))
+            .status,
+          401,
+        );
+        const login = await request("/api/auth/login", "", "POST", {
+          ...credentials.get("甲"),
+          password: newPassword,
+        });
+        assert.equal(login.status, 200);
+        assert.equal(
+          (await login.json()).user.id,
+          credentials.get("甲").user.id,
+        );
+      },
+    );
+    await t.test("错误登录不泄露账号是否存在，连续猜测受到限流", async () => {
+      const response = await request("/api/auth/login", "", "POST", {
+        username: "missing_user",
+        password: "Wrong-test-password-2026",
+      });
+      assert.equal(response.status, 401);
+      assert.equal((await response.json()).error, "用户名或密码不正确。");
+      for (let i = 0; i < 9; i++)
+        assert.equal(
+          (
+            await request("/api/auth/login", "", "POST", {
+              username: "missing_user",
+              password: "Wrong-test-password-2026",
+            })
+          ).status,
+          401,
+        );
+      assert.equal(
+        (
+          await request("/api/auth/login", "", "POST", {
+            username: "missing_user",
+            password: "Wrong-test-password-2026",
+          })
+        ).status,
+        429,
+      );
+    });
+    await stop();
+    const stored = JSON.parse(
+      await command([
+        "d1",
+        "execute",
+        "qingdan-canvas",
+        "--local",
+        "--persist-to",
+        state,
+        "--command",
+        "SELECT password_hash FROM accounts ORDER BY id",
+        "--json",
+      ]),
+    );
+    const hashes = stored[0].results.map((row) => row.password_hash);
+    assert.ok(
+      hashes.every((hash) =>
+        /^scrypt\$16384\$8\$5\$[a-f0-9]{32}\$[a-f0-9]{64}$/.test(hash),
+      ),
+    );
+    assert.equal(
+      new Set(hashes).size,
+      hashes.length,
+      "同样的密码使用独立随机盐",
     );
   },
 );

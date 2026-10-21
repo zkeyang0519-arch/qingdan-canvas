@@ -10,6 +10,7 @@ interface Attachment {
   name: string;
   connection: string;
   expires: number;
+  session?: string;
   window: number;
   count: number;
 }
@@ -73,12 +74,13 @@ export class CanvasRoom extends DurableObject<Env> {
         user,
         name: decodeURIComponent(request.headers.get("X-QD-Name") || "访客"),
         expires: Number(request.headers.get("X-QD-Expires")),
+        session: request.headers.get("X-QD-Session") || "",
         connection: crypto.randomUUID(),
         window: Date.now(),
         count: 0,
       } satisfies Attachment);
       this.send(socket, { type: "snapshot", rows: this.rows() });
-      this.presence();
+      await this.presence();
       return new Response(null, { status: 101, webSocket: pair[0] });
     } catch (error) {
       return failure(error);
@@ -100,14 +102,49 @@ export class CanvasRoom extends DurableObject<Env> {
       } catch {}
     }
   }
-  broadcast(value: unknown, except?: WebSocket) {
-    for (const socket of this.ctx.getWebSockets())
+  async activeSockets() {
+    const sockets = this.ctx.getWebSockets();
+    const hashes = [
+      ...new Set(
+        sockets
+          .map(
+            (socket) => (socket.deserializeAttachment() as Attachment).session,
+          )
+          .filter((hash): hash is string => !!hash),
+      ),
+    ];
+    const active = new Map<string, string>();
+    if (hashes.length) {
+      const { results } = await this.env.DB.prepare(
+        `SELECT token_hash,account_id FROM account_sessions WHERE expires_at>? AND token_hash IN (${hashes.map(() => "?").join(",")})`,
+      )
+        .bind(Date.now(), ...hashes)
+        .all<{ token_hash: string; account_id: string }>();
+      for (const row of results) active.set(row.token_hash, row.account_id);
+    }
+    return sockets.filter((socket) => {
+      const member = socket.deserializeAttachment() as Attachment;
+      if (
+        member.expires > Date.now() &&
+        member.session &&
+        active.get(member.session) === member.user
+      )
+        return true;
+      try {
+        socket.close(1008, "登录已失效，请重新登录");
+      } catch {}
+      return false;
+    });
+  }
+  async broadcast(value: unknown, except?: WebSocket) {
+    for (const socket of await this.activeSockets())
       if (socket !== except) this.send(socket, value);
   }
-  presence() {
-    this.broadcast({
+  async presence() {
+    const sockets = await this.activeSockets();
+    const value = {
       type: "presence",
-      members: this.ctx.getWebSockets().map((socket) => {
+      members: sockets.map((socket) => {
         const attachment = socket.deserializeAttachment() as Attachment;
         return {
           id: attachment.connection,
@@ -115,7 +152,8 @@ export class CanvasRoom extends DurableObject<Env> {
           name: attachment.name,
         };
       }),
-    });
+    };
+    for (const socket of sockets) this.send(socket, value);
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
     let opId: string | undefined;
@@ -137,6 +175,16 @@ export class CanvasRoom extends DurableObject<Env> {
       opId = input.opId;
       const member = socket.deserializeAttachment() as Attachment;
       check(member.expires > Date.now(), "会话已过期，请刷新页面。", 401);
+      check(
+        member.session &&
+          (await this.env.DB.prepare(
+            "SELECT 1 FROM account_sessions WHERE token_hash=? AND account_id=? AND expires_at>?",
+          )
+            .bind(member.session, member.user, Date.now())
+            .first()),
+        "登录已失效，请重新登录。",
+        401,
+      );
       if (Date.now() - member.window >= 1000) {
         member.window = Date.now();
         member.count = 0;
@@ -254,7 +302,7 @@ export class CanvasRoom extends DurableObject<Env> {
         );
       });
       this.send(socket, result!);
-      this.broadcast({ type: "changes", rows: result!.rows }, socket);
+      await this.broadcast({ type: "changes", rows: result!.rows }, socket);
     } catch (error) {
       if (
         error instanceof HttpError &&
@@ -308,16 +356,16 @@ export class CanvasRoom extends DurableObject<Env> {
       }
     }
   }
-  webSocketClose(socket: WebSocket, code: number, reason: string) {
+  async webSocketClose(socket: WebSocket, code: number, reason: string) {
     try {
       socket.close(code === 1005 ? 1000 : code, reason);
     } catch {}
-    this.presence();
+    await this.presence();
   }
-  webSocketError(socket: WebSocket) {
+  async webSocketError(socket: WebSocket) {
     try {
       socket.close(1011, "连接异常");
     } catch {}
-    this.presence();
+    await this.presence();
   }
 }

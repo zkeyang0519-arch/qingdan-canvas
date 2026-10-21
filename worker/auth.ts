@@ -1,6 +1,6 @@
 import type { Env, Room, Session } from "./types";
 import { body, check, json } from "./http";
-const lifetime = 60 * 60 * 24 * 90;
+export const lifetime = 60 * 60 * 24 * 30;
 export const token = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) =>
     b.toString(16).padStart(2, "0"),
@@ -14,61 +14,83 @@ export async function digest(value: string) {
     b.toString(16).padStart(2, "0"),
   ).join("");
 }
-export async function getSession(request: Request, env: Env) {
+export async function sessionHash(request: Request) {
   const raw = request.headers
     .get("Cookie")
     ?.match(/(?:^|;\s*)qd_session=([a-f0-9]{64})(?:;|$)/)?.[1];
-  if (!raw) return null;
+  return raw ? digest(raw) : null;
+}
+export async function getSession(request: Request, env: Env) {
+  const hash = await sessionHash(request);
+  if (!hash) return null;
   return env.DB.prepare(
-    "SELECT id,name,expires_at FROM sessions WHERE token_hash=? AND expires_at>?",
+    "SELECT a.id,a.username,a.name,s.expires_at,s.token_hash FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>?",
   )
-    .bind(await digest(raw), Date.now())
+    .bind(hash, Date.now())
     .first<Session>();
 }
 export async function requireSession(request: Request, env: Env) {
   const session = await getSession(request, env);
-  check(session, "请刷新页面重新建立会话。", 401);
+  check(session, "请先登录账号。", 401);
   return session;
+}
+export const publicUser = (
+  session: Pick<Session, "id" | "username" | "name">,
+) => ({
+  id: session.id,
+  username: session.username,
+  name: session.name,
+});
+export function sessionCookie(
+  request: Request,
+  raw: string,
+  seconds = lifetime,
+) {
+  return `qd_session=${raw}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${seconds}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`;
+}
+export async function legacySession(request: Request, env: Env) {
+  const hash = await sessionHash(request);
+  if (!hash) return null;
+  return env.DB.prepare(
+    "SELECT s.id,s.name,s.token_hash,(SELECT COUNT(*) FROM members m WHERE m.user_id=s.id) AS room_count FROM sessions s WHERE s.token_hash=? AND s.expires_at>? AND NOT EXISTS(SELECT 1 FROM legacy_claims c WHERE c.legacy_id=s.id)",
+  )
+    .bind(hash, Date.now())
+    .first<{
+      id: string;
+      name: string;
+      token_hash: string;
+      room_count: number;
+    }>();
 }
 export async function sessionEndpoint(request: Request, env: Env) {
   const existing = await getSession(request, env);
   if (request.method === "GET") {
-    check(existing, "尚未建立会话。", 401);
-    return json({ user: existing, createKeyRequired: env.APP_ENV !== "local" });
-  }
-  check(request.method === "POST", "方法不支持。", 405);
-  const input = await body(request);
-  const name =
-    typeof input.name === "string" && input.name.trim()
-      ? input.name.trim().slice(0, 32)
-      : existing?.name || "访客";
-  if (existing) {
-    await env.DB.prepare("UPDATE sessions SET name=? WHERE id=?")
-      .bind(name, existing.id)
-      .run();
+    const legacy = existing ? null : await legacySession(request, env);
     return json({
-      user: { ...existing, name },
-      createKeyRequired: env.APP_ENV !== "local",
+      user: existing ? publicUser(existing) : null,
+      legacyRoomCount: legacy?.room_count || 0,
     });
   }
-  const raw = token(),
-    id = crypto.randomUUID(),
-    expires_at = Date.now() + lifetime * 1000;
-  await env.DB.prepare(
-    "INSERT INTO sessions(token_hash,id,name,expires_at) VALUES(?,?,?,?)",
-  )
-    .bind(await digest(raw), id, name, expires_at)
-    .run();
-  return json(
-    {
-      user: { id, name, expires_at },
-      createKeyRequired: env.APP_ENV !== "local",
-    },
-    200,
-    {
-      "Set-Cookie": `qd_session=${raw}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${lifetime}${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`,
-    },
+  check(request.method === "POST", "方法不支持。", 405);
+  check(existing, "请先注册或登录账号。", 401);
+  check(
+    !request.headers.get("X-QD-Account") ||
+      request.headers.get("X-QD-Account") === existing.id,
+    "账号已切换，请重新登录。",
+    401,
   );
+  const input = await body(request);
+  check(
+    typeof input.name === "string" &&
+      input.name.trim().length > 0 &&
+      input.name.trim().length <= 32,
+    "昵称需要 1–32 个字。",
+  );
+  const name = input.name.trim();
+  await env.DB.prepare("UPDATE accounts SET name=? WHERE id=?")
+    .bind(name, existing.id)
+    .run();
+  return json({ user: publicUser({ ...existing, name }) });
 }
 export async function membership(env: Env, roomId: string, userId: string) {
   const room = await env.DB.prepare(

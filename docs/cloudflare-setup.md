@@ -2,7 +2,19 @@
 
 工程基础已经准备好。以下是首次连接时的完整步骤，所有命令都在 `D:\TODO\qingdan-canvas` 运行。
 
-当前账号的登录、D1 创建及远程建表已经完成，后续请从 R2 开通继续，不要重复创建 D1。实际进度见 [部署记录](deployment-status.md)。
+已有 D1、R2 和 Worker，无需重复创建。以下第 1–5 节是首次建站参考；本次账号版本请先按下面的升级步骤操作。实际进度见 [部署记录](deployment-status.md)。
+
+## 已有网站升级到账号版本
+
+1. 旧访客先等待“已同步”，需要时导出备份。保留原浏览器 Cookie，升级后用它认领旧画布。
+2. 在项目终端执行 `npm run db:remote`，确认目标为 `qingdan-canvas`，应用新的 `0002_accounts.sql`。它只新增账号等表，不删除画布、旧会话或图片。
+3. 成功后再执行 `npm run deploy`，发布注册登录页面与权限逻辑。不要只部署代码而漏掉迁移。
+4. 打开线上网站，首次注册用户名、昵称和密码。若发现旧画布，勾选归入此账号；原房间、图片、灵感板和邀请继续保留。
+5. 在另一个浏览器登录同一账号，确认能看到原来的画布。再用另一个账号测试邀请协作。
+
+这些云端命令由你操作。本地测试账号和本地画布不会上传。`CREATE_KEY` 已不再使用，无需重新设置或删除。
+
+密码使用原生 scrypt 哈希（N=16384、r=8、p=5），按 [OWASP 的配置](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt)控制内存；[Workers 支持 Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/)。发布验收时要检查注册/登录的实际 CPU 使用是否符合账号的 Worker 配额；本地运行不模拟线上 CPU 限制。若遇到 CPU 超限，应调整运行配额或采用托管认证，不应降低密码哈希强度。
 
 ## 1. 登录账号
 
@@ -24,10 +36,10 @@ npx wrangler d1 create qingdan-canvas
 
 ```json
 {
-    "binding": "DB",
-    "database_name": "qingdan-canvas",
-    "database_id": "这里填写命令返回的真实 UUID",
-    "migrations_dir": "migrations"
+  "binding": "DB",
+  "database_name": "qingdan-canvas",
+  "database_id": "这里填写命令返回的真实 UUID",
+  "migrations_dir": "migrations"
 }
 ```
 
@@ -78,25 +90,22 @@ npm run deploy
 
 首次部署会注册 Durable Object 类，房间实例在首次打开时创建。命令最后返回实际 `workers.dev` 地址，这就是分享给其他电脑的入口。
 
-## 6. 设置创建口令
+## 6. 注册轻单账号
 
-```powershell
-npx wrangler secret put CREATE_KEY
-```
+打开部署地址，注册用户名与密码，昵称可选。用户名不区分大小写，密码需要 12–128 个字符。注册后可以直接新建自己的画布，其他账号只有通过邀请加入后才能查看和编辑。
 
-在终端的隐藏输入中输入自选的长随机口令。不要提交到源码或写进 `wrangler.jsonc`。
-
-首次部署到设置口令之间，网页能打开，但“创建画布”会提示管理员尚未配置口令。口令用于限制谁可以新增画布；加入已有画布仍使用邀请链接。
+密码只保存加盐哈希。账号设置支持修改密码和退出登录，暂不支持邮箱验证或找回密码。请妥善保存账号信息，不要贴进聊天或提交到源码。
 
 ## 7. 两个浏览器验收
 
-1. 浏览器 A 打开部署地址、设置昵称、输入创建口令并创建画布。
+1. 浏览器 A 打开部署地址，注册账号 A 并创建画布。
 2. 新建清单，添加图片，等待“已同步”。
-3. 创建者复制邀请链接，在浏览器 B 或另一台电脑打开，设置另一个昵称。
+3. 创建者复制邀请链接，在浏览器 B 或另一台电脑打开，注册或登录账号 B；登录成功后自动加入邀请中的画布。
 4. A 勾选任务，确认 B 自动收到变化；B 新建便签，确认 A 自动出现。
 5. 两边刷新，确认文字和图片还在。
 6. 断开 B 的网络，修改文字；恢复网络，确认重连并合并，或出现明确的冲突提示。
 7. 重置邀请，用未加入过的第三个浏览器验证旧链接已失效。现有 B 成员仍可访问，这是当前产品规则。
+8. B 退出后登录账号 A，确认个人画布与创建者权限保持一致；再验证修改密码后其他旧登录会话失效。
 
 ## 8. 自定义域名与登录
 
@@ -117,11 +126,11 @@ npx wrangler tail
 
 | 现象                   | 先检查                                                   |
 | ---------------------- | -------------------------------------------------------- |
-| 创建画布提示口令未配置 | `CREATE_KEY` secret 是否已设置                           |
+| 仍要求创建口令         | 网页或 Worker 仍是旧版，确认迁移及部署成功后刷新         |
 | `no such table`        | 是否对正确的 D1 执行 `npm run db:remote`                 |
 | 图片上传失败           | R2 是否启用、桶名是否匹配、图片格式及大小                |
 | WebSocket 连不上       | 浏览器是否加入画布、域名是否同源、代理是否支持 WebSocket |
 | 邀请失效               | 是否复制完整 `#invite=...`，是否已被创建者重置           |
-| 换浏览器后看不到旧画布 | 匿名身份不同，需要邀请；不会自动继承创建者权限           |
+| 换浏览器后看不到旧画布 | 是否登录同一账号，旧访客是否在原浏览器认领过画布         |
 
 实现参考：[WebSocket Hibernation](https://developers.cloudflare.com/durable-objects/best-practices/websockets/)、[Wrangler 配置](https://developers.cloudflare.com/workers/wrangler/configuration/)、[本地资源](https://developers.cloudflare.com/workers/local-development/local-data/)、[Worker 静态资源路由](https://developers.cloudflare.com/workers/static-assets/routing/worker-script/)。

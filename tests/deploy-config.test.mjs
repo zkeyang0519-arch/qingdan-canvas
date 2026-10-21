@@ -22,7 +22,7 @@ test("部署配置拒绝损坏的 JSONC", () => {
   assert.throws(() => parseDeployConfig('{"vars": nope}'));
 });
 
-test("部署配置仍拒绝占位 D1 和本地免口令模式", () => {
+test("部署配置仍拒绝占位 D1 和本地开发配置", () => {
   assert.throws(
     () =>
       parseDeployConfig(

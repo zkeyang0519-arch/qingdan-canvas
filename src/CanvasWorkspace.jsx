@@ -103,7 +103,7 @@ export default function CanvasWorkspace({
     [share, setShare] = useState(
       () =>
         initialInvite ||
-        sessionStorage.getItem(`qingdan.invite.${room.id}`) ||
+        sessionStorage.getItem(`qingdan.invite.${user.id}/${room.id}`) ||
         "",
     );
   const [sharing, setSharing] = useState(false),
@@ -465,8 +465,9 @@ export default function CanvasWorkspace({
     }
   };
   useEffect(() => {
-    if (share) sessionStorage.setItem(`qingdan.invite.${room.id}`, share);
-  }, [room.id, share]);
+    if (share)
+      sessionStorage.setItem(`qingdan.invite.${user.id}/${room.id}`, share);
+  }, [user.id, room.id, share]);
   if (!state)
     return (
       <div className="loading-screen">

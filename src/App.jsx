@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Plus,
@@ -8,8 +8,16 @@ import {
   X,
   LoaderCircle,
 } from "lucide-react";
-import { api, inviteLink } from "./api.js";
+import {
+  api,
+  inviteLink,
+  setActiveAccount,
+  announceAccountChange,
+} from "./api.js";
 import CanvasWorkspace from "./CanvasWorkspace.jsx";
+import AuthScreen from "./auth/AuthScreen.jsx";
+import ProfileSettings from "./auth/ProfileSettings.jsx";
+import "./auth/auth.css";
 
 export default function App() {
   const [session, setSession] = useState(null),
@@ -18,72 +26,160 @@ export default function App() {
     [error, setError] = useState("");
   const [busy, setBusy] = useState(true),
     [dialog, setDialog] = useState(null);
-  const [name, setName] = useState(""),
-    [roomName, setRoomName] = useState("新的协作画布");
-  const [createKey, setCreateKey] = useState(""),
-    [joinText, setJoinText] = useState("");
+  const [roomName, setRoomName] = useState("新的协作画布");
+  const [joinText, setJoinText] = useState("");
+  const [initializing, setInitializing] = useState(true);
+  const [connectionError, setConnectionError] = useState("");
+  const identity = useRef(null);
+  const epoch = useRef(0);
   const [invite, setInvite] = useState("");
   const refresh = async () => {
+    const started = epoch.current;
     const result = await api("/api/rooms");
-    setRooms(result.rooms);
+    if (started === epoch.current) setRooms(result.rooms);
   };
   const enter = async (id) => {
+    const started = epoch.current;
     const result = await api(`/api/rooms/${id}`);
+    if (started !== epoch.current) return;
     setRoom(result.room);
     history.replaceState(null, "", `/?room=${id}`);
   };
+  const authenticated = async (result) => {
+    const started = ++epoch.current;
+    identity.current = result.user.id;
+    setActiveAccount(result.user.id);
+    setSession(result);
+    setError("");
+    setBusy(true);
+    try {
+      const url = new URL(location.href);
+      const id = url.searchParams.get("room"),
+        token = new URLSearchParams(url.hash.slice(1)).get("invite");
+      await refresh();
+      if (started !== epoch.current) return;
+      if (id && token) {
+        await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
+          method: "POST",
+          body: { invite: token },
+        });
+        if (started !== epoch.current) return;
+        history.replaceState(null, "", `/?room=${encodeURIComponent(id)}`);
+      }
+      if (id && token) await refresh();
+      if (started !== epoch.current) return;
+      if (id) await enter(encodeURIComponent(id));
+    } catch (err) {
+      if (started === epoch.current) setError(err.message);
+    } finally {
+      if (started === epoch.current) setBusy(false);
+    }
+  };
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    void (async () => {
       try {
-        const result = await api("/api/session", { method: "POST", body: {} });
+        const result = await api("/api/session");
+        if (cancelled) return;
         setSession(result);
-        setName(result.user.name);
-        const url = new URL(location.href);
-        const id = url.searchParams.get("room"),
-          token = new URLSearchParams(url.hash.slice(1)).get("invite");
-        if (id && token) {
-          await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
-            method: "POST",
-            body: { invite: token },
-          });
-          history.replaceState(null, "", `/?room=${encodeURIComponent(id)}`);
-        }
-        await refresh();
-        if (id) await enter(encodeURIComponent(id));
+        if (result.user) await authenticated(result);
       } catch (err) {
-        setError(err.message);
+        if (!cancelled) setConnectionError(err.message);
       } finally {
-        setBusy(false);
+        if (!cancelled) {
+          setInitializing(false);
+          setBusy(false);
+        }
       }
     })();
+    const expired = () => {
+      epoch.current++;
+      identity.current = null;
+      setActiveAccount(null);
+      setRoom(null);
+      setRooms([]);
+      setSession(null);
+      setDialog(null);
+      setInvite("");
+    };
+    const switched = (event) => {
+      if (event.key === "qingdan.account-change") {
+        expired();
+        location.reload();
+      }
+    };
+    const focus = async () => {
+      const started = epoch.current;
+      try {
+        const result = await api("/api/session");
+        if (
+          !cancelled &&
+          started === epoch.current &&
+          (result.user?.id || null) !== identity.current
+        ) {
+          expired();
+          location.reload();
+        }
+      } catch {
+        /* An offline tab keeps its own account draft until reconnection. */
+      }
+    };
+    window.addEventListener("storage", switched);
+    window.addEventListener("qingdan-session-expired", expired);
+    window.addEventListener("focus", focus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("storage", switched);
+      window.removeEventListener("qingdan-session-expired", expired);
+      window.removeEventListener("focus", focus);
+    };
   }, []);
+  const logout = async () => {
+    const started = epoch.current;
+    await api("/api/auth/logout", { method: "POST", body: {} });
+    if (started !== epoch.current) return;
+    epoch.current++;
+    identity.current = null;
+    setActiveAccount(null);
+    setRoom(null);
+    setRooms([]);
+    setSession(null);
+    setDialog(null);
+    setInvite("");
+    setError("");
+    history.replaceState(null, "", "/");
+    announceAccountChange();
+  };
   const act = async (action) => {
+    const started = epoch.current;
     setBusy(true);
     setError("");
     try {
       await action();
     } catch (err) {
-      setError(err.message);
+      if (started === epoch.current) setError(err.message);
     } finally {
-      setBusy(false);
+      if (started === epoch.current) setBusy(false);
     }
   };
   const create = async (event) => {
     event.preventDefault();
+    const started = epoch.current;
     await act(async () => {
       const result = await api("/api/rooms", {
         method: "POST",
-        body: { name: roomName, createKey },
+        body: { name: roomName },
       });
+      if (started !== epoch.current) return;
       setInvite(inviteLink(result.room.id, result.invite));
       setRoom(result.room);
       setDialog(null);
-      setCreateKey("");
       history.replaceState(null, "", `/?room=${result.room.id}`);
     });
   };
   const join = async (event) => {
     event.preventDefault();
+    const started = epoch.current;
     await act(async () => {
       let url;
       try {
@@ -100,14 +196,33 @@ export default function App() {
         method: "POST",
         body: { invite: token },
       });
+      if (started !== epoch.current) return;
       await enter(encodeURIComponent(id));
+      if (started !== epoch.current) return;
       setDialog(null);
     });
   };
-  if (room && session)
+  const renderedEpoch = epoch.current;
+  if (initializing)
+    return (
+      <div className="loading-screen">
+        <LoaderCircle className="spin" />
+        <p>正在连接轻单…</p>
+      </div>
+    );
+  if (!session?.user)
+    return (
+      <AuthScreen
+        legacyRoomCount={session?.legacyRoomCount}
+        onAuthenticated={authenticated}
+        connectionError={connectionError}
+        onRetry={() => location.reload()}
+      />
+    );
+  if (room && session.user)
     return (
       <CanvasWorkspace
-        key={room.id}
+        key={`${session.user.id}/${room.id}`}
         room={room}
         user={session.user}
         initialInvite={invite}
@@ -130,7 +245,7 @@ export default function App() {
         <button
           className="profile-button"
           onClick={() => setDialog("profile")}
-          disabled={!session}
+          disabled={!session || busy}
         >
           <span className="avatar">
             {(session?.user.name || "访").slice(0, 1)}
@@ -256,7 +371,7 @@ export default function App() {
                 ? "新建画布"
                 : dialog === "join"
                   ? "加入画布"
-                  : "协作昵称"
+                  : "账号设置"
             }
           >
             <button
@@ -281,19 +396,6 @@ export default function App() {
                     required
                   />
                 </label>
-                {session?.createKeyRequired && (
-                  <label>
-                    创建口令
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={createKey}
-                      onChange={(e) => setCreateKey(e.target.value)}
-                      required
-                    />
-                    <small>由站点管理员提供，仅创建新画布需要。</small>
-                  </label>
-                )}
                 <button className="primary wide" disabled={busy}>
                   {busy ? "创建中…" : "创建画布"}
                   <ArrowRight size={16} />
@@ -321,38 +423,18 @@ export default function App() {
               </form>
             )}
             {dialog === "profile" && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void act(async () => {
-                    const result = await api("/api/session", {
-                      method: "POST",
-                      body: { name },
-                    });
+              <ProfileSettings
+                key={session.user.id}
+                user={session.user}
+                onUpdate={(result) => {
+                  if (
+                    epoch.current === renderedEpoch &&
+                    identity.current === result.user.id
+                  )
                     setSession(result);
-                    setDialog(null);
-                  });
                 }}
-              >
-                <h2>协作时怎么称呼你？</h2>
-                <p>
-                  这是当前浏览器的昵称。清除浏览器 Cookie
-                  后，需要重新通过邀请加入。
-                </p>
-                <label>
-                  昵称
-                  <input
-                    autoFocus
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    maxLength={32}
-                    required
-                  />
-                </label>
-                <button className="primary wide" disabled={busy}>
-                  保存昵称
-                </button>
-              </form>
+                onLogout={logout}
+              />
             )}
             {error && (
               <p className="form-error" role="alert">

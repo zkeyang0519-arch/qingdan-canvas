@@ -20,7 +20,7 @@ export function parseDeployConfig(source) {
   }
   if (config.vars.APP_ENV !== "production") {
     throw new Error(
-      "部署要求 APP_ENV=production，不能把本地免口令模式部署到公网。",
+      "部署要求 APP_ENV=production，不能把本地开发配置部署到公网。",
     );
   }
   return config;
