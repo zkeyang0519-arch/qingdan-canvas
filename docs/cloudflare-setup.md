@@ -1,13 +1,13 @@
 # 一起连接 Cloudflare
 
-工程基础已经准备好。以下是首次连接时的完整步骤，所有命令都在 `D:\TODO\qingdan-canvas-cloud` 运行。
+工程基础已经准备好。以下是首次连接时的完整步骤，所有命令都在 `D:\TODO\qingdan-canvas` 运行。
 
 当前账号的登录、D1 创建及远程建表已经完成，后续请从 R2 开通继续，不要重复创建 D1。实际进度见 [部署记录](deployment-status.md)。
 
 ## 1. 登录账号
 
 ```powershell
-cd D:\TODO\qingdan-canvas-cloud
+cd D:\TODO\qingdan-canvas
 npx wrangler login
 npx wrangler whoami
 ```
@@ -24,10 +24,10 @@ npx wrangler d1 create qingdan-canvas
 
 ```json
 {
-  "binding": "DB",
-  "database_name": "qingdan-canvas",
-  "database_id": "这里填写命令返回的真实 UUID",
-  "migrations_dir": "migrations"
+    "binding": "DB",
+    "database_name": "qingdan-canvas",
+    "database_id": "这里填写命令返回的真实 UUID",
+    "migrations_dir": "migrations"
 }
 ```
 

@@ -7,7 +7,7 @@
 需要 Node.js 22 或以上（开发时使用 Node.js 24）。
 
 ```powershell
-cd D:\TODO\qingdan-canvas-cloud
+cd D:\TODO\qingdan-canvas
 npm ci
 npm run dev
 ```

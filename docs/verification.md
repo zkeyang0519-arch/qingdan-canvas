@@ -49,7 +49,7 @@
 
 ## 初始基础验证记录
 
-日期：2026-10-20。目录：`D:/TODO/qingdan-canvas-cloud`。
+日期：2026-10-20。目录：`D:/TODO/qingdan-canvas`。
 
 ## 自动验证
 

@@ -2,7 +2,7 @@
 
 这是独立的 React + Cloudflare Workers 项目，不是 `cloudflare-docs` 文档站点。
 
-- 工作目录：`D:/TODO/qingdan-canvas-cloud`。不要修改父目录原项目。
+- 工作目录：`D:/TODO/qingdan-canvas`。不要修改父目录原项目。
 - 包管理器：npm；Node.js >= 22。`npm ci` 安装。
 - 开发：`npm run dev`（自动 build、迁移本地 D1、监听 127.0.0.1:8788）。
 - 验证：`npm test`、`npm run check`、`npm run deploy:check`。

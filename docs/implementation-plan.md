@@ -7,7 +7,7 @@
 
 ## Global Constraints
 
-- 原项目不修改。新工程 `D:/TODO/qingdan-canvas-cloud` 独立安装。
+- 原项目不修改。新工程 `D:/TODO/qingdan-canvas` 独立安装。
 - 本轮不创建远程资源；邀请链接方式已由用户确认。
 - 使用 SQLite DO 休眠 WebSocket。图片限制 10 MiB。
 - 不包含 Agent、Codex 本机执行器、模型设置或模型密钥。
