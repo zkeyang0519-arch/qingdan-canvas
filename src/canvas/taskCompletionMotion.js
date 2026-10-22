@@ -189,7 +189,7 @@ export function captureCompletionSource(element) {
     transform: "none",
     background: "transparent",
     boxShadow: "none",
-    borderRadius: "8px",
+    borderRadius: "10px",
   });
   const text = element.querySelector(".todo-copy"),
     bounds = text?.getBoundingClientRect(),

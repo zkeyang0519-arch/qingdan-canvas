@@ -8,6 +8,7 @@ import {
 } from "../src/canvas/model.js";
 import { todoPages } from "../src/canvas/todoPages.js";
 import { prepareEdit } from "../src/sync/workspace-changes.js";
+import { undoChanges } from "../src/sync/replica.js";
 import {
   panePages,
   choosePanePage,
@@ -17,6 +18,7 @@ import {
   editPageBlock,
   insertPageBlocks,
   deletePageTasks,
+  clearCompletedPageTasks,
   takeOutToPage,
   writablePage,
 } from "../src/canvas/arranged-model.js";
@@ -293,6 +295,123 @@ test("删除排列选中行不会删除整张便签或另一栏，备注进入�
   assert.strictEqual(
     deletePageTasks(f.state, f.boardId, "right", [f.note.blocks[0].id]),
     f.state,
+  );
+});
+
+test("清空仅删除当前项目未锁定的已完成事项，保留未完成、其他项目和备注备份", () => {
+  const f = fixture();
+  f.note.blocks[0].done = true;
+  const completed = {
+    ...createObject(f.boardId, "note"),
+    parentId: "left",
+    blocks: [{ ...makeBlock("另一个已完成事项"), done: true }],
+  };
+  const other = {
+    ...createObject(f.boardId, "note"),
+    parentId: "right",
+    blocks: [{ ...makeBlock("其他项目已完成"), done: true }],
+  };
+  const locked = {
+    ...createObject(f.boardId, "note"),
+    parentId: "left",
+    locked: true,
+    blocks: [{ ...makeBlock("锁定事项"), done: true }],
+  };
+  f.state.objects.push(completed, other, locked);
+  const next = clearCompletedPageTasks(f.state, f.boardId, "left");
+  assert.deepEqual(next.objects.find((o) => o.id === "note").blocks, [
+    f.note.blocks[1],
+  ]);
+  assert.deepEqual(next.objects.find((o) => o.id === completed.id).blocks, []);
+  assert.strictEqual(
+    next.objects.find((o) => o.id === other.id),
+    other,
+  );
+  assert.strictEqual(
+    next.objects.find((o) => o.id === locked.id),
+    locked,
+  );
+  assert.equal(next.trash.length, 2);
+  assert.equal(
+    next.trash.find((entry) => entry.task.block.id === f.note.blocks[0].id).task
+      .block.remark.text,
+    "保留备注",
+  );
+  assert.strictEqual(clearCompletedPageTasks(next, f.boardId, "left"), next);
+});
+
+test("清空在项目为空、已锁定、已收纳或已删除时不修改内容", () => {
+  const f = fixture();
+  assert.strictEqual(
+    clearCompletedPageTasks(f.state, f.boardId, "left"),
+    f.state,
+  );
+  assert.strictEqual(
+    clearCompletedPageTasks(f.state, f.boardId, "right"),
+    f.state,
+  );
+  assert.strictEqual(
+    clearCompletedPageTasks(f.state, f.boardId, "missing"),
+    f.state,
+  );
+  f.note.blocks[0].done = true;
+  const locked = {
+    ...f.state,
+    objects: f.state.objects.map((o) =>
+      o.id === "left" ? { ...o, locked: true } : o,
+    ),
+  };
+  assert.strictEqual(
+    clearCompletedPageTasks(locked, f.boardId, "left"),
+    locked,
+  );
+  const archived = collectObjects(
+    f.state,
+    ["left"],
+    f.state.objects.find((o) => o.type === "collection").id,
+  );
+  assert.strictEqual(
+    clearCompletedPageTasks(archived, f.boardId, "left"),
+    archived,
+  );
+});
+
+test("批量清空可以一次撤销并保留协作者对未完成事项的后续修改", () => {
+  const f = fixture();
+  f.note.blocks[0].done = true;
+  f.note.blocks.push({ ...makeBlock("另一个已完成事项"), done: true });
+  const next = clearCompletedPageTasks(f.state, f.boardId, "left");
+  assert.deepEqual(
+    undoChanges(f.state.objects, next.objects, next.objects).find(
+      (o) => o.id === "note",
+    ).blocks,
+    f.note.blocks,
+  );
+  const live = next.objects.map((o) =>
+    o.id === "note"
+      ? {
+          ...o,
+          blocks: o.blocks.map((b) => ({
+            ...b,
+            runs: [{ type: "text", text: "协作者更新" }],
+          })),
+        }
+      : o,
+  );
+  const undone = undoChanges(f.state.objects, next.objects, live);
+  const blocks = undone.find((o) => o.id === "note").blocks;
+  assert.equal(blocks.length, 3);
+  assert.deepEqual(
+    blocks.find((b) => b.id === f.note.blocks[0].id),
+    f.note.blocks[0],
+  );
+  assert.equal(
+    blocks.find((b) => b.id === f.note.blocks[1].id).runs[0].text,
+    "协作者更新",
+  );
+  assert.deepEqual(
+    blocks.find((b) => b.id === f.note.blocks[2].id),
+    f.note.blocks[2],
   );
 });
 

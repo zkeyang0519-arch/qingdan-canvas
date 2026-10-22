@@ -169,6 +169,12 @@ test("提醒时钟会在跨入24小时和刚超时的边界刷新", () => {
 
 test("切换截止月份和年份会限制日期，处理大小月与闰年并保留时间", () => {
   const january = { year: 2028, month: 1, day: 31, hour: 22, minute: 5 };
+  const preserved = selection.updateDeadlineSelection(
+    { ...january, day: 15 },
+    "month",
+    2,
+  );
+  assert.equal(preserved.day, 15);
   const february = selection.updateDeadlineSelection(january, "month", 2);
   assert.deepEqual(february, { ...january, month: 2, day: 29 });
   assert.equal(selection.deadlineMonthDays(february), 29);
@@ -182,7 +188,7 @@ test("切换截止月份和年份会限制日期，处理大小月与闰年并�
   assert.equal(january.day, 31);
 });
 
-test("截止下拉框按本地时间回显，支持零点和逐分钟选择，新设置默认当天23:59", () => {
+test("截止选择器按本地时间回显，支持零点和逐分钟选择，新设置默认当天23:59", () => {
   const previous = process.env.TZ;
   process.env.TZ = "Asia/Shanghai";
   try {
@@ -212,6 +218,59 @@ test("截止下拉框按本地时间回显，支持零点和逐分钟选择，�
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+test("截止时间滚轮按五列生成选项，并把步进限制在当前列范围内", () => {
+  const parts = { year: 2028, month: 2, day: 29, hour: 23, minute: 59 };
+  const fields = selection.deadlineWheelFields(parts, 2026);
+  assert.deepEqual(
+    fields.map(({ key, label }) => ({ key, label })),
+    [
+      { key: "year", label: "年" },
+      { key: "month", label: "月" },
+      { key: "day", label: "日" },
+      { key: "hour", label: "时" },
+      { key: "minute", label: "分" },
+    ],
+  );
+  assert.deepEqual(fields[0].options.slice(0, 3), [2021, 2022, 2023]);
+  assert.equal(fields[0].options.at(-1), 2036);
+  assert.equal(fields[2].options.length, 31);
+  assert.equal(fields[2].isOptionEnabled(29), true);
+  assert.equal(fields[2].isOptionEnabled(30), false);
+  assert.equal(fields[2].stepOptions.length, 29);
+  assert.equal(selection.wheelStepValue(fields[0].options, 2021, -1), 2021);
+  assert.equal(selection.wheelStepValue(fields[2].options, 29, -1), 28);
+  assert.equal(selection.wheelStepValue(fields[1].options, 6, 120, true), 7);
+  assert.equal(selection.wheelStepValue(fields[1].options, 6, -120, true), 5);
+  assert.deepEqual(selection.wheelDeltaSteps(100, 0, 120), {
+    steps: 0,
+    remainder: 100,
+  });
+  assert.deepEqual(selection.wheelDeltaSteps(100, 100, 120), {
+    steps: 1,
+    remainder: 80,
+  });
+  assert.deepEqual(selection.wheelDeltaSteps(-240, 0, 120), {
+    steps: -2,
+    remainder: 0,
+  });
+});
+
+test("数字滚轮循环显示，分钟用01到60并映射回00到59", () => {
+  const parts = { year: 2028, month: 2, day: 29, hour: 23, minute: 1 };
+  const fields = selection.deadlineWheelFields(parts, 2026);
+  const minute = fields.find((field) => field.key === "minute");
+  const day = fields.find((field) => field.key === "day");
+  assert.deepEqual(minute.options.slice(0, 3), [1, 2, 3]);
+  assert.equal(minute.options.at(-1), 0);
+  assert.equal(minute.format(0), "60");
+  assert.equal(selection.wheelStepValue(minute.options, 1, -1, true), 0);
+  assert.equal(selection.wheelStepValue(minute.options, 0, 1, true), 1);
+  assert.equal(
+    selection.wheelStepValue(day.stepOptions, 1, -1, true),
+    day.stepOptions.at(-1),
+  );
 });
 
 test("设置和移除截止时间保留其他行、正文、备注和完成状态", () => {

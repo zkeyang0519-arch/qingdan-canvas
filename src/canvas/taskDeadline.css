@@ -23,12 +23,20 @@
   margin-top: 2px;
   align-self: flex-start;
 }
-.checklist-list .todo-row[data-deadline]:not([data-deadline="none"]) {
+.checklist-list .todo-row[data-deadline] {
   border: 1px solid #dce5d580;
   border-radius: 10px;
   padding: 11px 8px;
   margin: 8px 0;
   background: #f9fcf6a8;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+.checklist-list .todo-row[data-deadline]:hover {
+  border-color: #cad9c2;
+  background: #fbfdf9;
 }
 .todo-deadline-glow {
   position: absolute;
@@ -85,6 +93,60 @@
 }
 .todo-deadline-button:disabled {
   cursor: default;
+}
+.todo-deadline-control {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  flex: 0 0 40px;
+  align-self: flex-start;
+}
+.task-deadline-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  right: -6px;
+  width: min(468px, calc(100vw - 24px));
+  max-height: min(650px, calc(100dvh - 24px));
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid #dce6d7;
+  border-radius: 16px;
+  background: #fbfdf9f7;
+  box-shadow:
+    0 18px 42px #35432b2b,
+    0 3px 10px #35432b18,
+    inset 0 1px 0 #ffffffcc;
+  backdrop-filter: blur(14px);
+  animation: task-deadline-popover-enter 140ms ease-out;
+}
+.task-deadline-popover::before {
+  position: absolute;
+  top: -6px;
+  right: 19px;
+  width: 11px;
+  height: 11px;
+  border-top: 1px solid #dce6d7;
+  border-left: 1px solid #dce6d7;
+  background: #fbfdf9f7;
+  content: "";
+  transform: rotate(45deg);
+}
+.task-deadline-popover-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: #4e6148;
+  font-size: 13px;
+}
+.task-deadline-popover-header .icon-button {
+  width: 26px;
+  height: 26px;
+  padding: 4px;
 }
 .todo-deadline-ring {
   width: 40px;
@@ -149,49 +211,161 @@
   border: 0;
 }
 .task-deadline-fields legend {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   padding: 0;
   color: #5c6c51;
   font-size: 13px;
 }
-.task-deadline-selects {
+.task-deadline-wheels {
+  --wheel-item-height: 46px;
+  --wheel-inset: 92px;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
-}
-.task-deadline-field {
-  display: grid;
-  grid-column: span 2;
-  min-width: 0;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
+  align-items: start;
+  min-width: 0;
+  margin: 0 -3px;
+}
+.task-deadline-wheel-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
   color: #5c6c51;
   font-size: 12px;
 }
-.task-deadline-field.is-time {
-  grid-column: span 3;
-}
-.task-deadline-select-wrap {
-  position: relative;
-}
-.task-deadline-select-wrap select {
-  appearance: none;
-  min-width: 0;
-  width: 100%;
-  padding-right: 32px;
-  cursor: pointer;
-  font-variant-numeric: tabular-nums;
-}
-.task-deadline-select-wrap select:disabled {
-  cursor: default;
+.task-deadline-wheel-field.is-disabled {
   opacity: 0.6;
 }
-.task-deadline-select-wrap > svg {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
+.task-deadline-wheel-label {
+  text-align: center;
   color: #829077;
+  font-size: 11px;
+}
+.task-deadline-wheel-viewport {
+  position: relative;
+  height: 230px;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: none;
+  isolation: isolate;
+  border: 1px solid #e0e8da;
+  border-radius: 19px;
+  outline: none;
+  background: linear-gradient(90deg, #f2f7ef 0%, #fbfdf9 50%, #f2f7ef 100%);
+  perspective: 260px;
+  scrollbar-width: none;
+  scroll-snap-type: y mandatory;
+  scroll-snap-stop: always;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.task-deadline-wheel-viewport::-webkit-scrollbar {
+  display: none;
+}
+.task-deadline-wheel-viewport:focus-visible {
+  border-color: #8f9f7b;
+  box-shadow: 0 0 0 2px #8f9f7b40;
+}
+.task-deadline-wheel-viewport::before,
+.task-deadline-wheel-viewport::after {
+  position: absolute;
+  z-index: 3;
+  left: -1px;
+  right: -1px;
+  height: 86px;
+  pointer-events: none;
+  content: "";
+}
+.task-deadline-wheel-viewport::before {
+  top: -1px;
+  border-bottom: 1px solid #d9e3d3aa;
+  border-radius: 0 0 50% 50% / 0 0 46% 46%;
+  background: linear-gradient(
+    to bottom,
+    #f2f7eff8 6%,
+    #f2f7efdb 55%,
+    #f2f7ef00 100%
+  );
+  box-shadow: inset 0 -13px 17px -16px #718465;
+}
+.task-deadline-wheel-viewport::after {
+  bottom: -1px;
+  border-top: 1px solid #d9e3d3aa;
+  border-radius: 50% 50% 0 0 / 46% 46% 0 0;
+  background: linear-gradient(
+    to top,
+    #f2f7eff8 6%,
+    #f2f7efdb 55%,
+    #f2f7ef00 100%
+  );
+  box-shadow: inset 0 13px 17px -16px #718465;
+}
+.task-deadline-wheel-options {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  transform-style: preserve-3d;
+}
+.task-deadline-wheel-spacer {
+  flex: 0 0 var(--wheel-inset);
+  height: var(--wheel-inset);
+}
+.task-deadline-wheel-center {
+  position: absolute;
+  z-index: 1;
+  top: var(--wheel-inset);
+  right: 4px;
+  left: 4px;
+  height: var(--wheel-item-height);
+  pointer-events: none;
+  border-top: 1px solid #a9bca2;
+  border-bottom: 1px solid #a9bca2;
+  border-radius: 11px;
+  background: linear-gradient(90deg, #ffffff30, #ffffffa8 50%, #ffffff30);
+  box-shadow:
+    0 4px 10px -8px #536b4c,
+    0 -4px 10px -8px #536b4c,
+    inset 0 1px 4px #ffffffcc;
+}
+.task-deadline-wheel-option {
+  display: grid;
+  flex: 0 0 var(--wheel-item-height);
+  height: var(--wheel-item-height);
+  place-items: center;
+  padding: 0 2px;
+  color: #8a9881;
+  cursor: pointer;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  scroll-snap-align: center;
+  text-align: center;
+  transform-origin: center center;
+  transition:
+    color 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
+  user-select: none;
+}
+.task-deadline-wheel-option:hover {
+  color: #607354;
+}
+.task-deadline-wheel-option.is-unavailable {
+  cursor: default;
+}
+.task-deadline-wheel-option.is-unavailable:hover {
+  color: #8a9881;
+}
+.task-deadline-wheel-option.is-selected {
+  color: #405438;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 0 #ffffff;
+}
+.task-deadline-wheel-field.is-disabled .task-deadline-wheel-option {
+  cursor: default;
 }
 .task-deadline-hint {
   margin: 10px 0 0;
@@ -203,8 +377,19 @@
   color: #a85f4d;
   font-size: 12px;
 }
-.task-deadline-dialog .modal-actions {
+.task-deadline-dialog .modal-actions,
+.task-deadline-popover .modal-actions {
   flex-wrap: wrap;
+}
+@keyframes task-deadline-popover-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 @keyframes task-deadline-breathe {
   0%,
@@ -222,5 +407,31 @@
   }
   .todo-deadline-arc {
     transition: none;
+  }
+  .task-deadline-wheel-option {
+    transition: none;
+  }
+  .task-deadline-popover {
+    animation: none;
+  }
+}
+@media (max-width: 520px) {
+  .task-deadline-wheels {
+    gap: 1px;
+    margin: 0 -5px;
+  }
+  .task-deadline-wheel-viewport {
+    border-radius: 16px;
+  }
+  .task-deadline-wheel-option {
+    font-size: 14px;
+  }
+  .task-deadline-wheel-option.is-selected {
+    font-size: 17px;
+  }
+  .task-deadline-popover {
+    right: -6px;
+    width: min(430px, calc(100vw - 20px));
+    padding: 12px 10px;
   }
 }

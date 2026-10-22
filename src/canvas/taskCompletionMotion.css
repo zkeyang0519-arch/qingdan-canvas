@@ -8,6 +8,9 @@
   will-change: transform;
   overflow: visible;
 }
+.todo-row-slot {
+  display: flow-root;
+}
 .completion-strike {
   position: absolute;
   height: 1px;

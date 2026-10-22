@@ -8,7 +8,7 @@ export default function AuthScreen({
   connectionError,
   onRetry,
 }) {
-  const [mode, setMode] = useState("register");
+  const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
