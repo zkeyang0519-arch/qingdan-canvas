@@ -220,56 +220,78 @@ test("截止选择器按本地时间回显，支持零点和逐分钟选择，�
   }
 });
 
-test("截止时间滚轮按五列生成选项，并把步进限制在当前列范围内", () => {
-  const parts = { year: 2028, month: 2, day: 29, hour: 23, minute: 59 };
-  const fields = selection.deadlineWheelFields(parts, 2026);
+test("截止时间滚轮只生成小时和分钟两列", () => {
+  const fields = selection.deadlineWheelFields();
   assert.deepEqual(
     fields.map(({ key, label }) => ({ key, label })),
     [
-      { key: "year", label: "年" },
-      { key: "month", label: "月" },
-      { key: "day", label: "日" },
       { key: "hour", label: "时" },
       { key: "minute", label: "分" },
     ],
   );
-  assert.deepEqual(fields[0].options.slice(0, 3), [2021, 2022, 2023]);
-  assert.equal(fields[0].options.at(-1), 2036);
-  assert.equal(fields[2].options.length, 31);
-  assert.equal(fields[2].isOptionEnabled(29), true);
-  assert.equal(fields[2].isOptionEnabled(30), false);
-  assert.equal(fields[2].stepOptions.length, 29);
-  assert.equal(selection.wheelStepValue(fields[0].options, 2021, -1), 2021);
-  assert.equal(selection.wheelStepValue(fields[2].options, 29, -1), 28);
-  assert.equal(selection.wheelStepValue(fields[1].options, 6, 120, true), 7);
-  assert.equal(selection.wheelStepValue(fields[1].options, 6, -120, true), 5);
-  assert.deepEqual(selection.wheelDeltaSteps(100, 0, 120), {
-    steps: 0,
-    remainder: 100,
-  });
-  assert.deepEqual(selection.wheelDeltaSteps(100, 100, 120), {
-    steps: 1,
-    remainder: 80,
-  });
-  assert.deepEqual(selection.wheelDeltaSteps(-240, 0, 120), {
-    steps: -2,
-    remainder: 0,
-  });
+  assert.deepEqual(
+    fields[0].options,
+    Array.from({ length: 24 }, (_, i) => i),
+  );
+  assert.deepEqual(
+    fields[1].options,
+    Array.from({ length: 60 }, (_, i) => i),
+  );
+  assert.equal(fields[0].format(0), "00");
+  assert.equal(fields[1].format(59), "59");
 });
 
-test("数字滚轮循环显示，分钟用01到60并映射回00到59", () => {
-  const parts = { year: 2028, month: 2, day: 29, hour: 23, minute: 1 };
-  const fields = selection.deadlineWheelFields(parts, 2026);
-  const minute = fields.find((field) => field.key === "minute");
-  const day = fields.find((field) => field.key === "day");
-  assert.deepEqual(minute.options.slice(0, 3), [1, 2, 3]);
-  assert.equal(minute.options.at(-1), 0);
-  assert.equal(minute.format(0), "60");
-  assert.equal(selection.wheelStepValue(minute.options, 1, -1, true), 0);
-  assert.equal(selection.wheelStepValue(minute.options, 0, 1, true), 1);
+test("日历日期与时分独立，选新日期保留时分且早期年份不偏移到1900年", () => {
+  const parts = { year: 2028, month: 2, day: 29, hour: 0, minute: 59 };
+  const date = selection.deadlineCalendarDate(parts);
+  assert.equal(date.getFullYear(), 2028);
+  assert.equal(date.getMonth(), 1);
+  assert.equal(date.getDate(), 29);
+  const selected = new Date(2028, 2, 1);
+  assert.deepEqual(selection.selectDeadlineDate(parts, selected), {
+    ...parts,
+    month: 3,
+    day: 1,
+  });
   assert.equal(
-    selection.wheelStepValue(day.stepOptions, 1, -1, true),
-    day.stepOptions.at(-1),
+    selection.deadlineCalendarDate({ ...parts, year: 4 }).getFullYear(),
+    4,
+  );
+});
+
+test("上下放不下的弹层改从侧面展开，窄屏沿用可滚动的上下布局", () => {
+  const panel = { width: 340, height: 650 };
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 490, right: 530, top: 280, bottom: 320 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "right",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 960, right: 1000, top: 280, bottom: 320 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "left",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 300, right: 340, top: 280, bottom: 320 },
+      panel,
+      { width: 375, height: 667 },
+    ),
+    "bottom",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 490, right: 530, top: 100, bottom: 140 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "bottom",
   );
 });
 

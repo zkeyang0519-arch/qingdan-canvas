@@ -1,6 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, Check, X } from "lucide-react";
-import { Modal } from "./Panels.jsx";
+import React, {
+  useEffect,
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { CalendarClock, Check, Clock3, X } from "lucide-react";
+import { WheelPicker, WheelPickerWrapper } from "@ncdai/react-wheel-picker";
+import { Calendar } from "../components/ui/calendar.jsx";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../components/ui/popover.jsx";
 import {
   nextDeadlineTick,
   parseDeadlineInput,
@@ -9,10 +23,13 @@ import {
 import {
   deadlineSelection,
   deadlineWheelFields,
+  deadlineCalendarDate,
+  deadlinePopoverSide,
+  selectDeadlineDate,
   updateDeadlineSelection,
   deadlineSelectionValue,
-  wheelStepValue,
 } from "./deadlineInput.js";
+import "@ncdai/react-wheel-picker/style.css";
 import "./taskDeadline.css";
 
 const dateFormat = new Intl.DateTimeFormat("zh-CN", {
@@ -60,19 +77,23 @@ export function useDeadlineClock(objects) {
   return now;
 }
 
-export function TaskDeadlineButton({ info, dueAt, text, disabled, onClick }) {
+export const TaskDeadlineButton = React.forwardRef(function TaskDeadlineButton(
+  { info, dueAt, text, disabled, ...props },
+  ref,
+) {
   const hasDeadline = info.status !== "none";
   const description = hasDeadline
     ? `${info.relative}，截止 ${formatDeadline(dueAt)}`
     : "设置截止时间";
   return (
     <button
+      ref={ref}
       type="button"
       className={`todo-deadline-button ${hasDeadline ? "has-deadline" : ""}`}
       aria-label={`${hasDeadline ? "修改" : "设置"}截止时间：${text || "空白待办"}；${description}`}
       title={hasDeadline ? `${description}；点击修改或移除` : "设置截止时间"}
       disabled={disabled}
-      onClick={onClick}
+      {...props}
     >
       {hasDeadline ? (
         <>
@@ -103,205 +124,169 @@ export function TaskDeadlineButton({ info, dueAt, text, disabled, onClick }) {
       )}
     </button>
   );
-}
+});
 
-const WHEEL_ITEM_HEIGHT = 46;
-const WHEEL_CYCLES = 7;
+const timeFields = deadlineWheelFields();
 
-function wheelOptionLabel(field, value) {
-  if (field.isOptionEnabled && !field.isOptionEnabled(value)) return "";
-  return field.format
-    ? field.format(value)
-    : String(value).padStart(field.key === "year" ? 4 : 2, "0");
-}
-
-function WheelColumn({ field, value, disabled, onChange }) {
-  const viewport = useRef(null);
-  const loop = Boolean(field.loop);
-  const cycleLength = field.options.length;
-  const middleCycle = loop ? Math.floor(WHEEL_CYCLES / 2) : 0;
-  const valueIndex = Math.max(0, field.options.indexOf(value));
-  const initialPosition = middleCycle * cycleLength + valueIndex;
-  const [position, setPosition] = useState(initialPosition);
-  const positionRef = useRef(initialPosition);
-
-  const cycleIndex = (index) =>
-    ((index % cycleLength) + cycleLength) % cycleLength;
-  const normalizePosition = (index) => {
-    if (!loop) return Math.min(cycleLength - 1, Math.max(0, index));
-    const cycle = Math.floor(index / cycleLength);
-    if (cycle <= 0 || cycle >= WHEEL_CYCLES - 1)
-      return middleCycle * cycleLength + cycleIndex(index);
-    return index;
-  };
-  const options = loop
-    ? Array.from(
-        { length: cycleLength * WHEEL_CYCLES },
-        (_, index) => field.options[index % cycleLength],
-      )
-    : field.options;
-
-  useEffect(() => {
-    const currentValue = field.options[cycleIndex(positionRef.current)];
-    if (!loop || currentValue !== value) {
-      const next = middleCycle * cycleLength + valueIndex;
-      positionRef.current = next;
-      setPosition(next);
-    }
-  }, [cycleLength, loop, middleCycle, value, valueIndex]);
-
-  useEffect(() => {
-    const element = viewport.current;
-    if (!element) return;
-    const top = position * WHEEL_ITEM_HEIGHT;
-    if (Math.abs(element.scrollTop - top) > 1) element.scrollTop = top;
-  }, [field.options.length, position]);
-
-  const chooseAt = (nextPosition) => {
+function TimeWheel({ field, value, disabled, onChange, onMovingChange }) {
+  const root = useRef(null);
+  const motion = useRef({ frame: null, held: false });
+  const movingChange = useRef(onMovingChange);
+  movingChange.current = onMovingChange;
+  const watchMotion = () => {
     if (disabled) return;
-    const normalized = normalizePosition(nextPosition);
-    const rawValue = field.options[cycleIndex(normalized)];
-    const nextValue = field.normalizeValue
-      ? field.normalizeValue(rawValue)
-      : rawValue;
-    let target = normalized;
-    if (nextValue !== rawValue) {
-      const cycle = loop ? Math.floor(normalized / cycleLength) : 0;
-      const valueIndex = field.options.indexOf(nextValue);
-      target = normalizePosition(cycle * cycleLength + valueIndex);
-    }
-    positionRef.current = target;
-    setPosition(target);
-    if (nextValue !== value) onChange(nextValue);
+    movingChange.current(true);
+    if (motion.current.frame !== null) return;
+    let previous = null,
+      stillFrames = 0;
+    const tick = () => {
+      const transform =
+        root.current?.querySelector("[data-rwp-options]")?.style.transform;
+      stillFrames =
+        !motion.current.held && transform === previous ? stillFrames + 1 : 0;
+      previous = transform;
+      if (stillFrames >= 3) {
+        motion.current.frame = null;
+        movingChange.current(false);
+      } else motion.current.frame = requestAnimationFrame(tick);
+    };
+    motion.current.frame = requestAnimationFrame(tick);
   };
-
-  const move = (delta) => {
-    const step = Math.sign(delta);
-    if (!step) return;
-    const currentValue = field.options[cycleIndex(positionRef.current)];
-    if (loop && !field.stepOptions) chooseAt(positionRef.current + step);
-    else {
-      const stepOptions = field.stepOptions || field.options;
-      const nextValue = wheelStepValue(stepOptions, currentValue, step, loop);
-      const valueIndex = field.options.indexOf(nextValue);
-      const cycle = loop ? Math.floor(positionRef.current / cycleLength) : 0;
-      chooseAt(cycle * cycleLength + valueIndex);
-    }
-  };
-
-  const selectedId = `task-deadline-wheel-${field.key}-${position}`;
-
+  useLayoutEffect(() => {
+    const release = (event) => {
+      // The primitive has no touchcancel handler; cancel through its mouseup
+      // path while its gesture listeners are still attached.
+      if (event.type === "touchcancel" && motion.current.held)
+        document.dispatchEvent(
+          new MouseEvent("mouseup", { bubbles: true, cancelable: true }),
+        );
+      motion.current.held = false;
+    };
+    document.addEventListener("mouseup", release);
+    document.addEventListener("touchend", release);
+    document.addEventListener("touchcancel", release);
+    return () => {
+      // wheel-picker 1.2.3 aborts its document mousemove listener on mouseup,
+      // but not on unmount. Finish the gesture before its passive cleanup.
+      if (motion.current.held)
+        document.dispatchEvent(
+          new MouseEvent("mouseup", { bubbles: true, cancelable: true }),
+        );
+      cancelAnimationFrame(motion.current.frame);
+      document.removeEventListener("mouseup", release);
+      document.removeEventListener("touchend", release);
+      document.removeEventListener("touchcancel", release);
+    };
+  }, []);
+  useLayoutEffect(() => {
+    if (disabled && motion.current.held)
+      document.dispatchEvent(
+        new MouseEvent("mouseup", { bubbles: true, cancelable: true }),
+      );
+  }, [disabled]);
+  const options = useMemo(
+    () =>
+      field.options.map((value) => ({
+        value,
+        label: field.format(value),
+        disabled: Boolean(disabled),
+      })),
+    [field, disabled],
+  );
+  // The wheel primitive exposes keyboard handling but no ARIA props yet.
+  // Add a named spinbutton to its actual focus target, not a second tab stop.
+  useLayoutEffect(() => {
+    const wheel = root.current.querySelector("[data-rwp]");
+    wheel.setAttribute("role", "spinbutton");
+    wheel.setAttribute("aria-label", field.name);
+    wheel.setAttribute("aria-valuemin", "0");
+    wheel.setAttribute("aria-valuemax", String(field.options.at(-1)));
+    wheel.setAttribute("aria-valuenow", String(value));
+    wheel.setAttribute(
+      "aria-valuetext",
+      `${field.format(value)} ${field.label}`,
+    );
+    wheel.setAttribute("aria-disabled", String(Boolean(disabled)));
+  }, [field, value, disabled]);
   return (
     <div
-      className={`task-deadline-wheel-field ${disabled ? "is-disabled" : ""}`}
+      ref={root}
+      className="task-deadline-time-field"
+      inert={disabled || undefined}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0 || disabled) return;
+        motion.current.held = true;
+        watchMotion();
+      }}
+      onTouchStartCapture={() => {
+        if (disabled) return;
+        motion.current.held = true;
+        watchMotion();
+      }}
+      onWheelCapture={(event) => {
+        if (event.deltaY) watchMotion();
+      }}
+      onKeyDownCapture={(event) => {
+        if (disabled) return;
+        if (
+          ["ArrowUp", "ArrowDown"].includes(event.key) ||
+          (/^\d$/.test(event.key) &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.altKey)
+        )
+          watchMotion();
+        if (!["Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onChange(event.key === "Home" ? 0 : field.options.at(-1));
+      }}
     >
-      <span className="task-deadline-wheel-label">{field.label}</span>
-      <div
-        ref={viewport}
-        className="task-deadline-wheel-viewport"
-        role="listbox"
-        aria-label={field.name}
-        aria-activedescendant={selectedId}
-        aria-disabled={disabled}
-        tabIndex={disabled ? -1 : 0}
-        onScroll={(event) => {
-          event.stopPropagation();
-          if (disabled) return;
-          const index = Math.min(
-            options.length - 1,
-            Math.max(
-              0,
-              Math.round(event.currentTarget.scrollTop / WHEEL_ITEM_HEIGHT),
-            ),
-          );
-          chooseAt(index);
+      <span className="task-deadline-wheel-label" aria-hidden="true">
+        {field.label === "时" ? "小时" : "分钟"}
+      </span>
+      <WheelPicker
+        options={options}
+        value={value}
+        onValueChange={(next) => {
+          if (!disabled) onChange(next);
         }}
-        onWheel={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (disabled) return;
-          const rawDelta = event.deltaY || event.deltaX;
-          if (!rawDelta) return;
-          // Treat each wheel event as one discrete operation. The magnitude,
-          // duration, and browser delta mode never create extra steps.
-          move(Math.sign(rawDelta));
+        infinite
+        visibleCount={12}
+        optionItemHeight={30}
+        scrollSensitivity={8}
+        classNames={{
+          optionItem: "task-deadline-time-option",
+          highlightWrapper: "task-deadline-time-highlight",
+          highlightItem: "task-deadline-time-selected",
         }}
-        onKeyDown={(event) => {
-          if (disabled) return;
-          if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-            event.preventDefault();
-            move(1);
-          } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-            event.preventDefault();
-            move(-1);
-          } else if (event.key === "Home") {
-            event.preventDefault();
-            chooseAt(loop ? middleCycle * cycleLength : 0);
-          } else if (event.key === "End") {
-            event.preventDefault();
-            chooseAt(
-              loop
-                ? middleCycle * cycleLength + cycleLength - 1
-                : cycleLength - 1,
-            );
-          }
-        }}
-      >
-        <div className="task-deadline-wheel-options">
-          <span className="task-deadline-wheel-spacer" aria-hidden="true" />
-          {options.map((option, index) => {
-            const distance = index - position;
-            const selected = index === position;
-            const enabled =
-              !field.isOptionEnabled || field.isOptionEnabled(option);
-            return (
-              <div
-                key={`${option}-${index}`}
-                id={`task-deadline-wheel-${field.key}-${index}`}
-                className={`task-deadline-wheel-option ${selected ? "is-selected" : ""} ${enabled ? "" : "is-unavailable"}`}
-                role="option"
-                aria-selected={selected}
-                aria-disabled={!enabled}
-                aria-posinset={cycleIndex(index) + 1}
-                aria-setsize={cycleLength}
-                data-wheel-option="true"
-                style={{
-                  transform: `rotateX(${Math.max(-72, Math.min(72, distance * -12))}deg)`,
-                  opacity: Math.max(
-                    0.12,
-                    1 - Math.min(4, Math.abs(distance)) * 0.18,
-                  ),
-                }}
-                onClick={() => chooseAt(index)}
-              >
-                {wheelOptionLabel(field, option)}
-              </div>
-            );
-          })}
-          <span className="task-deadline-wheel-spacer" aria-hidden="true" />
-        </div>
-        <span className="task-deadline-wheel-center" aria-hidden="true" />
-      </div>
+      />
     </div>
   );
 }
 
 function DeadlinePicker({ task, disabled, onClose, onSave }) {
   const [parts, setParts] = useState(() => deadlineSelection(task.dueAt));
+  const [month, setMonth] = useState(() => deadlineCalendarDate(parts));
   const [error, setError] = useState("");
+  const [moving, setMoving] = useState({ hour: false, minute: false });
+  const settling = moving.hour || moving.minute;
+  const date = deadlineCalendarDate(parts);
   const currentYear = new Date().getFullYear();
-  const fields = deadlineWheelFields(parts, currentYear);
   const save = (dueAt) => {
+    if (disabled) return;
     const message = onSave(dueAt);
     if (message) setError(message);
   };
   return (
     <>
-      <p className="task-deadline-title">{task.title || "空白待办"}</p>
+      <p className="task-deadline-title" title={task.title}>
+        {task.title || "空白待办"}
+      </p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (disabled) return;
+          if (settling) return;
           try {
             save(parseDeadlineInput(deadlineSelectionValue(parts)));
           } catch (err) {
@@ -309,28 +294,79 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
           }
         }}
       >
-        <fieldset className="task-deadline-fields">
-          <legend>截止日期和时间</legend>
-          <div className="task-deadline-wheels">
-            {fields.map((field) => (
-              <WheelColumn
+        <fieldset className="task-deadline-fields" disabled={disabled}>
+          <legend className="task-deadline-sr-only">截止日期和时间</legend>
+          <Calendar
+            mode="single"
+            required
+            selected={date}
+            month={month}
+            onMonthChange={setMonth}
+            startMonth={deadlineCalendarDate({
+              year: Math.max(1, Math.min(currentYear - 5, parts.year)),
+              month: 1,
+              day: 1,
+            })}
+            endMonth={deadlineCalendarDate({
+              year: Math.min(9999, Math.max(currentYear + 10, parts.year)),
+              month: 12,
+              day: 1,
+            })}
+            disabled={disabled}
+            disableNavigation={disabled}
+            onSelect={(selected) => {
+              if (disabled || !selected) return;
+              setParts((before) => selectDeadlineDate(before, selected));
+              setMonth(selected);
+              setError("");
+            }}
+          />
+          <div className="task-deadline-time-heading">
+            <span>
+              <Clock3 size={14} />
+              时间
+            </span>
+            <span className="task-deadline-time-preview">
+              {String(parts.hour).padStart(2, "0")} :{" "}
+              {String(parts.minute).padStart(2, "0")}
+            </span>
+          </div>
+          <WheelPickerWrapper className="task-deadline-time-wheels">
+            {timeFields.map((field) => (
+              <TimeWheel
                 key={field.key}
                 field={field}
                 value={parts[field.key]}
                 disabled={disabled}
+                onMovingChange={(value) =>
+                  setMoving((before) =>
+                    before[field.key] === value
+                      ? before
+                      : { ...before, [field.key]: value },
+                  )
+                }
                 onChange={(value) => {
-                  setParts((previous) =>
-                    updateDeadlineSelection(previous, field.key, value),
+                  setParts((before) =>
+                    updateDeadlineSelection(before, field.key, value),
                   );
                   setError("");
                 }}
               />
             ))}
-          </div>
+            <span className="task-deadline-time-colon" aria-hidden="true">
+              :
+            </span>
+          </WheelPickerWrapper>
         </fieldset>
-        <p className="task-deadline-hint">
-          按本机时区设置；提前 24 小时开始提醒。
-        </p>
+        <div className="task-deadline-summary" aria-live="polite">
+          <CalendarClock size={14} aria-hidden="true" />
+          <span>
+            {parts.year} 年 {parts.month} 月 {parts.day} 日 ·{" "}
+            {String(parts.hour).padStart(2, "0")}:
+            {String(parts.minute).padStart(2, "0")}
+          </span>
+        </div>
+        <p className="task-deadline-hint">本地时间 · 提前 24 小时提醒</p>
         {disabled && (
           <p role="status" className="task-deadline-error">
             这条待办当前无法编辑，可能已被锁定、收纳或删除。
@@ -341,22 +377,32 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
             {error}
           </p>
         )}
-        <div className="modal-actions">
+        <div className="task-deadline-actions">
           {task.dueAt && (
             <button
-              className="button"
+              className="task-deadline-remove"
               type="button"
               disabled={disabled}
               onClick={() => save(null)}
             >
-              移除截止时间
+              移除时间
             </button>
           )}
-          <button className="button" type="button" onClick={onClose}>
+          <span />
+          <button
+            className="task-deadline-cancel"
+            type="button"
+            onClick={onClose}
+          >
             取消
           </button>
-          <button className="button primary" type="submit" disabled={disabled}>
-            保存截止时间
+          <button
+            className="task-deadline-confirm"
+            type="submit"
+            disabled={disabled || settling}
+            aria-busy={settling}
+          >
+            确定
           </button>
         </div>
       </form>
@@ -364,75 +410,127 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
   );
 }
 
-export function TaskDeadlinePopover({ task, disabled, onClose, onSave }) {
+export function TaskDeadlinePopover({
+  task,
+  open,
+  onOpenChange,
+  disabled,
+  onClose,
+  onSave,
+  children,
+}) {
   const panel = useRef(null);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const onPointerDown = (event) => {
-      if (
-        !panel.current?.contains(event.target) &&
-        !event.target.closest("[data-deadline-anchor]")
-      )
-        closeRef.current();
-    };
-    const onKeyDown = (event) => {
-      if (event.key === "Escape" && !event.isComposing) {
-        event.preventDefault();
-        closeRef.current();
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown, true);
-    panel.current?.querySelector(".task-deadline-wheel-viewport")?.focus({
-      preventScroll: true,
-    });
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
+  const [panelElement, setPanelElement] = useState(null);
+  const panelRef = useCallback((element) => {
+    panel.current = element;
+    setPanelElement(element);
   }, []);
+  const trigger = useRef(null);
+  const [side, setSide] = useState("bottom");
+  const titleId = useId();
+  useLayoutEffect(() => {
+    if (!open || !panelElement) return;
+    const place = () => {
+      if (!trigger.current || !panel.current) return;
+      setSide(
+        deadlinePopoverSide(
+          trigger.current.getBoundingClientRect(),
+          {
+            width: panel.current.offsetWidth,
+            height: panel.current.scrollHeight + 2,
+          },
+          { width: window.innerWidth, height: window.innerHeight },
+        ),
+      );
+    };
+    const onScroll = (event) => {
+      if (!panel.current?.contains(event.target)) place();
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    if (panel.current) observer.observe(panel.current);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open, panelElement]);
   return (
-    <section
-      ref={panel}
-      className="task-deadline-popover"
-      role="dialog"
-      aria-label="设置待办截止时间"
-    >
-      <header className="task-deadline-popover-header">
-        <strong>设置截止时间</strong>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="关闭截止时间选择"
-          onClick={onClose}
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild ref={trigger} data-deadline-trigger>
+        {children}
+      </PopoverTrigger>
+      {open && (
+        <PopoverContent
+          ref={panelRef}
+          className="task-deadline-popover"
+          side={side}
+          align={side === "bottom" ? "end" : "start"}
+          aria-labelledby={titleId}
+          hideWhenDetached
+          onInteractOutside={(event) => {
+            const nextTrigger = event.target.closest?.(
+              "[data-deadline-trigger]",
+            );
+            // The other trigger replaces the shared editor. A delayed outside
+            // dismissal from this row must not clear the newly opened editor.
+            if (
+              nextTrigger &&
+              nextTrigger !== trigger.current &&
+              !nextTrigger.disabled
+            )
+              event.preventDefault();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            // A different row may already have opened its panel before this
+            // one's delayed focus cleanup. Never steal focus from that panel.
+            if (
+              document.activeElement === document.body &&
+              !document.querySelector(".task-deadline-popover")
+            )
+              trigger.current?.focus({ preventScroll: true });
+          }}
+          onOpenAutoFocus={(event) => {
+            const day = panel.current?.querySelector(
+              '.rdp-day_button[tabindex="0"]',
+            );
+            if (day) {
+              event.preventDefault();
+              day.focus({ preventScroll: true });
+            }
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
         >
-          <X size={16} />
-        </button>
-      </header>
-      <DeadlinePicker
-        task={task}
-        disabled={disabled}
-        onClose={onClose}
-        onSave={onSave}
-      />
-    </section>
-  );
-}
-
-export function TaskDeadlineDialog({ task, disabled, onClose, onSave }) {
-  return (
-    <Modal
-      title="待办截止时间"
-      onClose={onClose}
-      className="task-deadline-dialog"
-    >
-      <DeadlinePicker
-        task={task}
-        disabled={disabled}
-        onClose={onClose}
-        onSave={onSave}
-      />
-    </Modal>
+          <header className="task-deadline-popover-header">
+            <span>
+              <CalendarClock size={16} />
+              <strong id={titleId}>截止时间</strong>
+            </span>
+            <button
+              type="button"
+              aria-label="关闭截止时间选择"
+              onClick={onClose}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <DeadlinePicker
+            task={task}
+            disabled={disabled}
+            onClose={onClose}
+            onSave={onSave}
+          />
+        </PopoverContent>
+      )}
+    </Popover>
   );
 }

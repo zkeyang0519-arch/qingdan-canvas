@@ -227,6 +227,12 @@ function ChecklistPane({
     return () => clearTimeout(timer);
   }, [located]);
   const renderTask = (task) => {
+    const ownDeadlineEditor =
+      deadlineEditor?.pageId === page.id &&
+      deadlineEditor.noteId === task.note.id &&
+      deadlineEditor.blockId === task.key
+        ? deadlineEditor
+        : null;
     const text = blockText(task.block),
       deadline = deadlineInfo(task.block, clock),
       isEditing =
@@ -390,23 +396,25 @@ function ChecklistPane({
           </button>
         </div>
         <div className="todo-deadline-control" data-deadline-anchor>
-          <TaskDeadlineButton
-            info={deadline}
-            dueAt={task.block.dueAt}
-            text={text}
+          <TaskDeadlinePopover
+            open={Boolean(ownDeadlineEditor)}
+            onOpenChange={(open) =>
+              open
+                ? onDeadline(page.id, task)
+                : onDeadlineClose(ownDeadlineEditor)
+            }
+            task={ownDeadlineEditor}
             disabled={frozen || task.locked || workspace.readOnly}
-            onClick={() => onDeadline(page.id, task)}
-          />
-          {deadlineEditor?.pageId === page.id &&
-            deadlineEditor.noteId === task.note.id &&
-            deadlineEditor.blockId === task.key && (
-              <TaskDeadlinePopover
-                task={deadlineEditor}
-                disabled={frozen || task.locked || workspace.readOnly}
-                onClose={onDeadlineClose}
-                onSave={onDeadlineSave}
-              />
-            )}
+            onClose={() => onDeadlineClose(ownDeadlineEditor)}
+            onSave={onDeadlineSave}
+          >
+            <TaskDeadlineButton
+              info={deadline}
+              dueAt={task.block.dueAt}
+              text={text}
+              disabled={frozen || task.locked || workspace.readOnly}
+            />
+          </TaskDeadlinePopover>
         </div>
       </div>
     );
@@ -1256,7 +1264,13 @@ export default function ArrangedWorkspace({
                   )
             }
             deadlineEditor={dialog?.type === "deadline" ? dialog : null}
-            onDeadlineClose={() => setDialog(null)}
+            onDeadlineClose={(editor) =>
+              setDialog((current) =>
+                current?.type === "deadline" && current === editor
+                  ? null
+                  : current,
+              )
+            }
             onDeadlineSave={(dueAt) => {
               if (dialog?.type !== "deadline") return "截止时间选择已关闭。";
               if (blocked || workspace.readOnly)
