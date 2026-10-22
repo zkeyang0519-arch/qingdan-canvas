@@ -12,7 +12,6 @@ import {
   updateDeadlineSelection,
   deadlineSelectionValue,
   wheelStepValue,
-  wheelDeltaSteps,
 } from "./deadlineInput.js";
 import "./taskDeadline.css";
 
@@ -108,14 +107,6 @@ export function TaskDeadlineButton({ info, dueAt, text, disabled, onClick }) {
 
 const WHEEL_ITEM_HEIGHT = 46;
 const WHEEL_CYCLES = 7;
-// Low-sensitivity wheel profile: about three standard mouse-wheel notches are
-// needed before a column advances by one value.
-const WHEEL_DELTA_PER_STEP = 360;
-const WHEEL_LINE_DELTA = 40;
-const WHEEL_REMAINDER_RATIO = 0.8;
-const WHEEL_THROTTLE = 2000;
-const WHEEL_DEBOUNCE = 180;
-const WHEEL_MAX_STEPS_PER_EVENT = 1;
 
 function wheelOptionLabel(field, value) {
   if (field.isOptionEnabled && !field.isOptionEnabled(value)) return "";
@@ -133,13 +124,6 @@ function WheelColumn({ field, value, disabled, onChange }) {
   const initialPosition = middleCycle * cycleLength + valueIndex;
   const [position, setPosition] = useState(initialPosition);
   const positionRef = useRef(initialPosition);
-  const wheelRef = useRef({
-    endTimer: null,
-    lastMove: 0,
-    remainder: 0,
-    pending: 0,
-    timer: null,
-  });
 
   const cycleIndex = (index) =>
     ((index % cycleLength) + cycleLength) % cycleLength;
@@ -194,52 +178,16 @@ function WheelColumn({ field, value, disabled, onChange }) {
   const move = (delta) => {
     const step = Math.sign(delta);
     if (!step) return;
+    const currentValue = field.options[cycleIndex(positionRef.current)];
     if (loop && !field.stepOptions) chooseAt(positionRef.current + step);
     else {
       const stepOptions = field.stepOptions || field.options;
-      const nextValue = wheelStepValue(stepOptions, value, step, loop);
+      const nextValue = wheelStepValue(stepOptions, currentValue, step, loop);
       const valueIndex = field.options.indexOf(nextValue);
       const cycle = loop ? Math.floor(positionRef.current / cycleLength) : 0;
       chooseAt(cycle * cycleLength + valueIndex);
     }
   };
-
-  const moveRef = useRef(move);
-  moveRef.current = move;
-  const drainWheel = () => {
-    const state = wheelRef.current;
-    state.timer = null;
-    if (!state.pending) return;
-    const now = performance.now();
-    const wait = Math.max(0, WHEEL_THROTTLE - (now - state.lastMove));
-    if (wait) {
-      state.timer = window.setTimeout(drainWheel, wait);
-      return;
-    }
-    const step = state.pending > 0 ? 1 : -1;
-    state.pending -= step;
-    state.lastMove = now;
-    moveRef.current(step);
-    if (state.pending)
-      state.timer = window.setTimeout(drainWheel, WHEEL_THROTTLE);
-  };
-  const scheduleWheel = () => {
-    const state = wheelRef.current;
-    if (state.timer != null || !state.pending) return;
-    const wait = Math.max(
-      0,
-      WHEEL_THROTTLE - (performance.now() - state.lastMove),
-    );
-    state.timer = window.setTimeout(drainWheel, wait);
-  };
-  useEffect(
-    () => () => {
-      const state = wheelRef.current;
-      if (state.timer != null) window.clearTimeout(state.timer);
-      if (state.endTimer != null) window.clearTimeout(state.endTimer);
-    },
-    [],
-  );
 
   const selectedId = `task-deadline-wheel-${field.key}-${position}`;
 
@@ -274,41 +222,9 @@ function WheelColumn({ field, value, disabled, onChange }) {
           if (disabled) return;
           const rawDelta = event.deltaY || event.deltaX;
           if (!rawDelta) return;
-          const scale =
-            event.deltaMode === 1
-              ? WHEEL_LINE_DELTA
-              : event.deltaMode === 2
-                ? WHEEL_DELTA_PER_STEP
-                : 1;
-          const state = wheelRef.current;
-          const result = wheelDeltaSteps(
-            rawDelta * scale,
-            state.remainder,
-            WHEEL_DELTA_PER_STEP,
-          );
-          state.remainder = result.remainder;
-          if (result.steps) {
-            state.pending += Math.max(
-              -WHEEL_MAX_STEPS_PER_EVENT,
-              Math.min(WHEEL_MAX_STEPS_PER_EVENT, result.steps),
-            );
-            // A single large wheel event is intentionally capped at one
-            // value, so its extra delta must not become a second queued step.
-            state.remainder = 0;
-          }
-          if (state.endTimer != null) window.clearTimeout(state.endTimer);
-          state.endTimer = window.setTimeout(() => {
-            state.endTimer = null;
-            if (
-              Math.abs(state.remainder) >=
-              WHEEL_DELTA_PER_STEP * WHEEL_REMAINDER_RATIO
-            ) {
-              state.pending += Math.sign(state.remainder);
-            }
-            state.remainder = 0;
-            scheduleWheel();
-          }, WHEEL_DEBOUNCE);
-          scheduleWheel();
+          // Treat each wheel event as one discrete operation. The magnitude,
+          // duration, and browser delta mode never create extra steps.
+          move(Math.sign(rawDelta));
         }}
         onKeyDown={(event) => {
           if (disabled) return;
