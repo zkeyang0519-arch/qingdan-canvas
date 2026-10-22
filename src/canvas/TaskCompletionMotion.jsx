@@ -24,7 +24,9 @@ export default function TaskCompletionMotion({
       [...(listElement?.querySelectorAll(selector) || [])].find(
         (n) => n.dataset.taskId === entry.itemId,
       );
-    const target = find(".done-panel [data-task-id]");
+    const target = find(
+      `${entry.reverse ? ".pending-panel" : ".done-panel"} [data-task-id]`,
+    );
     const sourceSlot = [
       ...(listElement?.querySelectorAll("[data-completion-source]") || []),
     ].find((n) => n.dataset.completionSource === entry.itemId);
@@ -87,6 +89,11 @@ export default function TaskCompletionMotion({
     };
     const card = entry.source.card.cloneNode(true);
     element.append(card);
+    if (entry.reverse)
+      card.querySelectorAll(".todo-copy, .todo-copy *").forEach((node) => {
+        node.style.textDecorationLine = "none";
+        node.style.textDecorationColor = "transparent";
+      });
     target.dataset.completionHidden = "true";
     targetSlot.classList.add("completion-target-slot");
     Object.assign(element.style, {
@@ -144,8 +151,14 @@ export default function TaskCompletionMotion({
     const checkbox = card.querySelector(".todo-circle"),
       targetCheck = target.querySelector(".todo-circle");
     if (checkbox && targetCheck) {
+      const sourceNodes = [...checkbox.childNodes].map((n) =>
+        n.cloneNode(true),
+      );
+      const targetNodes = [...targetCheck.childNodes].map((n) =>
+        n.cloneNode(true),
+      );
       checkbox.replaceChildren(
-        ...[...targetCheck.childNodes].map((n) => n.cloneNode(true)),
+        ...(entry.reverse && !targetNodes.length ? sourceNodes : targetNodes),
       );
       const fromStyle = window.getComputedStyle(checkbox),
         toStyle = window.getComputedStyle(targetCheck);
@@ -166,7 +179,13 @@ export default function TaskCompletionMotion({
           borderColor: toStyle.borderColor,
         },
       ]);
-      if (checkbox.firstElementChild)
+      if (checkbox.firstElementChild && entry.reverse)
+        animate(checkbox.firstElementChild, [
+          { offset: 0, opacity: 1, transform: "scale(1)" },
+          { offset: lift, opacity: 0, transform: "scale(.6)" },
+          { offset: 1, opacity: 0, transform: "scale(.6)" },
+        ]);
+      else if (checkbox.firstElementChild)
         animate(checkbox.firstElementChild, [
           { offset: 0, opacity: 0, transform: "scale(.6)" },
           { offset: lift, opacity: 1, transform: "scale(1)" },
@@ -213,16 +232,30 @@ export default function TaskCompletionMotion({
         width: `${line.right - line.x}px`,
       });
       element.append(strike);
-      animate(strike, [
-        { offset: 0, transform: "scaleX(0)" },
-        {
-          offset: lift,
-          transform: "scaleX(0)",
-          easing: "cubic-bezier(.2,.6,.3,1)",
-        },
-        { offset: confirmed, transform: "scaleX(1)" },
-        { offset: 1, transform: "scaleX(1)" },
-      ]);
+      animate(
+        strike,
+        entry.reverse
+          ? [
+              { offset: 0, transform: "scaleX(1)" },
+              { offset: lift, transform: "scaleX(1)" },
+              {
+                offset: confirmed,
+                transform: "scaleX(0)",
+                easing: "cubic-bezier(.2,.6,.3,1)",
+              },
+              { offset: 1, transform: "scaleX(0)" },
+            ]
+          : [
+              { offset: 0, transform: "scaleX(0)" },
+              {
+                offset: lift,
+                transform: "scaleX(0)",
+                easing: "cubic-bezier(.2,.6,.3,1)",
+              },
+              { offset: confirmed, transform: "scaleX(1)" },
+              { offset: 1, transform: "scaleX(1)" },
+            ],
+      );
     }
     let frame,
       revealed = scrollDelta === 0;

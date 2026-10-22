@@ -169,6 +169,12 @@ test("提醒时钟会在跨入24小时和刚超时的边界刷新", () => {
 
 test("切换截止月份和年份会限制日期，处理大小月与闰年并保留时间", () => {
   const january = { year: 2028, month: 1, day: 31, hour: 22, minute: 5 };
+  const preserved = selection.updateDeadlineSelection(
+    { ...january, day: 15 },
+    "month",
+    2,
+  );
+  assert.equal(preserved.day, 15);
   const february = selection.updateDeadlineSelection(january, "month", 2);
   assert.deepEqual(february, { ...january, month: 2, day: 29 });
   assert.equal(selection.deadlineMonthDays(february), 29);
@@ -182,7 +188,7 @@ test("切换截止月份和年份会限制日期，处理大小月与闰年并�
   assert.equal(january.day, 31);
 });
 
-test("截止下拉框按本地时间回显，支持零点和逐分钟选择，新设置默认当天23:59", () => {
+test("截止选择器按本地时间回显，支持零点和逐分钟选择，新设置默认当天23:59", () => {
   const previous = process.env.TZ;
   process.env.TZ = "Asia/Shanghai";
   try {
@@ -212,6 +218,81 @@ test("截止下拉框按本地时间回显，支持零点和逐分钟选择，�
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+test("截止时间滚轮只生成小时和分钟两列", () => {
+  const fields = selection.deadlineWheelFields();
+  assert.deepEqual(
+    fields.map(({ key, label }) => ({ key, label })),
+    [
+      { key: "hour", label: "时" },
+      { key: "minute", label: "分" },
+    ],
+  );
+  assert.deepEqual(
+    fields[0].options,
+    Array.from({ length: 24 }, (_, i) => i),
+  );
+  assert.deepEqual(
+    fields[1].options,
+    Array.from({ length: 60 }, (_, i) => i),
+  );
+  assert.equal(fields[0].format(0), "00");
+  assert.equal(fields[1].format(59), "59");
+});
+
+test("日历日期与时分独立，选新日期保留时分且早期年份不偏移到1900年", () => {
+  const parts = { year: 2028, month: 2, day: 29, hour: 0, minute: 59 };
+  const date = selection.deadlineCalendarDate(parts);
+  assert.equal(date.getFullYear(), 2028);
+  assert.equal(date.getMonth(), 1);
+  assert.equal(date.getDate(), 29);
+  const selected = new Date(2028, 2, 1);
+  assert.deepEqual(selection.selectDeadlineDate(parts, selected), {
+    ...parts,
+    month: 3,
+    day: 1,
+  });
+  assert.equal(
+    selection.deadlineCalendarDate({ ...parts, year: 4 }).getFullYear(),
+    4,
+  );
+});
+
+test("上下放不下的弹层改从侧面展开，窄屏沿用可滚动的上下布局", () => {
+  const panel = { width: 340, height: 650 };
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 490, right: 530, top: 280, bottom: 320 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "right",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 960, right: 1000, top: 280, bottom: 320 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "left",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 300, right: 340, top: 280, bottom: 320 },
+      panel,
+      { width: 375, height: 667 },
+    ),
+    "bottom",
+  );
+  assert.equal(
+    selection.deadlinePopoverSide(
+      { left: 490, right: 530, top: 100, bottom: 140 },
+      panel,
+      { width: 1160, height: 884 },
+    ),
+    "bottom",
+  );
 });
 
 test("设置和移除截止时间保留其他行、正文、备注和完成状态", () => {

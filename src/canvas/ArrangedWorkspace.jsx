@@ -16,6 +16,7 @@ import {
   Plus,
   Undo2,
   Redo2,
+  Trash2,
 } from "lucide-react";
 import {
   blockText,
@@ -36,6 +37,7 @@ import {
   editPageBlock,
   insertPageBlocks,
   deletePageTasks,
+  clearCompletedPageTasks,
   takeOutToPage,
   writablePage,
   setPageDeadline,
@@ -43,7 +45,7 @@ import {
 import { deadlineInfo } from "../../shared/deadline.js";
 import {
   TaskDeadlineButton,
-  TaskDeadlineDialog,
+  TaskDeadlinePopover,
   formatDeadline,
   useDeadlineClock,
 } from "./TaskDeadline.jsx";
@@ -144,6 +146,7 @@ function ChecklistPane({
   onSelect,
   onCreate,
   onCollect,
+  onClearCompleted,
   onPickImages,
   onReference,
   onReferencePicker,
@@ -156,6 +159,9 @@ function ChecklistPane({
   onToast,
   clock,
   onDeadline,
+  deadlineEditor,
+  onDeadlineClose,
+  onDeadlineSave,
   activeMotions,
   onCompletion,
 }) {
@@ -221,6 +227,12 @@ function ChecklistPane({
     return () => clearTimeout(timer);
   }, [located]);
   const renderTask = (task) => {
+    const ownDeadlineEditor =
+      deadlineEditor?.pageId === page.id &&
+      deadlineEditor.noteId === task.note.id &&
+      deadlineEditor.blockId === task.key
+        ? deadlineEditor
+        : null;
     const text = blockText(task.block),
       deadline = deadlineInfo(task.block, clock),
       isEditing =
@@ -237,7 +249,11 @@ function ChecklistPane({
             todoTools?.showMenu(e, [task.note], task.key, frozen);
         }}
         onPointerDown={(e) => {
-          if (!e.target.closest("button,input,textarea,[contenteditable=true]"))
+          if (
+            !e.target.closest(
+              "button,input,textarea,[contenteditable=true],.task-deadline-popover",
+            )
+          )
             onSelect(
               side,
               e.shiftKey
@@ -265,15 +281,16 @@ function ChecklistPane({
               )?.tasks.some((t) => t.key === task.key && !t.locked)
             )
               return;
-            const source =
-              !task.block.done &&
-              captureCompletionSource(e.currentTarget.closest(".todo-row"));
+            const source = captureCompletionSource(
+              e.currentTarget.closest(".todo-row"),
+            );
             workspace.toggleBlock(task.note.id, task.key);
             if (source)
               onCompletion({
                 eventId: id("completion"),
                 itemId: task.key,
                 source,
+                reverse: task.block.done,
                 manual: true,
               });
           }}
@@ -378,13 +395,27 @@ function ChecklistPane({
             <Archive size={14} />
           </button>
         </div>
-        <TaskDeadlineButton
-          info={deadline}
-          dueAt={task.block.dueAt}
-          text={text}
-          disabled={frozen || task.locked || workspace.readOnly}
-          onClick={() => onDeadline(page.id, task)}
-        />
+        <div className="todo-deadline-control" data-deadline-anchor>
+          <TaskDeadlinePopover
+            open={Boolean(ownDeadlineEditor)}
+            onOpenChange={(open) =>
+              open
+                ? onDeadline(page.id, task)
+                : onDeadlineClose(ownDeadlineEditor)
+            }
+            task={ownDeadlineEditor}
+            disabled={frozen || task.locked || workspace.readOnly}
+            onClose={() => onDeadlineClose(ownDeadlineEditor)}
+            onSave={onDeadlineSave}
+          >
+            <TaskDeadlineButton
+              info={deadline}
+              dueAt={task.block.dueAt}
+              text={text}
+              disabled={frozen || task.locked || workspace.readOnly}
+            />
+          </TaskDeadlinePopover>
+        </div>
       </div>
     );
   };
@@ -447,9 +478,14 @@ function ChecklistPane({
                 aria-label={`${label}未完成清单`}
               >
                 {page.tasks.map((task) => {
-                  if (!task.block.done) return renderTask(task);
+                  if (!task.block.done)
+                    return (
+                      <div className="todo-row-slot" key={task.key}>
+                        {renderTask(task)}
+                      </div>
+                    );
                   const motion = activeMotions.find(
-                    (m) => m.itemId === task.key,
+                    (m) => m.itemId === task.key && !m.reverse,
                   );
                   return motion ? (
                     <div
@@ -461,6 +497,16 @@ function ChecklistPane({
                     />
                   ) : null;
                 })}
+                {activeMotions
+                  .filter((m) => m.reverse)
+                  .map((m) => (
+                    <div
+                      key={m.eventId}
+                      className="completion-target-buffer"
+                      data-completion-buffer={m.eventId}
+                      aria-hidden="true"
+                    />
+                  ))}
                 {draft ? (
                   <DraftRow
                     apiRef={draftApi}
@@ -573,26 +619,60 @@ function ChecklistPane({
                 <h1>
                   已完成 <small>{completed.length}</small>
                 </h1>
+                <button
+                  type="button"
+                  className="checklist-clear-completed"
+                  title="清空当前项目的已完成事项，可撤销；锁定事项会保留"
+                  disabled={
+                    frozen ||
+                    workspace.readOnly ||
+                    !completed.some((task) => !task.locked)
+                  }
+                  onClick={() => onClearCompleted(page.id)}
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                  清空已完成
+                </button>
               </header>
               <div
                 className="todo-panel-body"
                 tabIndex={0}
                 aria-label={`${label}已完成清单`}
               >
-                {completed.map((task) => (
-                  <div key={task.key}>{renderTask(task)}</div>
-                ))}
-                {!completed.length && (
-                  <p className="checklist-empty-done">完成的事项会留在这里</p>
-                )}
-                {activeMotions.map((m) => (
-                  <div
-                    key={m.eventId}
-                    className="completion-target-buffer"
-                    data-completion-buffer={m.eventId}
-                    aria-hidden="true"
-                  />
-                ))}
+                {page.tasks.map((task) => {
+                  if (task.block.done)
+                    return (
+                      <div className="todo-row-slot" key={task.key}>
+                        {renderTask(task)}
+                      </div>
+                    );
+                  const motion = activeMotions.find(
+                    (m) => m.itemId === task.key && m.reverse,
+                  );
+                  return motion ? (
+                    <div
+                      key={task.key}
+                      className="completion-source-placeholder"
+                      data-completion-source={task.key}
+                      aria-hidden="true"
+                      style={{ height: motion.source.fromRect.height }}
+                    />
+                  ) : null;
+                })}
+                {!completed.length &&
+                  !activeMotions.some((motion) => motion.reverse) && (
+                    <p className="checklist-empty-done">完成的事项会留在这里</p>
+                  )}
+                {activeMotions
+                  .filter((m) => !m.reverse)
+                  .map((m) => (
+                    <div
+                      key={m.eventId}
+                      className="completion-target-buffer"
+                      data-completion-buffer={m.eventId}
+                      aria-hidden="true"
+                    />
+                  ))}
               </div>
             </section>
           )}
@@ -625,18 +705,14 @@ export default function ArrangedWorkspace({
   const activeMotions = motions.filter(
     (motion) =>
       motion.pageId === resolved.page?.id &&
-      resolved.page.tasks.some(
-        (task) => task.key === motion.itemId && task.block.done,
-      ),
+      resolved.page.tasks.some((task) => task.key === motion.itemId),
   );
   useEffect(() => {
     setMotions((list) =>
       list.filter(
         (motion) =>
           motion.pageId === resolved.page?.id &&
-          resolved.page.tasks.some(
-            (task) => task.key === motion.itemId && task.block.done,
-          ),
+          resolved.page.tasks.some((task) => task.key === motion.itemId),
       ),
     );
   }, [resolved.page?.id, state.objects]);
@@ -652,6 +728,7 @@ export default function ArrangedWorkspace({
   const [dialog, setDialog] = useState(null),
     [title, setTitle] = useState(""),
     [importing, setImporting] = useState(0);
+  const modalDialog = dialog && dialog.type !== "deadline";
   const objectMap = useMemo(
     () => new Map(state.objects.map((o) => [o.id, o])),
     [state.objects],
@@ -744,6 +821,25 @@ export default function ArrangedWorkspace({
           },
         });
       }
+    });
+  };
+  const clearCompleted = (pageId) => {
+    if (blocked || dialog || workspace.readOnly) return;
+    navigate(() => {
+      const before = workspace.current.current;
+      update((s) => clearCompletedPageTasks(s, boardId, pageId));
+      const removed =
+        workspace.current.current.trash.length - before.trash.length;
+      if (!removed) return;
+      setSelected({ side: "right", keys: [] });
+      onToast(`已清空 ${removed} 条已完成事项。`, {
+        label: "撤销",
+        run: () => {
+          onExit();
+          if (!workspace.undoIfLast(before))
+            onToast("已有后续修改，请使用工具栏撤销或从回收站恢复。");
+        },
+      });
     });
   };
   const pasteText = (text, html = "", pageId = currentPage()?.id) => {
@@ -1117,7 +1213,7 @@ export default function ArrangedWorkspace({
             active={resolved.active === side}
             workspace={workspace}
             boardId={boardId}
-            blocked={blocked || !!dialog}
+            blocked={blocked || !!modalDialog}
             editing={editing}
             onEdit={onEdit}
             onExit={onExit}
@@ -1128,6 +1224,7 @@ export default function ArrangedWorkspace({
             }}
             onCreate={create}
             onCollect={collect}
+            onClearCompleted={clearCompleted}
             onPickImages={(pageId) => {
               imagePage.current = pageId;
               input.current.click();
@@ -1150,17 +1247,62 @@ export default function ArrangedWorkspace({
               ])
             }
             onDeadline={(pageId, task) =>
-              navigate(() =>
-                setDialog({
-                  type: "deadline",
-                  pageId,
-                  noteId: task.note.id,
-                  blockId: task.key,
-                  dueAt: task.block.dueAt ?? null,
-                  title: blockText(task.block),
-                }),
+              dialog?.type === "deadline" &&
+              dialog.pageId === pageId &&
+              dialog.noteId === task.note.id &&
+              dialog.blockId === task.key
+                ? setDialog(null)
+                : navigate(() =>
+                    setDialog({
+                      type: "deadline",
+                      pageId,
+                      noteId: task.note.id,
+                      blockId: task.key,
+                      dueAt: task.block.dueAt ?? null,
+                      title: blockText(task.block),
+                    }),
+                  )
+            }
+            deadlineEditor={dialog?.type === "deadline" ? dialog : null}
+            onDeadlineClose={(editor) =>
+              setDialog((current) =>
+                current?.type === "deadline" && current === editor
+                  ? null
+                  : current,
               )
             }
+            onDeadlineSave={(dueAt) => {
+              if (dialog?.type !== "deadline") return "截止时间选择已关闭。";
+              if (blocked || workspace.readOnly)
+                return "这条待办当前无法编辑。";
+              update((s) =>
+                setPageDeadline(
+                  s,
+                  boardId,
+                  dialog.pageId,
+                  dialog.noteId,
+                  dialog.blockId,
+                  dueAt,
+                  dialog.dueAt,
+                ),
+              );
+              const latest = writablePage(
+                workspace.current.current,
+                boardId,
+                dialog.pageId,
+              )?.tasks.find(
+                (task) =>
+                  task.note.id === dialog.noteId &&
+                  task.key === dialog.blockId &&
+                  !task.locked,
+              );
+              if (!latest)
+                return "这条待办已被锁定、收纳或删除，请关闭后重试。";
+              if ((latest.block.dueAt ?? null) !== dueAt)
+                return "截止时间已被协作者修改，请关闭后重新设置。";
+              setDialog(null);
+              return "";
+            }}
           />
         ))}
       </div>
@@ -1187,52 +1329,6 @@ export default function ArrangedWorkspace({
           e.target.value = "";
         }}
       />
-      {dialog?.type === "deadline" && (
-        <TaskDeadlineDialog
-          key={dialog.blockId}
-          task={dialog}
-          disabled={
-            blocked ||
-            workspace.readOnly ||
-            !writablePage(state, boardId, dialog.pageId)?.tasks.some(
-              (task) =>
-                task.note.id === dialog.noteId &&
-                task.key === dialog.blockId &&
-                !task.locked,
-            )
-          }
-          onClose={() => setDialog(null)}
-          onSave={(dueAt) => {
-            if (blocked || workspace.readOnly) return "这条待办当前无法编辑。";
-            update((s) =>
-              setPageDeadline(
-                s,
-                boardId,
-                dialog.pageId,
-                dialog.noteId,
-                dialog.blockId,
-                dueAt,
-                dialog.dueAt,
-              ),
-            );
-            const latest = writablePage(
-              workspace.current.current,
-              boardId,
-              dialog.pageId,
-            )?.tasks.find(
-              (task) =>
-                task.note.id === dialog.noteId &&
-                task.key === dialog.blockId &&
-                !task.locked,
-            );
-            if (!latest) return "这条待办已被锁定、收纳或删除，请关闭后重试。";
-            if ((latest.block.dueAt ?? null) !== dueAt)
-              return "截止时间已被协作者修改，请关闭弹窗后重新设置。";
-            setDialog(null);
-            return "";
-          }}
-        />
-      )}
       {dialog && dialog.type !== "deadline" && (
         <Modal
           title={dialog.type === "create" ? "新建灵感板" : "重命名灵感板"}

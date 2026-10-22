@@ -243,6 +243,17 @@ export function deletePageTasks(state, boardId, pageId, keys) {
     .reduce((next, t) => deleteTask(next, t.note.id, t.key), state);
 }
 
+export function clearCompletedPageTasks(state, boardId, pageId) {
+  const page = writablePage(state, boardId, pageId);
+  if (!page) return state;
+  return deletePageTasks(
+    state,
+    boardId,
+    pageId,
+    page.tasks.filter((t) => t.block.done && !t.locked).map((t) => t.key),
+  );
+}
+
 export function takeOutToPage(state, boardId, pageId, objectId) {
   const page = writablePage(state, boardId, pageId),
     object = state.objects.find(

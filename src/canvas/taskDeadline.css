@@ -23,12 +23,20 @@
   margin-top: 2px;
   align-self: flex-start;
 }
-.checklist-list .todo-row[data-deadline]:not([data-deadline="none"]) {
+.checklist-list .todo-row[data-deadline] {
   border: 1px solid #dce5d580;
   border-radius: 10px;
   padding: 11px 8px;
   margin: 8px 0;
   background: #f9fcf6a8;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+.checklist-list .todo-row[data-deadline]:hover {
+  border-color: #cad9c2;
+  background: #fbfdf9;
 }
 .todo-deadline-glow {
   position: absolute;
@@ -86,6 +94,72 @@
 .todo-deadline-button:disabled {
   cursor: default;
 }
+.todo-deadline-control {
+  position: relative;
+  z-index: 6;
+  display: flex;
+  flex: 0 0 40px;
+  align-self: flex-start;
+}
+.task-deadline-popover {
+  /* Radix positions a fixed wrapper in document.body, outside every todo row. */
+  z-index: 220000;
+  box-sizing: border-box;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(
+    calc(100dvh - 24px),
+    var(--radix-popover-content-available-height)
+  );
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  border: 1px solid #dce2d2;
+  border-radius: 18px;
+  background: #fffdf6;
+  color: #4c5942;
+  box-shadow:
+    0 16px 48px #35432b26,
+    0 3px 10px #35432b0d;
+  outline: none;
+  font:
+    13px/1.5 Inter,
+    "PingFang SC",
+    "Microsoft YaHei",
+    system-ui,
+    sans-serif;
+  transform-origin: var(--radix-popover-content-transform-origin);
+  animation: task-deadline-popover-enter 140ms ease-out;
+}
+.task-deadline-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+  color: #4e6148;
+  font-size: 13px;
+}
+.task-deadline-popover-header > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.task-deadline-popover-header strong {
+  font-weight: 600;
+}
+.task-deadline-popover-header > button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  color: #89967b;
+}
+.task-deadline-popover-header > button:hover {
+  background: #edf0e4;
+  color: #526447;
+}
 .todo-deadline-ring {
   width: 40px;
   height: 40px;
@@ -137,10 +211,12 @@
   color: #8c9d80;
 }
 .task-deadline-title {
-  margin: 0 0 18px;
-  color: #68795c;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  margin: 0 0 12px;
+  color: #859078;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
 }
 .task-deadline-fields {
   min-width: 0;
@@ -148,63 +224,255 @@
   padding: 0;
   border: 0;
 }
-.task-deadline-fields legend {
-  margin-bottom: 12px;
+.task-deadline-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   padding: 0;
-  color: #5c6c51;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.qingdan-calendar {
+  --rdp-accent-color: #6d825b;
+  --rdp-accent-background-color: #edf1e5;
+  --rdp-day-width: 40px;
+  --rdp-day-height: 34px;
+  --rdp-day_button-width: 32px;
+  --rdp-day_button-height: 32px;
+  --rdp-day_button-border-radius: 9px;
+  --rdp-selected-border: 1px solid transparent;
+  --rdp-nav-height: 34px;
+  --rdp-nav_button-width: 28px;
+  --rdp-nav_button-height: 28px;
+  --rdp-outside-opacity: 0.38;
+  --rdp-weekday-padding: 8px 0 4px;
+  font-size: 12px;
+  width: 100%;
+}
+.qingdan-calendar .rdp-months,
+.qingdan-calendar .rdp-month,
+.qingdan-calendar .rdp-month_grid {
+  width: 100%;
+  max-width: none;
+}
+.qingdan-calendar .rdp-month_grid {
+  table-layout: fixed;
+}
+.qingdan-calendar .rdp-day_button {
+  margin: 0 auto;
+  font-weight: 400;
+}
+.qingdan-calendar .rdp-day_button:hover:not(:disabled) {
+  background: #eaf0e1;
+}
+.qingdan-calendar .rdp-selected {
+  font-size: inherit;
+}
+.qingdan-calendar .rdp-selected .rdp-day_button,
+.qingdan-calendar .rdp-selected .rdp-day_button:hover {
+  background: #748765;
+  color: #fffef8;
+  font-weight: 600;
+  box-shadow: 0 2px 4px #52644717;
+}
+.qingdan-calendar .rdp-today:not(.rdp-selected) .rdp-day_button {
+  background: #edf1e5;
+  color: #526447;
+}
+.qingdan-calendar .rdp-weekday {
+  color: #929b87;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 1;
+}
+.qingdan-calendar .rdp-month_caption {
   font-size: 13px;
+  font-weight: 550;
+  align-items: center;
 }
-.task-deadline-selects {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
+.qingdan-calendar .rdp-dropdowns {
+  flex-direction: row;
+  gap: 4px;
 }
-.task-deadline-field {
-  display: grid;
-  grid-column: span 2;
-  min-width: 0;
-  gap: 6px;
-  color: #5c6c51;
+.qingdan-calendar .rdp-dropdown_root {
+  border-radius: 7px;
+  padding: 3px 5px;
+}
+.qingdan-calendar .rdp-dropdown_root:hover {
+  background: #edf1e5;
+}
+.qingdan-calendar .rdp-caption_label {
+  gap: 3px;
+}
+.qingdan-calendar .rdp-chevron {
+  fill: none;
+  color: #89967b;
+  width: 14px;
+  height: 14px;
+}
+.qingdan-calendar .rdp-button_next,
+.qingdan-calendar .rdp-button_previous {
+  border-radius: 8px;
+}
+.qingdan-calendar .rdp-button_next:hover:not(:disabled),
+.qingdan-calendar .rdp-button_previous:hover:not(:disabled) {
+  background: #edf1e5;
+}
+.qingdan-calendar .rdp-dropdown {
+  background: #fffdf6;
+  color: #4c5942;
+}
+.qingdan-calendar .rdp-dropdown:focus-visible ~ .rdp-caption_label {
+  outline: 2px solid #91a27d;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.task-deadline-time-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #e5e8dc;
+  margin-top: 10px;
+  padding-top: 11px;
   font-size: 12px;
 }
-.task-deadline-field.is-time {
-  grid-column: span 3;
+.task-deadline-time-heading > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #7b886e;
 }
-.task-deadline-select-wrap {
+.task-deadline-time-preview {
+  font-variant-numeric: tabular-nums;
+  color: #536947;
+  font-weight: 550;
+}
+.task-deadline-time-wheels {
   position: relative;
+  margin-top: 6px;
+  border-radius: 12px;
+  background: #f4f5ec;
+  gap: 22px;
+  padding: 6px 30px 0;
 }
-.task-deadline-select-wrap select {
-  appearance: none;
+.task-deadline-time-field {
+  flex: 1;
   min-width: 0;
-  width: 100%;
-  padding-right: 32px;
-  cursor: pointer;
+}
+.task-deadline-wheel-label {
+  display: block;
+  text-align: center;
+  color: #8a957e;
+  font-size: 10px;
+  padding: 2px 0 0;
+}
+.task-deadline-time-option {
+  color: #929d87;
   font-variant-numeric: tabular-nums;
 }
-.task-deadline-select-wrap select:disabled {
-  cursor: default;
-  opacity: 0.6;
+.task-deadline-time-highlight {
+  background: #e4ebd9;
+  border-radius: 8px;
+  color: #465b39;
 }
-.task-deadline-select-wrap > svg {
+.task-deadline-time-selected {
+  font-size: 19px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+}
+.task-deadline-time-highlight[data-rwp-focused] {
+  box-shadow: inset 0 0 0 1.5px #91a27d;
+}
+.task-deadline-time-colon {
   position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 50%;
+  top: calc(50% + 12px);
+  transform: translate(-50%, -50%);
+  color: #839576;
+  font-size: 18px;
   pointer-events: none;
-  color: #829077;
+}
+.task-deadline-fields:disabled {
+  opacity: 0.55;
+}
+.task-deadline-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  color: #627651;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .task-deadline-hint {
-  margin: 10px 0 0;
-  color: #829077;
-  font-size: 12px;
+  margin: 3px 0 0;
+  color: #929b87;
+  font-size: 10px;
+  text-align: center;
 }
 .task-deadline-error {
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   color: #a85f4d;
   font-size: 12px;
 }
-.task-deadline-dialog .modal-actions {
-  flex-wrap: wrap;
+.task-deadline-actions {
+  position: sticky;
+  bottom: -16px;
+  z-index: 1;
+  padding-bottom: 2px;
+  background: #fffdf6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e8dc;
+}
+.task-deadline-actions > span {
+  flex: 1;
+}
+.task-deadline-actions button {
+  padding: 7px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+.task-deadline-actions .task-deadline-remove {
+  padding-left: 0;
+  color: #939b89;
+  font-size: 11px;
+}
+.task-deadline-remove:hover:not(:disabled) {
+  color: #a36557;
+}
+.task-deadline-cancel {
+  color: #7b886e;
+}
+.task-deadline-cancel:hover {
+  background: #edf1e5;
+}
+.task-deadline-confirm {
+  background: #748765;
+  color: #fffef8;
+  min-width: 66px;
+}
+.task-deadline-confirm:hover:not(:disabled) {
+  background: #637851;
+}
+.task-deadline-popover button:focus-visible {
+  outline: 2px solid #91a27d;
+  outline-offset: 2px;
+}
+@keyframes task-deadline-popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 @keyframes task-deadline-breathe {
   0%,
@@ -222,5 +490,21 @@
   }
   .todo-deadline-arc {
     transition: none;
+  }
+  .task-deadline-popover {
+    animation: none;
+  }
+}
+@media (max-width: 380px) {
+  .task-deadline-popover {
+    padding: 12px;
+    border-radius: 14px;
+  }
+  .qingdan-calendar {
+    --rdp-day_button-width: 30px;
+  }
+  .task-deadline-time-wheels {
+    padding-left: 22px;
+    padding-right: 22px;
   }
 }

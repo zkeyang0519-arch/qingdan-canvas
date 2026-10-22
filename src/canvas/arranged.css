@@ -245,6 +245,29 @@
   padding: 0;
   font-size: 11px;
 }
+.checklist-clear-completed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 6px 8px;
+  border-radius: 7px;
+  color: #74816c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.checklist-clear-completed:hover:not(:disabled) {
+  color: #9e5748;
+  background: #a8624d0d;
+}
+.checklist-clear-completed:disabled {
+  opacity: 0.35;
+}
+.checklist-clear-completed:focus-visible {
+  outline: 2px solid #8fa87a;
+  outline-offset: 2px;
+}
 .checklist-list .todo-panel-body {
   padding: 0 18px 14px;
   overflow-x: hidden;
