@@ -5,11 +5,15 @@ export interface Env {
   ROOMS: DurableObjectNamespace<CanvasRoom>;
   ASSETS: Fetcher;
   APP_ENV: string;
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  EMAIL_CODE_SECRET?: string;
 }
 export interface Session {
   id: string;
   name: string;
   username: string;
+  avatar_version?: string | null;
   token_hash: string;
   expires_at: number;
 }

@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogOut } from "lucide-react";
 import { api, announceAccountChange } from "../api.js";
+import UserAvatar from "../UserAvatar.jsx";
+import EmailSettings from "./EmailSettings.jsx";
+import AvatarCropper from "./AvatarCropper.jsx";
 
 export default function ProfileSettings({ user, onUpdate, onLogout }) {
   const [name, setName] = useState(user.name);
@@ -10,6 +13,21 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [avatarFile, setAvatarFile] = useState(null);
+  const fileInput = useRef(null);
+  const avatarToken = useRef(0);
+  const mounted = useRef(false);
+  const currentUser = useRef(user.id);
+  currentUser.current = user.id;
+  useEffect(() => {
+    mounted.current = true;
+    avatarToken.current++;
+    setAvatarFile(null);
+    setBusy(false);
+    return () => {
+      mounted.current = false;
+    };
+  }, [user.id]);
   async function act(event, action) {
     event?.preventDefault();
     setBusy(true);
@@ -29,6 +47,106 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
       <p>
         用户名：<strong>{user.username}</strong>
       </p>
+      <div className="profile-avatar-setting">
+        <UserAvatar
+          userId={user.id}
+          name={user.name}
+          avatarVersion={user.avatarVersion}
+          className="profile-avatar"
+        />
+        <div>
+          <div className="profile-avatar-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => fileInput.current?.click()}
+            >
+              {user.avatarVersion ? "更换头像" : "上传头像"}
+            </button>
+            {user.avatarVersion && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={(event) =>
+                  act(event, async () => {
+                    const result = await api("/api/profile/avatar", {
+                      method: "DELETE",
+                      accountId: user.id,
+                    });
+                    onUpdate(result);
+                    announceAccountChange();
+                    setNotice("头像已移除。");
+                  })
+                }
+              >
+                移除头像
+              </button>
+            )}
+          </div>
+          <small>
+            PNG、JPEG、WebP、GIF，最大 5 MB
+            <br />
+            可调整圆形范围与原图缩放，GIF 使用静态画面。
+          </small>
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          aria-label="选择头像图片"
+          hidden
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            setError("");
+            setNotice("");
+            setAvatarFile({
+              file,
+              accountId: user.id,
+              token: ++avatarToken.current,
+            });
+          }}
+        />
+      </div>
+      {avatarFile?.accountId === user.id && (
+        <AvatarCropper
+          key={avatarFile.token}
+          file={avatarFile.file}
+          onBusyChange={(value) => {
+            if (
+              mounted.current &&
+              currentUser.current === avatarFile.accountId &&
+              avatarToken.current === avatarFile.token
+            )
+              setBusy(value);
+          }}
+          onCancel={() => setAvatarFile(null)}
+          onConfirm={async (rawBody) => {
+            const result = await api("/api/profile/avatar", {
+              method: "PUT",
+              rawBody,
+              accountId: avatarFile.accountId,
+            });
+            if (
+              currentUser.current !== avatarFile.accountId ||
+              avatarToken.current !== avatarFile.token
+            )
+              return;
+            // The App guards account identity and session epoch even after this
+            // dialog closes. A completed upload still needs to refresh its avatar.
+            onUpdate(result);
+            announceAccountChange();
+            if (mounted.current) {
+              setAvatarFile(null);
+              setNotice("头像已保存。");
+            }
+          }}
+        />
+      )}
       <form
         onSubmit={(event) =>
           act(event, async () => {
@@ -55,6 +173,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
           保存昵称
         </button>
       </form>
+      <EmailSettings user={user} />
       <details>
         <summary>修改密码</summary>
         <form

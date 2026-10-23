@@ -20,8 +20,8 @@
   background: transparent;
 }
 .checklist-list .todo-row .todo-circle {
-  margin-top: 2px;
-  align-self: flex-start;
+  margin-top: 0;
+  align-self: center;
 }
 .checklist-list .todo-row[data-deadline] {
   border: 1px solid #dce5d580;

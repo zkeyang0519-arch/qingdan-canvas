@@ -4,6 +4,7 @@ import { makeBlock, blockText } from "./model.js";
 import { parseClipboard } from "./paste.js";
 import { referenceLabel } from "./referenceText.js";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
+import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 
 export function RichText({ runs, objects, onReference }) {
   return runs.map((run, i) =>
@@ -291,6 +292,9 @@ function Note({
               todoTools.showMenu(event, [object], block.id);
             }}
           >
+            {checkbox && (!block.spacer || editing) && (
+              <TaskAuthorAvatar block={block} />
+            )}
             {checkbox && (!block.spacer || editing) && (
               <input
                 aria-label={`完成：${blockText(block) || "空白条目"}`}

@@ -1,5 +1,6 @@
 import { validateImageData } from "../src/canvas/images.js";
 import { validDeadline } from "./deadline.js";
+import { validTaskAuthor } from "./task-authors.js";
 const fields = new Set(
   "id type boardId parentId x y width height zIndex locked createdAt updatedAt title collapsed fixedBounds noteKind color blocks blockOrder fixedHeight assetId alt naturalWidth naturalHeight crop rotation flipX annotations cloudAssetId assetMetadata".split(
     " ",
@@ -73,10 +74,16 @@ export function sharedObject(value) {
           (block.done ? date(block.completedAt) : block.completedAt === null),
       );
       ids.add(block.id);
+      valid(validTaskAuthor(block));
       valid(
         block.dueAt === undefined ||
           block.dueAt === null ||
           validDeadline(block.dueAt),
+      );
+      valid(
+        block.arrangedOrder === undefined ||
+          (Number.isSafeInteger(block.arrangedOrder) &&
+            block.arrangedOrder >= 0),
       );
       const b = pick(block, [
         "id",
@@ -84,6 +91,9 @@ export function sharedObject(value) {
         "createdAt",
         "completedAt",
         "dueAt",
+        "arrangedOrder",
+        "createdByUserId",
+        "createdByName",
       ]);
       b.runs = block.runs.map((r) => {
         valid(

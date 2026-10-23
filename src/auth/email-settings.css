@@ -1,0 +1,62 @@
+.account-flow fieldset,
+.email-settings fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.account-notice,
+.dialog .account-notice {
+  color: #46694e;
+  background: #f0f4ec;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.account-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.account-actions button,
+.auth-forgot {
+  font-size: 12px;
+  padding: 4px 0;
+}
+.account-actions .text-button {
+  margin-top: 0;
+}
+.auth-forgot {
+  display: block;
+  margin: 12px 0 0 auto;
+}
+.recovery-back {
+  margin-top: 16px;
+}
+.account-hint,
+.dialog .account-hint {
+  display: block;
+  color: #828a80;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.email-identity,
+.email-settings p {
+  overflow-wrap: anywhere;
+}
+.email-identity,
+.dialog .email-identity {
+  color: #697e63;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.email-settings .email-content {
+  margin-top: 16px;
+}
+.email-settings .account-hint + .primary {
+  margin-top: 16px;
+}

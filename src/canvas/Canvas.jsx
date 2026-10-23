@@ -2162,16 +2162,6 @@ export default function Canvas({
                         : visible.length + index + 2,
               }}
             >
-              {!arranged &&
-                object.type === "note" &&
-                isInspirationBoard(objects.get(object.parentId)) && (
-                  <div className="board-note-grip">
-                    <Grip size={12} />
-                    <span>
-                      {object.noteKind === "checklist" ? "清单" : "便签"}
-                    </span>
-                  </div>
-                )}
               {arranged &&
                 !blocked &&
                 !toolsHidden &&

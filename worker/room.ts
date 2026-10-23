@@ -3,6 +3,8 @@ import type { Asset, CanvasData, Change, Commit, Env, Row } from "./types";
 import { check, failure, HttpError, json, validId } from "./http";
 import { membership } from "./auth";
 import { sharedObject } from "../shared/canvas-contract.js";
+import { taskAuthor, withTaskAuthor } from "../shared/task-authors.js";
+import { recoverTaskAuthorsFromReceipts } from "./task-author-recovery.js";
 
 interface Attachment {
   user: string;
@@ -11,16 +13,44 @@ interface Attachment {
   connection: string;
   expires: number;
   session?: string;
+  taskAuthors?: boolean;
   window: number;
   count: number;
 }
 export class CanvasRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.storage.sql.exec(`
+    ctx.storage.transactionSync(() => {
+      const hasAuthors =
+        ctx.storage.sql
+          .exec(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='task_authors'",
+          )
+          .toArray().length > 0;
+      ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, user_id TEXT NOT NULL, payload TEXT NOT NULL, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_authors(note_id TEXT NOT NULL, block_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(note_id, block_id));
     `);
+      // Receipts also retain tasks deleted before this feature was installed.
+      // Backfill once, atomically with table creation, without inventing authors.
+      if (!hasAuthors)
+        ctx.storage.sql.exec(`
+        INSERT OR IGNORE INTO task_authors(note_id,block_id,value)
+        SELECT json_extract(history.value,'$.id'), json_extract(block.value,'$.id'),
+          CASE WHEN json_type(block.value,'$.createdByUserId')='text'
+            THEN json_patch('{}', json_object(
+              'createdByUserId', json_extract(block.value,'$.createdByUserId'),
+              'createdByName', json_extract(block.value,'$.createdByName')))
+            ELSE '{}' END
+        FROM (
+          SELECT entry.value AS value FROM receipts, json_each(receipts.value,'$.rows') AS entry
+          UNION ALL SELECT value FROM objects
+        ) AS history, json_each(history.value,'$.data.blocks') AS block
+        WHERE json_extract(history.value,'$.data.type')='note';
+      `);
+      recoverTaskAuthorsFromReceipts(ctx.storage.sql);
+    });
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
     );
@@ -29,13 +59,59 @@ export class CanvasRoom extends DurableObject<Env> {
     return this.ctx.storage.sql
       .exec<{ value: string }>("SELECT value FROM objects ORDER BY id")
       .toArray()
-      .map((r) => JSON.parse(r.value) as Row);
+      .map((r) => this.withRecordedAuthors(JSON.parse(r.value) as Row));
+  }
+  withRecordedAuthors(row: Row): Row {
+    if (row.deleted || row.data?.type !== "note") return row;
+    const blocks = row.data.blocks as {
+      id: string;
+      createdByUserId?: string;
+    }[];
+    if (blocks.every((block) => block.createdByUserId)) return row;
+    const known = new Map(
+      this.ctx.storage.sql
+        .exec<{ block_id: string; value: string }>(
+          "SELECT block_id,value FROM task_authors WHERE note_id=?",
+          row.id,
+        )
+        .toArray()
+        .map((record) => [record.block_id, JSON.parse(record.value)]),
+    );
+    let changed = false;
+    const attributed = blocks.map((block) => {
+      const author = known.get(block.id);
+      if (block.createdByUserId || !author?.createdByUserId) return block;
+      changed = true;
+      // Keep sharedObject's key order without revalidating saved content:
+      // recovered metadata can take a previously valid note over the write cap.
+      const { runs, remark, ...metadata } = withTaskAuthor(block, author);
+      return {
+        ...metadata,
+        runs,
+        ...(remark !== undefined ? { remark } : {}),
+      };
+    });
+    // Author metadata is projected from its registry; content revisions and
+    // immutable operation receipts remain untouched, including on replay.
+    return changed
+      ? {
+          ...row,
+          data: { ...row.data, blocks: attributed },
+        }
+      : row;
   }
   async fetch(request: Request): Promise<Response> {
     try {
       const room = request.headers.get("X-QD-Room")!,
         user = request.headers.get("X-QD-User")!;
       check(validId(room) && validId(user), "无效的内部路由。", 403);
+      if (
+        request.method === "POST" &&
+        request.headers.get("X-QD-Profile-Refresh") === "1"
+      ) {
+        await this.presence();
+        return json({ ok: true });
+      }
       if (
         !this.ctx.storage.sql.exec("SELECT id FROM objects LIMIT 1").toArray()
           .length
@@ -75,6 +151,7 @@ export class CanvasRoom extends DurableObject<Env> {
         name: decodeURIComponent(request.headers.get("X-QD-Name") || "访客"),
         expires: Number(request.headers.get("X-QD-Expires")),
         session: request.headers.get("X-QD-Session") || "",
+        taskAuthors: request.headers.get("X-QD-Task-Authors") === "1",
         connection: crypto.randomUUID(),
         window: Date.now(),
         count: 0,
@@ -93,8 +170,75 @@ export class CanvasRoom extends DurableObject<Env> {
       JSON.stringify(row),
     );
   }
+  rememberAuthors(data: CanvasData | null) {
+    if (data?.type !== "note") return;
+    for (const block of data.blocks as { id: string }[])
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO task_authors(note_id,block_id,value) VALUES(?,?,?)",
+        data.id,
+        block.id,
+        JSON.stringify(taskAuthor(block)),
+      );
+  }
+  attributeAuthors(data: CanvasData, member: Attachment): CanvasData {
+    if (data.type !== "note") return data;
+    const blocks = (data.blocks as { id: string }[]).map((block) => {
+      const recorded = this.ctx.storage.sql
+        .exec<{ value: string }>(
+          "SELECT value FROM task_authors WHERE note_id=? AND block_id=?",
+          data.id,
+          block.id,
+        )
+        .toArray()[0];
+      // An empty record marks a legacy task; never guess its author on edit/restore.
+      return withTaskAuthor(
+        block,
+        recorded
+          ? JSON.parse(recorded.value)
+          : {
+              createdByUserId: member.user,
+              createdByName: member.name,
+            },
+      );
+    });
+    const attributed = sharedObject({ ...data, blocks }) as CanvasData;
+    this.rememberAuthors(attributed);
+    return attributed;
+  }
   send(socket: WebSocket, value: unknown) {
     try {
+      const message = value as { rows?: Row[] };
+      if (
+        Array.isArray(message.rows) &&
+        (socket.deserializeAttachment() as Attachment).taskAuthors
+      ) {
+        value = {
+          ...message,
+          rows: message.rows.map((row) => this.withRecordedAuthors(row)),
+        };
+      } else if (
+        Array.isArray(message.rows) &&
+        !(socket.deserializeAttachment() as Attachment).taskAuthors
+      ) {
+        // Older bundles discard unknown block fields. Keep their wire format
+        // stable so an acknowledgement cannot trigger endless compensating edits.
+        value = {
+          ...message,
+          rows: message.rows.map((row) =>
+            row.data?.type !== "note"
+              ? row
+              : {
+                  ...row,
+                  data: {
+                    ...row.data,
+                    blocks: (row.data.blocks as { id: string }[]).map((block) =>
+                      withTaskAuthor(block, {}),
+                    ),
+                  },
+                },
+          ),
+        };
+      }
       socket.send(JSON.stringify(value));
     } catch {
       try {
@@ -142,14 +286,26 @@ export class CanvasRoom extends DurableObject<Env> {
   }
   async presence() {
     const sockets = await this.activeSockets();
+    if (!sockets.length) return;
+    const room = (sockets[0].deserializeAttachment() as Attachment).room;
+    const { results: profiles } = await this.env.DB.prepare(
+      "SELECT a.id AS userId,a.name,a.avatar_version AS avatarVersion FROM members m JOIN accounts a ON a.id=m.user_id WHERE m.room_id=?",
+    )
+      .bind(room)
+      .all<{ userId: string; name: string; avatarVersion: string | null }>();
+    const people = new Map(
+      profiles.map((profile) => [profile.userId, profile]),
+    );
     const value = {
       type: "presence",
+      profiles,
       members: sockets.map((socket) => {
         const attachment = socket.deserializeAttachment() as Attachment;
         return {
           id: attachment.connection,
           userId: attachment.user,
           name: attachment.name,
+          ...people.get(attachment.user),
         };
       }),
     };
@@ -175,16 +331,15 @@ export class CanvasRoom extends DurableObject<Env> {
       opId = input.opId;
       const member = socket.deserializeAttachment() as Attachment;
       check(member.expires > Date.now(), "会话已过期，请刷新页面。", 401);
-      check(
-        member.session &&
-          (await this.env.DB.prepare(
-            "SELECT 1 FROM account_sessions WHERE token_hash=? AND account_id=? AND expires_at>?",
+      const account = member.session
+        ? await this.env.DB.prepare(
+            "SELECT a.name FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.account_id=? AND s.expires_at>?",
           )
             .bind(member.session, member.user, Date.now())
-            .first()),
-        "登录已失效，请重新登录。",
-        401,
-      );
+            .first<{ name: string }>()
+        : null;
+      check(account, "登录已失效，请重新登录。", 401);
+      member.name = account.name;
       if (Date.now() - member.window >= 1000) {
         member.window = Date.now();
         member.count = 0;
@@ -283,6 +438,12 @@ export class CanvasRoom extends DurableObject<Env> {
             "版本冲突",
             409,
           );
+        for (const change of changes) {
+          // Keep the registry in the same transaction as revisions and receipts.
+          this.rememberAuthors(current.get(change.id)?.data || null);
+          if (change.data)
+            change.data = this.attributeAuthors(change.data, member);
+        }
         const nextRows = changes.map((change) => ({
           id: change.id,
           revision: change.expectedRevision + 1,

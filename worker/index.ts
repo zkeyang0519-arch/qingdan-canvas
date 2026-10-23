@@ -10,10 +10,16 @@ import {
 } from "./auth";
 import { assetEndpoint } from "./assets";
 import { accountEndpoint } from "./accounts";
+import { readAvatar, updateAvatar } from "./avatars";
+import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 export { CanvasRoom } from "./room";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
@@ -26,6 +32,13 @@ export default {
           services: ["Workers", "Durable Objects", "D1", "R2"],
         });
       if (path === "/api/session") return await sessionEndpoint(request, env);
+      if (path.startsWith("/api/auth/password-reset/"))
+        return await passwordResetEndpoint(
+          request,
+          env,
+          path.slice("/api/auth/password-reset/".length),
+          ctx,
+        );
       if (path.startsWith("/api/auth/"))
         return await accountEndpoint(
           request,
@@ -40,6 +53,20 @@ export default {
         "账号已切换，请重新打开画布。",
         401,
       );
+      if (path === "/api/profile/avatar")
+        return await updateAvatar(request, env, user, ctx);
+      if (
+        path === "/api/profile/email" ||
+        path.startsWith("/api/profile/email/")
+      )
+        return await emailProfileEndpoint(
+          request,
+          env,
+          user,
+          path.slice("/api/profile/email".length).replace(/^\//, ""),
+        );
+      const avatar = path.match(/^\/api\/avatars\/([a-zA-Z0-9_-]{1,100})$/);
+      if (avatar) return await readAvatar(request, env, user, avatar[1]);
       if (path === "/api/rooms") {
         if (request.method === "GET") {
           const { results } = await env.DB.prepare(
@@ -138,6 +165,10 @@ export default {
         forwarded.headers.set("X-QD-Name", encodeURIComponent(user.name));
         forwarded.headers.set("X-QD-Expires", String(user.expires_at));
         forwarded.headers.set("X-QD-Session", user.token_hash);
+        forwarded.headers.set(
+          "X-QD-Task-Authors",
+          url.searchParams.get("authors") === "1" ? "1" : "0",
+        );
         return await env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(
           forwarded,
         );

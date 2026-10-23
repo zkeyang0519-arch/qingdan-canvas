@@ -3,6 +3,10 @@ import { RoomReplica } from "./room-client.js";
 import { equal, undoChanges, ConflictError } from "./replica.js";
 import { claimDraftIdentity, openDrafts } from "./drafts.js";
 import { sharedObject } from "../../shared/canvas-contract.js";
+import {
+  attributeLocalBlocks,
+  rememberTaskAuthors,
+} from "../../shared/task-authors.js";
 import { defaultView } from "../canvas/geometry.js";
 import { patchObjects, now } from "../canvas/model.js";
 import { effectivelyLocked } from "../canvas/layout.js";
@@ -20,6 +24,7 @@ export function useRoomWorkspace(room, user) {
   const [error, setError] = useState(""),
     [conflict, setConflict] = useState(null);
   const [members, setMembers] = useState([]),
+    [profiles, setProfiles] = useState([]),
     [assetVersion, setAssetVersion] = useState(0);
   const [, renderHistory] = useState(0);
   const current = useRef(null),
@@ -31,7 +36,10 @@ export function useRoomWorkspace(room, user) {
     life = useRef(null);
   const history = useRef({ past: [], future: [], base: null });
   const projections = useRef(new WeakMap());
+  const authors = useRef(new Map());
+  const profileDirectory = useRef([]);
   const setCurrent = useCallback((value) => {
+    rememberTaskAuthors(value.objects, authors.current);
     current.current = value;
     setState(value);
   }, []);
@@ -42,6 +50,7 @@ export function useRoomWorkspace(room, user) {
       view: current.current.preferences.views[room.id],
       assets: current.current.assets,
       trash: current.current.trash,
+      profiles: profileDirectory.current,
     });
   };
   const persistError = (e) => {
@@ -204,6 +213,7 @@ export function useRoomWorkspace(room, user) {
       if (e.closed) return;
       const url = new URL(`/api/rooms/${room.id}/socket`, location.href);
       url.searchParams.set("account", user.id);
+      url.searchParams.set("authors", "1");
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
@@ -218,8 +228,14 @@ export function useRoomWorkspace(room, user) {
         if (event.data === "pong") return;
         try {
           const message = JSON.parse(event.data);
-          if (message.type === "presence") setMembers(message.members);
-          else engine.current.receive(message);
+          if (message.type === "presence") {
+            setMembers(message.members);
+            if (Array.isArray(message.profiles)) {
+              profileDirectory.current = message.profiles;
+              setProfiles(message.profiles);
+              void persist().catch(persistError);
+            }
+          } else engine.current.receive(message);
         } catch (err) {
           setError(err.message);
           setStatus("error");
@@ -264,6 +280,17 @@ export function useRoomWorkspace(room, user) {
             ? await repository.get("drafts", originalKey)
             : null);
         if (e.closed) return;
+        authors.current = new Map();
+        profileDirectory.current = saved?.profiles || [];
+        setProfiles(profileDirectory.current);
+        for (const batch of saved?.trash || []) {
+          rememberTaskAuthors(batch.objects, authors.current);
+          if (batch.kind === "task")
+            rememberTaskAuthors(
+              [{ ...batch.task.note, blocks: [batch.task.block] }],
+              authors.current,
+            );
+        }
         const initial = {
           version: 2,
           revision: 0,
@@ -364,6 +391,10 @@ export function useRoomWorkspace(room, user) {
           };
           projections.current.set(options.source, proposed);
         }
+        next = {
+          ...next,
+          objects: attributeLocalBlocks(next.objects, user, authors.current),
+        };
         prepared = prepareEdit(next);
       } catch (err) {
         setError(
@@ -392,7 +423,7 @@ export function useRoomWorkspace(room, user) {
         engine.current.edit(prepared);
       } else void persist().catch(persistError);
     },
-    [setCurrent],
+    [setCurrent, user.id, user.name],
   );
   const begin = useCallback(() => {
     if (!history.current.base) history.current.base = current.current.objects;
@@ -489,6 +520,7 @@ export function useRoomWorkspace(room, user) {
     error,
     conflict,
     members,
+    profiles,
     readOnly: !state || !!conflict,
     assets: assets.current,
     assetVersion,

@@ -25,7 +25,12 @@ function password(value: unknown): asserts value is string {
     "密码需要 9–128 个字符。",
   );
 }
-async function limit(env: Env, key: string, max: number, duration: number) {
+export async function limit(
+  env: Env,
+  key: string,
+  max: number,
+  duration: number,
+) {
   const now = Date.now();
   const row = await env.DB.prepare(
     `INSERT INTO auth_limits(key,attempts,reset_at) VALUES(?,1,?)
