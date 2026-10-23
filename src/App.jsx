@@ -250,6 +250,7 @@ export default function App() {
         >
           <UserAvatar
             userId={session?.user.id}
+            avatarVersion={session?.user.avatarVersion}
             name={session?.user.name || "连接中"}
           />
           {session?.user.name || "连接中"}

@@ -98,6 +98,32 @@
   border-top: 1px solid #e4e9df;
   padding-top: 20px;
 }
+.profile-avatar-setting {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 24px 0;
+}
+.profile-avatar-setting .profile-avatar {
+  width: 64px;
+  height: 64px;
+  font-size: 24px;
+}
+.profile-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.profile-avatar-actions button {
+  padding: 8px 11px;
+}
+.profile-avatar-setting small {
+  display: block;
+  color: #828a80;
+  font-size: 11px;
+  line-height: 1.7;
+  margin-top: 8px;
+}
 .profile-settings summary {
   cursor: pointer;
   font-size: 13px;

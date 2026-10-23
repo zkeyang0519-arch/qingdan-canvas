@@ -10,10 +10,15 @@ import {
 } from "./auth";
 import { assetEndpoint } from "./assets";
 import { accountEndpoint } from "./accounts";
+import { readAvatar, updateAvatar } from "./avatars";
 export { CanvasRoom } from "./room";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     try {
       const url = new URL(request.url),
         path = url.pathname;
@@ -40,6 +45,10 @@ export default {
         "账号已切换，请重新打开画布。",
         401,
       );
+      if (path === "/api/profile/avatar")
+        return await updateAvatar(request, env, user, ctx);
+      const avatar = path.match(/^\/api\/avatars\/([a-zA-Z0-9_-]{1,100})$/);
+      if (avatar) return await readAvatar(request, env, user, avatar[1]);
       if (path === "/api/rooms") {
         if (request.method === "GET") {
           const { results } = await env.DB.prepare(

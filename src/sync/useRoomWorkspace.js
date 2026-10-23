@@ -24,6 +24,7 @@ export function useRoomWorkspace(room, user) {
   const [error, setError] = useState(""),
     [conflict, setConflict] = useState(null);
   const [members, setMembers] = useState([]),
+    [profiles, setProfiles] = useState([]),
     [assetVersion, setAssetVersion] = useState(0);
   const [, renderHistory] = useState(0);
   const current = useRef(null),
@@ -36,6 +37,7 @@ export function useRoomWorkspace(room, user) {
   const history = useRef({ past: [], future: [], base: null });
   const projections = useRef(new WeakMap());
   const authors = useRef(new Map());
+  const profileDirectory = useRef([]);
   const setCurrent = useCallback((value) => {
     rememberTaskAuthors(value.objects, authors.current);
     current.current = value;
@@ -48,6 +50,7 @@ export function useRoomWorkspace(room, user) {
       view: current.current.preferences.views[room.id],
       assets: current.current.assets,
       trash: current.current.trash,
+      profiles: profileDirectory.current,
     });
   };
   const persistError = (e) => {
@@ -225,8 +228,14 @@ export function useRoomWorkspace(room, user) {
         if (event.data === "pong") return;
         try {
           const message = JSON.parse(event.data);
-          if (message.type === "presence") setMembers(message.members);
-          else engine.current.receive(message);
+          if (message.type === "presence") {
+            setMembers(message.members);
+            if (Array.isArray(message.profiles)) {
+              profileDirectory.current = message.profiles;
+              setProfiles(message.profiles);
+              void persist().catch(persistError);
+            }
+          } else engine.current.receive(message);
         } catch (err) {
           setError(err.message);
           setStatus("error");
@@ -272,6 +281,8 @@ export function useRoomWorkspace(room, user) {
             : null);
         if (e.closed) return;
         authors.current = new Map();
+        profileDirectory.current = saved?.profiles || [];
+        setProfiles(profileDirectory.current);
         for (const batch of saved?.trash || []) {
           rememberTaskAuthors(batch.objects, authors.current);
           if (batch.kind === "task")
@@ -509,6 +520,7 @@ export function useRoomWorkspace(room, user) {
     error,
     conflict,
     members,
+    profiles,
     readOnly: !state || !!conflict,
     assets: assets.current,
     assetVersion,

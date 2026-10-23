@@ -10,6 +10,7 @@ export interface Session {
   id: string;
   name: string;
   username: string;
+  avatar_version?: string | null;
   token_hash: string;
   expires_at: number;
 }

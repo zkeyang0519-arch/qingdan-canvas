@@ -65,6 +65,13 @@ export class CanvasRoom extends DurableObject<Env> {
         user = request.headers.get("X-QD-User")!;
       check(validId(room) && validId(user), "无效的内部路由。", 403);
       if (
+        request.method === "POST" &&
+        request.headers.get("X-QD-Profile-Refresh") === "1"
+      ) {
+        await this.presence();
+        return json({ ok: true });
+      }
+      if (
         !this.ctx.storage.sql.exec("SELECT id FROM objects LIMIT 1").toArray()
           .length
       ) {
@@ -230,14 +237,26 @@ export class CanvasRoom extends DurableObject<Env> {
   }
   async presence() {
     const sockets = await this.activeSockets();
+    if (!sockets.length) return;
+    const room = (sockets[0].deserializeAttachment() as Attachment).room;
+    const { results: profiles } = await this.env.DB.prepare(
+      "SELECT a.id AS userId,a.name,a.avatar_version AS avatarVersion FROM members m JOIN accounts a ON a.id=m.user_id WHERE m.room_id=?",
+    )
+      .bind(room)
+      .all<{ userId: string; name: string; avatarVersion: string | null }>();
+    const people = new Map(
+      profiles.map((profile) => [profile.userId, profile]),
+    );
     const value = {
       type: "presence",
+      profiles,
       members: sockets.map((socket) => {
         const attachment = socket.deserializeAttachment() as Attachment;
         return {
           id: attachment.connection,
           userId: attachment.user,
           name: attachment.name,
+          ...people.get(attachment.user),
         };
       }),
     };

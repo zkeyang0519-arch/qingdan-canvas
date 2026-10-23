@@ -23,6 +23,7 @@ for (const name of [
   "MouseEvent",
   "Event",
   "getComputedStyle",
+  "localStorage",
 ])
   globalThis[name] = dom.window[name];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -45,11 +46,12 @@ const output = await mkdtemp(
 await build({
   stdin: {
     contents:
-      'export { TaskAuthorsProvider, AuthorAvatarToggle } from "./src/canvas/TaskAuthors.jsx"; export { default as Canvas } from "./src/canvas/Canvas.jsx"; export { default as Note } from "./src/canvas/Note.jsx"; export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, createInspirationBoard, makeBlock } from "./src/canvas/model.js";',
+      'export { TaskAuthorsProvider, AuthorAvatarToggle } from "./src/canvas/TaskAuthors.jsx"; export { default as Canvas } from "./src/canvas/Canvas.jsx"; export { default as Note } from "./src/canvas/Note.jsx"; export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, createInspirationBoard, makeBlock } from "./src/canvas/model.js"; export { default as ProfileSettings } from "./src/auth/ProfileSettings.jsx"; export { setActiveAccount } from "./src/api.js";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url)),
     loader: "jsx",
   },
   bundle: true,
+  jsx: "automatic",
   packages: "external",
   platform: "node",
   format: "esm",
@@ -81,6 +83,8 @@ const {
   createObject,
   createInspirationBoard,
   makeBlock,
+  ProfileSettings,
+  setActiveAccount,
 } = await import(pathToFileURL(path.join(output, "ui.mjs")));
 after(async () => {
   dom.window.close();
@@ -92,6 +96,147 @@ const click = async (element) => {
   assert.ok(element);
   await act(async () => element.click());
 };
+
+test("账号设置上传真实图片请求，失败保留原头像，移除后恢复默认头像", async (t) => {
+  const host = document.createElement("main");
+  document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+    setActiveAccount(null);
+  });
+  setActiveAccount(alice.id);
+  const requests = [];
+  let fail = false;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, ...options });
+    return new Response(
+      JSON.stringify(
+        fail
+          ? { error: "上传失败，请重试。" }
+          : {
+              user: {
+                ...alice,
+                avatarVersion:
+                  options.method === "DELETE" ? null : "uploaded-v1",
+              },
+            },
+      ),
+      {
+        status: fail ? 503 : 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  });
+  // JSDOM has no image decoder or canvas; exercise the real form and request code.
+  const priorDecode = globalThis.createImageBitmap;
+  globalThis.createImageBitmap = async () => ({
+    width: 400,
+    height: 200,
+    close() {},
+  });
+  t.after(() => {
+    if (priorDecode) globalThis.createImageBitmap = priorDecode;
+    else delete globalThis.createImageBitmap;
+  });
+  t.mock.method(window.HTMLCanvasElement.prototype, "getContext", () => ({
+    drawImage() {},
+  }));
+  t.mock.method(
+    window.HTMLCanvasElement.prototype,
+    "toBlob",
+    function (callback, mime) {
+      callback(new Blob(["encoded avatar"], { type: mime }));
+    },
+  );
+  function Profile() {
+    const [user, setUser] = useState(alice);
+    return React.createElement(ProfileSettings, {
+      user,
+      onUpdate: (result) => setUser(result.user),
+      onLogout() {},
+    });
+  }
+  await act(async () => root.render(React.createElement(Profile)));
+  const input = host.querySelector('input[type="file"]');
+  assert.ok(input, "提供头像上传入口");
+  const select = async (file) => {
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [file],
+    });
+    await act(async () =>
+      input.dispatchEvent(new Event("change", { bubbles: true })),
+    );
+  };
+  await select(
+    new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", {
+      type: "image/png",
+    }),
+  );
+  assert.equal(requests.length, 0);
+  assert.match(host.querySelector('[role="alert"]').textContent, /5\s*MB/);
+  const png = new File(
+    [
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3WQAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    ],
+    "photo.png",
+    { type: "image/png" },
+  );
+  await select(png);
+  assert.equal(requests[0].url, "/api/profile/avatar");
+  assert.equal(requests[0].method, "PUT");
+  assert.equal(requests[0].headers["X-QD-Account"], "alice");
+  assert.ok(
+    requests[0].body instanceof Blob,
+    "图片以二进制发送，不能转成 JSON",
+  );
+  assert.equal(requests[0].headers["Content-Type"], "image/webp");
+  const src = host.querySelector(".profile-avatar img")?.getAttribute("src");
+  assert.equal(src, "/api/avatars/alice?v=uploaded-v1&account=alice");
+  fail = true;
+  await select(png);
+  assert.ok(host.querySelector('[role="alert"]'));
+  assert.equal(
+    host.querySelector(".profile-avatar img")?.getAttribute("src"),
+    src,
+  );
+  let finishDecode, startedDecode;
+  const decoding = new Promise((resolve) => {
+    startedDecode = resolve;
+  });
+  globalThis.createImageBitmap = () =>
+    new Promise((resolve) => {
+      finishDecode = () => resolve({ width: 200, height: 200, close() {} });
+      startedDecode();
+    });
+  await act(async () => {
+    Object.defineProperty(input, "files", { configurable: true, value: [png] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await decoding;
+    setActiveAccount("bob");
+    finishDecode();
+  });
+  assert.equal(
+    requests.at(-1).headers["X-QD-Account"],
+    "alice",
+    "裁剪期间切换账号也只能请求修改原用户头像",
+  );
+  setActiveAccount("alice");
+  fail = false;
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "移除头像",
+    ),
+  );
+  assert.equal(requests.at(-1).method, "DELETE");
+  assert.equal(host.querySelector(".profile-avatar img"), null);
+  assert.equal(host.querySelector(".profile-avatar").textContent, "小");
+});
 
 test("画布平移快捷键不会抢占头像开关的空格操作", async (t) => {
   window.localStorage.clear();
@@ -119,6 +264,7 @@ async function mount(
     arranged = false,
     canvas = false,
     members = [],
+    profiles = [],
   } = {},
 ) {
   const original = createWorkspace(),
@@ -150,7 +296,10 @@ async function mount(
   document.body.append(host);
   let latest;
   const updates = [];
+  const controls = {};
   function Fixture() {
+    const [people, setProfiles] = useState(profiles);
+    controls.setProfiles = setProfiles;
     const [state, setState] = useState(original),
       current = useRef(state),
       apiRef = useRef(null);
@@ -190,7 +339,7 @@ async function mount(
     };
     return React.createElement(
       TaskAuthorsProvider,
-      { user, roomId, members },
+      { user, roomId, members, profiles: people },
       React.createElement(AuthorAvatarToggle),
       React.createElement(
         TodoToolsProvider,
@@ -234,8 +383,42 @@ async function mount(
     host.remove();
   };
   t.after(unmount);
-  return { host, updates, state: () => latest, note, unmount };
+  return { host, updates, state: () => latest, note, unmount, controls };
 }
+
+test("离线作者显示上传图片，加载失败回退首字，换图后恢复且不改待办", async (t) => {
+  window.localStorage.clear();
+  const f = await mount(t, {
+    members: [{ userId: alice.id, name: alice.name }],
+    profiles: [{ userId: bob.id, name: bob.name, avatarVersion: "bob-v1" }],
+  });
+  const before = structuredClone(f.state());
+  const author = f.host.querySelectorAll(".task-author-avatar")[1];
+  assert.equal(
+    author.querySelector("img")?.getAttribute("src"),
+    "/api/avatars/bob?v=bob-v1&account=alice",
+  );
+  await act(async () =>
+    author.querySelector("img").dispatchEvent(new Event("error")),
+  );
+  assert.equal(author.querySelector("img"), null);
+  assert.equal(author.textContent, "小");
+  await act(async () =>
+    f.controls.setProfiles([
+      { userId: bob.id, name: bob.name, avatarVersion: "bob-v2" },
+    ]),
+  );
+  assert.equal(
+    author.querySelector("img")?.getAttribute("src"),
+    "/api/avatars/bob?v=bob-v2&account=alice",
+  );
+  await click(f.host.querySelector('[role="switch"]'));
+  assert.equal(f.host.querySelector(".task-author-avatar img"), null);
+  await click(f.host.querySelector('[role="switch"]'));
+  assert.equal(f.host.querySelectorAll(".task-author-avatar img").length, 1);
+  assert.deepEqual(f.state(), before);
+  assert.equal(f.updates.length, 0);
+});
 
 test("个人与协作清单均逐条显示作者，关闭不修改数据，菜单仍可查看作者", async (t) => {
   window.localStorage.clear();

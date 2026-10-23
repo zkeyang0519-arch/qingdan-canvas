@@ -534,7 +534,12 @@ export default function CanvasWorkspace({
     ...new Map(workspace.members.map((m) => [m.userId, m])).values(),
   ];
   return (
-    <TaskAuthorsProvider user={user} roomId={room.id} members={members}>
+    <TaskAuthorsProvider
+      user={user}
+      roomId={room.id}
+      members={members}
+      profiles={workspace.profiles}
+    >
       <TodoToolsProvider
         workspace={workspace}
         scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
@@ -616,6 +621,8 @@ export default function CanvasWorkspace({
                   <UserAvatar
                     key={member.userId}
                     userId={member.userId}
+                    avatarVersion={member.avatarVersion}
+                    viewerId={user.id}
                     name={member.name}
                     label={
                       member.name + (member.userId === user.id ? "（我）" : "")

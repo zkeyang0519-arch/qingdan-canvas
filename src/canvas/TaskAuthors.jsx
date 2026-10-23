@@ -8,7 +8,7 @@ import React, {
 import UserAvatar from "../UserAvatar.jsx";
 import "./taskAuthors.css";
 
-const TaskAuthors = createContext({ visible: true, names: new Map() });
+const TaskAuthors = createContext({ visible: true, people: new Map() });
 const readPreference = (key) => {
   try {
     return window.localStorage.getItem(key) !== "false";
@@ -17,7 +17,13 @@ const readPreference = (key) => {
   }
 };
 
-export function TaskAuthorsProvider({ user, roomId, members = [], children }) {
+export function TaskAuthorsProvider({
+  user,
+  roomId,
+  members = [],
+  profiles = [],
+  children,
+}) {
   const key = `qingdan.task-authors:${JSON.stringify([user.id, roomId])}`;
   const [preference, setPreference] = useState(() => ({
     key,
@@ -34,13 +40,14 @@ export function TaskAuthorsProvider({ user, roomId, members = [], children }) {
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, [key]);
-  const names = useMemo(
+  const people = useMemo(
     () =>
       new Map([
-        ...members.map((member) => [member.userId, member.name]),
-        [user.id, user.name],
+        [user.id, user],
+        ...members.map((member) => [member.userId, member]),
+        ...profiles.map((profile) => [profile.userId, profile]),
       ]),
-    [members, user.id, user.name],
+    [members, profiles, user],
   );
   const setVisible = (next) => {
     setPreference({ key, visible: next });
@@ -51,7 +58,9 @@ export function TaskAuthorsProvider({ user, roomId, members = [], children }) {
     }
   };
   return (
-    <TaskAuthors.Provider value={{ visible, names, setVisible }}>
+    <TaskAuthors.Provider
+      value={{ visible, people, viewerId: user.id, setVisible }}
+    >
       {children}
     </TaskAuthors.Provider>
   );
@@ -85,20 +94,27 @@ export function AuthorAvatarToggle() {
 }
 
 function useAuthor(block) {
-  const { names } = useContext(TaskAuthors);
+  const { people } = useContext(TaskAuthors);
+  const profile = people.get(block.createdByUserId);
   const name = block.createdByUserId
-    ? names.get(block.createdByUserId) || block.createdByName || "未命名成员"
+    ? profile?.name || block.createdByName || "未命名成员"
     : "作者未记录";
-  return { name, label: block.createdByUserId ? `创建者：${name}` : name };
+  return {
+    name,
+    avatarVersion: profile?.avatarVersion,
+    label: block.createdByUserId ? `创建者：${name}` : name,
+  };
 }
 
 export function TaskAuthorAvatar({ block }) {
-  const { visible } = useContext(TaskAuthors);
-  const { name, label } = useAuthor(block);
+  const { visible, viewerId } = useContext(TaskAuthors);
+  const { name, label, avatarVersion } = useAuthor(block);
   if (!visible) return null;
   return (
     <UserAvatar
       userId={block.createdByUserId}
+      avatarVersion={avatarVersion}
+      viewerId={viewerId}
       name={name}
       label={label}
       className={`task-author-avatar ${block.createdByUserId ? "" : "author-unknown"}`}

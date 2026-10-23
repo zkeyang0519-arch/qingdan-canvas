@@ -7,12 +7,14 @@
 ## 已有网站升级到账号版本
 
 1. 旧访客先等待“已同步”，需要时导出备份。保留原浏览器 Cookie，升级后用它认领旧画布。
-2. 在项目终端执行 `npm run db:remote`，确认目标为 `qingdan-canvas`，应用新的 `0002_accounts.sql`。它只新增账号等表，不删除画布、旧会话或图片。
+2. 在项目终端执行 `npm run db:remote`，确认目标为 `qingdan-canvas`，应用未执行的迁移，包括 `0002_accounts.sql` 和 `0003_account_avatars.sql`。它们新增账号等表及头像版本字段，不删除画布、旧会话或图片。
 3. 成功后再执行 `npm run deploy`，发布注册登录页面与权限逻辑。不要只部署代码而漏掉迁移。
 4. 打开线上网站，首次注册用户名、昵称和密码。若发现旧画布，勾选归入此账号；原房间、图片、灵感板和邀请继续保留。
 5. 在另一个浏览器登录同一账号，确认能看到原来的画布。再用另一个账号测试邀请协作。
 
 这些云端命令由你操作。本地测试账号和本地画布不会上传。`CREATE_KEY` 已不再使用，无需重新设置或删除。
+
+已经使用账号版本的网站升级头像功能时，也要先执行 `npm run db:remote`（预览站用 `npm run db:preview`）应用 `0003_account_avatars.sql`，再发布代码。头像复用私有 R2 桶，由本人或共享画布的成员登录后读取。该迁移只是新增可空字段，回退旧代码时可以保留，无需删除账号或画布。
 
 密码使用原生 scrypt 哈希（N=16384、r=8、p=5），按 [OWASP 的配置](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt)控制内存；[Workers 支持 Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/)。发布验收时要检查注册/登录的实际 CPU 使用是否符合账号的 Worker 配额；本地运行不模拟线上 CPU 限制。若遇到 CPU 超限，应调整运行配额或采用托管认证，不应降低密码哈希强度。
 
@@ -140,7 +142,7 @@ npx wrangler r2 bucket create qingdan-canvas-preview-files
 npm run db:preview
 ```
 
-确认命令目标为 `qingdan-canvas-preview`，首次会应用 `0001_initial.sql` 和 `0002_accounts.sql`。这个命令使用独立的迁移配置，操作预览数据库。用于生产库的命令仍是 `npm run db:remote`。
+确认命令目标为 `qingdan-canvas-preview`，首次会依次应用 `0001_initial.sql`、`0002_accounts.sql` 和 `0003_account_avatars.sql`。这个命令使用独立的迁移配置，操作预览数据库。用于生产库的命令仍是 `npm run db:remote`。
 
 完成后提交并推送配置到 `develop`，让 Workers Builds 重新运行。Cloudflare 的构建设置应为：
 

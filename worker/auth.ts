@@ -24,7 +24,7 @@ export async function getSession(request: Request, env: Env) {
   const hash = await sessionHash(request);
   if (!hash) return null;
   return env.DB.prepare(
-    "SELECT a.id,a.username,a.name,s.expires_at,s.token_hash FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>?",
+    "SELECT a.id,a.username,a.name,a.avatar_version,s.expires_at,s.token_hash FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>?",
   )
     .bind(hash, Date.now())
     .first<Session>();
@@ -35,11 +35,12 @@ export async function requireSession(request: Request, env: Env) {
   return session;
 }
 export const publicUser = (
-  session: Pick<Session, "id" | "username" | "name">,
+  session: Pick<Session, "id" | "username" | "name" | "avatar_version">,
 ) => ({
   id: session.id,
   username: session.username,
   name: session.name,
+  avatarVersion: session.avatar_version || null,
 });
 export function sessionCookie(
   request: Request,

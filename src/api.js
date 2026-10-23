@@ -5,20 +5,24 @@ export function setActiveAccount(id) {
 export function announceAccountChange() {
   localStorage.setItem("qingdan.account-change", crypto.randomUUID());
 }
-export async function api(path, { body, ...options } = {}) {
-  const requestAccount = activeAccount;
+export async function api(
+  path,
+  { body, rawBody, accountId = activeAccount, ...options } = {},
+) {
+  const requestAccount = accountId;
   const response = await fetch(path, {
     credentials: "same-origin",
     ...options,
     headers: {
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(activeAccount &&
+      ...(rawBody ? { "Content-Type": rawBody.type } : {}),
+      ...(requestAccount &&
       !["/api/auth/register", "/api/auth/login"].includes(path)
-        ? { "X-QD-Account": activeAccount }
+        ? { "X-QD-Account": requestAccount }
         : {}),
       ...options.headers,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
   const result = await response.json().catch(() => ({}));
   if (

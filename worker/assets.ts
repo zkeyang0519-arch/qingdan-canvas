@@ -1,7 +1,7 @@
 import type { Asset, Env } from "./types";
 import { check, limitedBytes, json } from "./http";
 const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-function signature(bytes: Uint8Array, mime: string) {
+export function imageSignature(bytes: Uint8Array, mime: string) {
   const text = (start: number, end: number) =>
     new TextDecoder().decode(bytes.slice(start, end));
   if (mime === "image/png")
@@ -49,7 +49,7 @@ export async function assetEndpoint(
   check(allowed.has(mime), "只支持 PNG、JPEG、WebP、GIF 图片。", 415);
   const bytes = await limitedBytes(request, 10 * 1024 * 1024);
   check(
-    bytes.length > 0 && signature(bytes, mime),
+    bytes.length > 0 && imageSignature(bytes, mime),
     "图片格式与文件内容不一致。",
     415,
   );

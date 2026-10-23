@@ -390,6 +390,7 @@ test(
         const result = await response.json();
         assert.equal(result.user.id, credentials.get("甲").user.id);
         assert.deepEqual(Object.keys(result.user).sort(), [
+          "avatarVersion",
           "id",
           "name",
           "username",
@@ -457,6 +458,104 @@ test(
     const initial = await sa.next((m) => m.type === "snapshot");
     await sb.next((m) => m.type === "snapshot");
     assert.equal(initial.rows.length, 1, "room has persistent collection");
+    await t.test(
+      "头像只允许本人上传，共享成员可读取，替换和移除实时更新成员资料",
+      async () => {
+        const aId = credentials.get("甲").user.id;
+        const bId = credentials.get("乙").user.id;
+        const png = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1cAAAAASUVORK5CYII=",
+          "base64",
+        );
+        const upload = (
+          cookie,
+          bytes = png,
+          mime = "image/png",
+          account = aId,
+        ) =>
+          fetch(`${base}/api/profile/avatar`, {
+            method: "PUT",
+            headers: {
+              Cookie: cookie,
+              "Content-Type": mime,
+              "X-QD-Account": account,
+            },
+            body: bytes,
+          });
+        assert.equal((await upload(" ")).status, 401);
+        assert.equal(
+          (await upload(b)).status,
+          401,
+          "切换账号的旧页面不能更新另一人头像",
+        );
+        assert.equal(
+          (await upload(a, Buffer.from("<svg/>"), "image/svg+xml")).status,
+          415,
+        );
+        assert.equal(
+          (await upload(a, Buffer.from("not an image"))).status,
+          415,
+        );
+        assert.equal(
+          (await upload(a, Buffer.alloc(2 * 1024 * 1024 + 1))).status,
+          413,
+        );
+        const firstResponse = await upload(a);
+        assert.equal(firstResponse.status, 200);
+        const first = (await firstResponse.json()).user;
+        assert.ok(first.avatarVersion);
+        const presence = await sb.next(
+          (m) =>
+            m.type === "presence" &&
+            m.profiles?.some(
+              (p) =>
+                p.userId === aId && p.avatarVersion === first.avatarVersion,
+            ),
+        );
+        assert.equal(
+          presence.profiles.find((p) => p.userId === aId).name,
+          credentials.get("甲").user.name,
+        );
+        assert.equal(
+          (await (await request("/api/session", a)).json()).user.avatarVersion,
+          first.avatarVersion,
+        );
+        const imagePath = `/api/avatars/${aId}?v=${first.avatarVersion}`;
+        const image = await request(imagePath, b);
+        assert.equal(image.status, 200);
+        assert.equal(image.headers.get("Content-Type"), "image/png");
+        assert.equal(image.headers.get("X-Content-Type-Options"), "nosniff");
+        assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+        assert.equal((await request(imagePath, outsider)).status, 403);
+        assert.equal((await request(imagePath, "")).status, 401);
+        assert.equal(
+          (await request(`/api/avatars/${bId}`, a, "PUT", {})).status,
+          405,
+        );
+        const second = (await (await upload(a)).json()).user;
+        assert.notEqual(second.avatarVersion, first.avatarVersion);
+        assert.equal((await upload(a, Buffer.from("bad"))).status, 415);
+        assert.equal(
+          (await (await request("/api/session", a)).json()).user.avatarVersion,
+          second.avatarVersion,
+          "失败上传保留已有头像",
+        );
+        const removed = await request("/api/profile/avatar", a, "DELETE");
+        assert.equal(removed.status, 200);
+        assert.equal((await removed.json()).user.avatarVersion, null);
+        await sb.next(
+          (m) =>
+            m.type === "presence" &&
+            m.profiles?.some(
+              (p) => p.userId === aId && p.avatarVersion === null,
+            ),
+        );
+        assert.equal((await request(imagePath, b)).status, 404);
+        // Keep an avatar on an offline member to check the complete author directory.
+        const bobUpload = await upload(b, png, "image/png", bId);
+        assert.equal(bobUpload.status, 200);
+      },
+    );
     const note = {
       ...createObject(room.id, "note", { x: 200, y: 180 }),
       noteKind: "checklist",
@@ -810,6 +909,18 @@ test(
     const reconnected = await socket(`${base}/api/rooms/${room.id}/socket`, a);
     t.after(() => reconnected.ws.terminate());
     await reconnected.next((m) => m.type === "snapshot");
+    const directory = await reconnected.next((m) => m.type === "presence");
+    const offlineAuthor = directory.profiles.find(
+      (p) => p.userId === credentials.get("乙").user.id,
+    );
+    assert.ok(
+      offlineAuthor.avatarVersion,
+      "作者离线且服务重启后仍返回上传的头像",
+    );
+    assert.equal(
+      directory.members.some((m) => m.userId === offlineAuthor.userId),
+      false,
+    );
     const legacyRecovered = await commitAuthors(reconnected, legacyDeleted, 2);
     assert.equal(
       legacyRecovered.data.blocks[0].createdByUserId,
