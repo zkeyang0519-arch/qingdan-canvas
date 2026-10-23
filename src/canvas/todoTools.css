@@ -209,6 +209,19 @@
   opacity: 0.5;
   cursor: default;
 }
+.todo-action-menu.todo-action-menu-compact {
+  min-width: 0;
+  width: max-content;
+  padding: 3px;
+  border-radius: 9px;
+}
+.todo-action-menu-compact > button {
+  width: auto;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  white-space: nowrap;
+}
 .todo-action-menu small {
   display: block;
   font-size: 11px;

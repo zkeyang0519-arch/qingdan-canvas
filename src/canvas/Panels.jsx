@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   X,
   Search,
@@ -412,6 +418,7 @@ export function CollectionPanel({
   state,
   workspace,
   position,
+  anchorRef,
   onClose,
   onTakeOut,
   onDelete,
@@ -423,6 +430,44 @@ export function CollectionPanel({
   onReferencePicker,
 }) {
   const memberList = useRef(null);
+  const panelRef = useRef(null);
+  const [anchoredPosition, setAnchoredPosition] = useState(null);
+  useLayoutEffect(() => {
+    const anchor = anchorRef?.current;
+    const panel = panelRef.current;
+    if (!anchor || !panel) return;
+    const place = () => {
+      const button = anchor.getBoundingClientRect();
+      const width = panel.getBoundingClientRect().width;
+      const top = button.bottom + 8;
+      const next = {
+        left: Math.max(
+          8,
+          Math.min(button.right - width, innerWidth - width - 8),
+        ),
+        top,
+        maxHeight: Math.max(0, innerHeight - top - 8),
+      };
+      setAnchoredPosition((previous) =>
+        previous?.left === next.left &&
+        previous.top === next.top &&
+        previous.maxHeight === next.maxHeight
+          ? previous
+          : next,
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(anchor);
+    observer.observe(panel);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [anchorRef]);
   const [activeId, setActiveId] = useState(container.id);
   const boardObjects = state.objects.filter(
     (o) => o.boardId === container.boardId,
@@ -468,11 +513,16 @@ export function CollectionPanel({
   };
   return (
     <section
-      className="collection-panel"
-      style={{
-        left: Math.max(8, Math.min(position.x, innerWidth - 350)),
-        top: Math.max(70, Math.min(position.y, innerHeight - 380)),
-      }}
+      ref={panelRef}
+      className={`collection-panel${anchorRef ? " collection-panel-anchored" : ""}`}
+      style={
+        anchorRef
+          ? anchoredPosition
+          : {
+              left: Math.max(8, Math.min(position.x, innerWidth - 350)),
+              top: Math.max(70, Math.min(position.y, innerHeight - 380)),
+            }
+      }
       role="dialog"
       aria-label={container.title}
     >

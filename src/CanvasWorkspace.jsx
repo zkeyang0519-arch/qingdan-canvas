@@ -31,6 +31,11 @@ import { setSurface } from "./canvas/arranged-model.js";
 import ContextMenu from "./canvas/ContextMenu.jsx";
 import { TodoToolsProvider } from "./canvas/TodoTools.jsx";
 import {
+  TaskAuthorsProvider,
+  AuthorAvatarToggle,
+} from "./canvas/TaskAuthors.jsx";
+import UserAvatar from "./UserAvatar.jsx";
+import {
   CollectionPanel,
   SearchPanel,
   HelpPanel,
@@ -116,6 +121,7 @@ export default function CanvasWorkspace({
   const [menuDialog, setMenuDialog] = useState(null),
     [nameDraft, setNameDraft] = useState("");
   const canvas = useRef(null),
+    collectionAnchor = useRef(null),
     imageInput = useRef(null),
     imagePoint = useRef(null),
     toastTimer = useRef(null);
@@ -529,528 +535,548 @@ export default function CanvasWorkspace({
     ...new Map(workspace.members.map((m) => [m.userId, m])).values(),
   ];
   return (
-    <TodoToolsProvider
-      workspace={workspace}
-      scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
-      beforeAction={exitEdit}
-      onToast={showToast}
+    <TaskAuthorsProvider
+      user={user}
+      roomId={room.id}
+      members={members}
+      profiles={workspace.profiles}
     >
-      <div
-        className="app-shell cloud-canvas"
-        onCompositionStartCapture={() => {
-          composing.current = true;
-        }}
-        onCompositionEndCapture={() => {
-          composing.current = false;
-          queueMicrotask(() => {
-            const surface = pendingMode.current;
-            pendingMode.current = null;
-            if (surface) switchSurface(surface);
-          });
-        }}
+      <TodoToolsProvider
+        workspace={workspace}
+        scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
+        beforeAction={exitEdit}
+        onToast={showToast}
       >
-        <nav className="topbar" aria-label="画布导航">
-          <div className="nav-start">
-            <button
-              className="icon-button"
-              title="所有画布"
-              aria-label="返回画布列表"
-              onClick={onLeave}
-            >
-              <ArrowLeft size={19} />
-            </button>
-            <a
-              className="brand"
-              href="/"
-              onClick={(e) => {
-                e.preventDefault();
-                onLeave();
-              }}
-            >
-              <span className="brand-mark" />
-              <span>轻单</span>
-            </a>
-            <span className="nav-divider" />
-            <span className="board-title">{room.name}</span>
-            <span
-              className={`sync-indicator ${workspace.status}`}
-              role="status"
-            >
-              <span className="status-dot" />
-              {label}
-            </span>
-          </div>
-          <div
-            className="view-mode-switch"
-            role="group"
-            aria-label="工作区视图"
-          >
-            <button
-              aria-pressed={!arranged}
-              onClick={() => switchSurface("canvas")}
-            >
-              <Frame size={14} />
-              画布
-            </button>
-            <button
-              aria-pressed={arranged}
-              onClick={() => switchSurface("arranged")}
-            >
-              <Columns2 size={14} />
-              排列
-            </button>
-          </div>
-          <div className="nav-end">
+        <div
+          className="app-shell cloud-canvas"
+          onCompositionStartCapture={() => {
+            composing.current = true;
+          }}
+          onCompositionEndCapture={() => {
+            composing.current = false;
+            queueMicrotask(() => {
+              const surface = pendingMode.current;
+              pendingMode.current = null;
+              if (surface) switchSurface(surface);
+            });
+          }}
+        >
+          <nav className="topbar" aria-label="画布导航">
+            <div className="nav-start">
+              <button
+                className="icon-button"
+                title="所有画布"
+                aria-label="返回画布列表"
+                onClick={onLeave}
+              >
+                <ArrowLeft size={19} />
+              </button>
+              <a
+                className="brand"
+                href="/"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onLeave();
+                }}
+              >
+                <span className="brand-mark" />
+                <span>轻单</span>
+              </a>
+              <span className="nav-divider" />
+              <span className="board-title">{room.name}</span>
+              <span
+                className={`sync-indicator ${workspace.status}`}
+                role="status"
+              >
+                <span className="status-dot" />
+                {label}
+              </span>
+            </div>
             <div
-              className="presence"
-              aria-label={`${members.length} 位成员在线`}
+              className="view-mode-switch"
+              role="group"
+              aria-label="工作区视图"
             >
-              {members.slice(0, 4).map((member, i) => (
-                <span
-                  className={`avatar avatar-${i}`}
-                  key={member.userId}
-                  title={
-                    member.name + (member.userId === user.id ? "（我）" : "")
-                  }
-                >
-                  {member.name.slice(0, 1)}
-                </span>
-              ))}
-              <span>{members.length} 人在线</span>
+              <button
+                aria-pressed={!arranged}
+                onClick={() => switchSurface("canvas")}
+              >
+                <Frame size={14} />
+                画布
+              </button>
+              <button
+                aria-pressed={arranged}
+                onClick={() => switchSurface("arranged")}
+              >
+                <Columns2 size={14} />
+                排列
+              </button>
             </div>
-            <button
-              className="icon-button hide-small"
-              aria-label="搜索画布"
-              title="搜索 · Ctrl K"
-              onClick={() => setPanel("search")}
-            >
-              <Search size={18} />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="导出备份"
-              title="导出含图片的备份"
-              onClick={backup}
-            >
-              <Download size={18} />
-            </button>
-            <button
-              className="icon-button hide-small"
-              aria-label="回收站"
-              title="此浏览器的回收站"
-              onClick={() => setPanel("trash")}
-            >
-              <Trash2 size={17} />
-            </button>
-            <button
-              className="help-button"
-              aria-label="帮助"
-              aria-haspopup="dialog"
-              title="轻单使用 tips"
-              onClick={() => {
-                exitEdit();
-                setPanel("help");
-              }}
-            >
-              <HelpCircle size={17} />
-              <span>帮助</span>
-            </button>
-            <button
-              className="primary share-button"
-              disabled={room.role !== "owner"}
-              title={
-                room.role === "owner" ? "邀请成员协作" : "请创建者分享邀请链接"
-              }
-              onClick={() => void shareNow()}
-            >
-              <Share2 size={16} />
-              邀请协作
-            </button>
-          </div>
-        </nav>
-        {arranged ? (
-          <ArrangedWorkspace
-            workspace={workspace}
-            boardId={room.id}
-            editing={editing}
-            onEdit={(noteId, blockId) => {
-              workspace.begin();
-              setEditing({ noteId, blockId });
-            }}
-            onExit={exitEdit}
-            onCollection={setCollection}
-            onReference={locate}
-            onReferencePicker={pickReference}
-            onImagePreview={setImagePreview}
-            onToast={showToast}
-            apiRef={canvas}
-            blocked={readOnly || !!panel || !!menuDialog}
-            dockedCollectionId={primaryCollection(state, room.id)?.id}
-          />
-        ) : (
-          <Canvas
-            workspace={workspace}
-            boardId={room.id}
-            view={view}
-            onView={onView}
-            selection={selection}
-            setSelection={setSelection}
-            editing={editing}
-            onEdit={(noteId, blockId) => {
-              workspace.begin();
-              setEditing({ noteId, blockId });
-            }}
-            onExit={exitEdit}
-            onContext={(event) => {
-              if (!event.objectId) setSelection([]);
-              setContext(event);
-            }}
-            onCollection={setCollection}
-            onReference={locate}
-            onReferencePicker={pickReference}
-            onImagePreview={setImagePreview}
-            onToast={showToast}
-            onPasteFeedback={(_id, _text, count) =>
-              showToast(`已粘贴 ${count} 条内容`)
-            }
-            onPickImages={() => imageInput.current.click()}
-            apiRef={canvas}
-            blocked={readOnly || !!panel || !!menuDialog}
-            dockedCollectionId={primaryCollection(state, room.id)?.id}
-          />
-        )}
-        {!arranged && (
-          <div className="canvas-toolbox" aria-label="画布工具">
-            <button
-              disabled={readOnly}
-              onClick={() => add("text")}
-              title="新建便签"
-              aria-label="新建便签"
-            >
-              <StickyNote size={21} />
-              <span>便签</span>
-            </button>
-            <button
-              disabled={readOnly}
-              onClick={() => add("checklist")}
-              title="新建清单"
-              aria-label="新建清单"
-            >
-              <ListChecks size={21} />
-              <span>清单</span>
-            </button>
-            <button
-              disabled={readOnly}
-              onClick={() => add("image")}
-              title="添加图片"
-              aria-label="添加图片"
-            >
-              <ImagePlus size={21} />
-              <span>图片</span>
-            </button>
-            <button
-              disabled={readOnly}
-              onClick={() => add("frame")}
-              title="新建灵感板"
-              aria-label="新建灵感板"
-            >
-              <Frame size={21} />
-              <span>灵感板</span>
-            </button>
-            <i />
-            <button
-              disabled={!workspace.canUndo || readOnly}
-              onClick={() => {
-                exitEdit();
-                workspace.undo();
-              }}
-              aria-label="撤销"
-            >
-              <Undo2 size={19} />
-            </button>
-            <button
-              disabled={!workspace.canRedo || readOnly}
-              onClick={() => workspace.redo()}
-              aria-label="重做"
-            >
-              <Redo2 size={19} />
-            </button>
-          </div>
-        )}
-        {!arranged && (
-          <div className="canvas-view-tools">
-            <button
-              onClick={fit}
-              title="适应全部内容"
-              aria-label="适应全部内容"
-            >
-              <Maximize size={16} />
-            </button>
-            <span>{Math.round(view.scale * 100)}%</span>
-          </div>
-        )}
-        {workspace.error && !workspace.conflict && (
-          <div className="canvas-banner" role="alert">
-            {workspace.error}
-            <button onClick={workspace.retry}>重试</button>
-            <button onClick={backup}>导出备份</button>
-          </div>
-        )}
-        {workspace.conflict && (
-          <div className="canvas-banner conflict" role="alert">
-            <span>{workspace.conflict}</span>
-            <button onClick={backup}>先导出草稿</button>
-            <button onClick={() => workspace.resolve("local")}>
-              保留我的冲突内容
-            </button>
-            <button onClick={() => workspace.resolve("remote")}>
-              使用共享冲突内容
-            </button>
-          </div>
-        )}
-        {context && (
-          <ContextMenu
-            anchor={context.screen}
-            onClose={() => setContext(null)}
-            items={buildCanvasMenu({
-              state,
-              context,
-              selection,
-              boardId: room.id,
-              readOnly,
-            }).map((item) => {
-              if (item.separator) return item;
-              const Icon = contextIcons[item.id];
-              return {
-                ...item,
-                icon: <Icon size={15} />,
-                action: () => runContextAction(item),
-              };
-            })}
-          />
-        )}
-        {menuDialog?.id === "rename" && (
-          <Modal title="重命名" onClose={() => setMenuDialog(null)}>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                applyMenuAction({ ...menuDialog, value: nameDraft });
-                setMenuDialog(null);
-              }}
-            >
-              <input
-                className="text-field"
-                aria-label="名称"
-                value={nameDraft}
-                maxLength={80}
-                onChange={(event) => setNameDraft(event.target.value)}
-              />
-              <div className="modal-actions">
-                <button
-                  className="button primary"
-                  type="submit"
-                  disabled={
-                    readOnly ||
-                    effectivelyLocked(state.objects, menuDialog.target.objectId)
-                  }
-                >
-                  保存名称
-                </button>
+            <div className="nav-end">
+              <AuthorAvatarToggle />
+              <div
+                className="presence"
+                aria-label={`${members.length} 位成员在线`}
+              >
+                {members.slice(0, 4).map((member) => (
+                  <UserAvatar
+                    key={member.userId}
+                    userId={member.userId}
+                    avatarVersion={member.avatarVersion}
+                    viewerId={user.id}
+                    name={member.name}
+                    label={
+                      member.name + (member.userId === user.id ? "（我）" : "")
+                    }
+                  />
+                ))}
+                <span>{members.length} 人在线</span>
               </div>
-            </form>
-          </Modal>
-        )}
-        {menuDialog?.id === "colors" && (
-          <Modal title="便签颜色" onClose={() => setMenuDialog(null)}>
-            <div className="color-options">
-              {noteColors.map(([color, label]) => (
-                <button
-                  className={`color-option color-${color}`}
-                  key={color}
-                  disabled={readOnly}
-                  onClick={() => {
-                    applyMenuAction({ ...menuDialog, value: color });
-                    setMenuDialog(null);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
+              <button
+                className="icon-button hide-small"
+                aria-label="搜索画布"
+                title="搜索 · Ctrl K"
+                onClick={() => setPanel("search")}
+              >
+                <Search size={18} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="导出备份"
+                title="导出含图片的备份"
+                onClick={backup}
+              >
+                <Download size={18} />
+              </button>
+              <button
+                className="icon-button hide-small"
+                aria-label="回收站"
+                title="此浏览器的回收站"
+                onClick={() => setPanel("trash")}
+              >
+                <Trash2 size={17} />
+              </button>
+              <button
+                className="help-button"
+                aria-label="帮助"
+                aria-haspopup="dialog"
+                title="轻单使用 tips"
+                onClick={() => {
+                  exitEdit();
+                  setPanel("help");
+                }}
+              >
+                <HelpCircle size={17} />
+                <span>帮助</span>
+              </button>
+              <button
+                className="primary share-button"
+                disabled={room.role !== "owner"}
+                title={
+                  room.role === "owner"
+                    ? "邀请成员协作"
+                    : "请创建者分享邀请链接"
+                }
+                onClick={() => void shareNow()}
+              >
+                <Share2 size={16} />
+                邀请协作
+              </button>
             </div>
-          </Modal>
-        )}
-        {menuDialog?.id === "join" && (
-          <Modal title="加入分组" onClose={() => setMenuDialog(null)}>
-            <div className="choice-list">
-              {groupTargets(state, menuDialog.target.ids, room.id).map(
-                (frame) => (
+          </nav>
+          {arranged ? (
+            <ArrangedWorkspace
+              workspace={workspace}
+              boardId={room.id}
+              editing={editing}
+              onEdit={(noteId, blockId) => {
+                workspace.begin();
+                setEditing({ noteId, blockId });
+              }}
+              onExit={exitEdit}
+              onCollection={setCollection}
+              collectionAnchorRef={collectionAnchor}
+              onReference={locate}
+              onReferencePicker={pickReference}
+              onImagePreview={setImagePreview}
+              onToast={showToast}
+              apiRef={canvas}
+              blocked={readOnly || !!panel || !!menuDialog}
+              dockedCollectionId={primaryCollection(state, room.id)?.id}
+            />
+          ) : (
+            <Canvas
+              workspace={workspace}
+              boardId={room.id}
+              view={view}
+              onView={onView}
+              selection={selection}
+              setSelection={setSelection}
+              editing={editing}
+              onEdit={(noteId, blockId) => {
+                workspace.begin();
+                setEditing({ noteId, blockId });
+              }}
+              onExit={exitEdit}
+              onContext={(event) => {
+                if (!event.objectId) setSelection([]);
+                setContext(event);
+              }}
+              onCollection={setCollection}
+              onReference={locate}
+              onReferencePicker={pickReference}
+              onImagePreview={setImagePreview}
+              onToast={showToast}
+              onPasteFeedback={(_id, _text, count) =>
+                showToast(`已粘贴 ${count} 条内容`)
+              }
+              onPickImages={() => imageInput.current.click()}
+              apiRef={canvas}
+              blocked={readOnly || !!panel || !!menuDialog}
+              dockedCollectionId={primaryCollection(state, room.id)?.id}
+            />
+          )}
+          {!arranged && (
+            <div className="canvas-toolbox" aria-label="画布工具">
+              <button
+                disabled={readOnly}
+                onClick={() => add("text")}
+                title="新建便签"
+                aria-label="新建便签"
+              >
+                <StickyNote size={21} />
+                <span>便签</span>
+              </button>
+              <button
+                disabled={readOnly}
+                onClick={() => add("checklist")}
+                title="新建清单"
+                aria-label="新建清单"
+              >
+                <ListChecks size={21} />
+                <span>清单</span>
+              </button>
+              <button
+                disabled={readOnly}
+                onClick={() => add("image")}
+                title="添加图片"
+                aria-label="添加图片"
+              >
+                <ImagePlus size={21} />
+                <span>图片</span>
+              </button>
+              <button
+                disabled={readOnly}
+                onClick={() => add("frame")}
+                title="新建灵感板"
+                aria-label="新建灵感板"
+              >
+                <Frame size={21} />
+                <span>灵感板</span>
+              </button>
+              <i />
+              <button
+                disabled={!workspace.canUndo || readOnly}
+                onClick={() => {
+                  exitEdit();
+                  workspace.undo();
+                }}
+                aria-label="撤销"
+              >
+                <Undo2 size={19} />
+              </button>
+              <button
+                disabled={!workspace.canRedo || readOnly}
+                onClick={() => workspace.redo()}
+                aria-label="重做"
+              >
+                <Redo2 size={19} />
+              </button>
+            </div>
+          )}
+          {!arranged && (
+            <div className="canvas-view-tools">
+              <button
+                onClick={fit}
+                title="适应全部内容"
+                aria-label="适应全部内容"
+              >
+                <Maximize size={16} />
+              </button>
+              <span>{Math.round(view.scale * 100)}%</span>
+            </div>
+          )}
+          {workspace.error && !workspace.conflict && (
+            <div className="canvas-banner" role="alert">
+              {workspace.error}
+              <button onClick={workspace.retry}>重试</button>
+              <button onClick={backup}>导出备份</button>
+            </div>
+          )}
+          {workspace.conflict && (
+            <div className="canvas-banner conflict" role="alert">
+              <span>{workspace.conflict}</span>
+              <button onClick={backup}>先导出草稿</button>
+              <button onClick={() => workspace.resolve("local")}>
+                保留我的冲突内容
+              </button>
+              <button onClick={() => workspace.resolve("remote")}>
+                使用共享冲突内容
+              </button>
+            </div>
+          )}
+          {context && (
+            <ContextMenu
+              anchor={context.screen}
+              onClose={() => setContext(null)}
+              items={buildCanvasMenu({
+                state,
+                context,
+                selection,
+                boardId: room.id,
+                readOnly,
+              }).map((item) => {
+                if (item.separator) return item;
+                const Icon = contextIcons[item.id];
+                return {
+                  ...item,
+                  icon: <Icon size={15} />,
+                  action: () => runContextAction(item),
+                };
+              })}
+            />
+          )}
+          {menuDialog?.id === "rename" && (
+            <Modal title="重命名" onClose={() => setMenuDialog(null)}>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  applyMenuAction({ ...menuDialog, value: nameDraft });
+                  setMenuDialog(null);
+                }}
+              >
+                <input
+                  className="text-field"
+                  aria-label="名称"
+                  value={nameDraft}
+                  maxLength={80}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                />
+                <div className="modal-actions">
                   <button
-                    key={frame.id}
+                    className="button primary"
+                    type="submit"
+                    disabled={
+                      readOnly ||
+                      effectivelyLocked(
+                        state.objects,
+                        menuDialog.target.objectId,
+                      )
+                    }
+                  >
+                    保存名称
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          )}
+          {menuDialog?.id === "colors" && (
+            <Modal title="便签颜色" onClose={() => setMenuDialog(null)}>
+              <div className="color-options">
+                {noteColors.map(([color, label]) => (
+                  <button
+                    className={`color-option color-${color}`}
+                    key={color}
                     disabled={readOnly}
                     onClick={() => {
-                      applyMenuAction({ ...menuDialog, value: frame.id });
+                      applyMenuAction({ ...menuDialog, value: color });
                       setMenuDialog(null);
                     }}
                   >
-                    <Frame size={16} />
-                    {frame.title}
+                    {label}
                   </button>
-                ),
-              )}
-              {!groupTargets(state, menuDialog.target.ids, room.id).length && (
-                <p className="empty-results">没有可加入的分组。</p>
+                ))}
+              </div>
+            </Modal>
+          )}
+          {menuDialog?.id === "join" && (
+            <Modal title="加入分组" onClose={() => setMenuDialog(null)}>
+              <div className="choice-list">
+                {groupTargets(state, menuDialog.target.ids, room.id).map(
+                  (frame) => (
+                    <button
+                      key={frame.id}
+                      disabled={readOnly}
+                      onClick={() => {
+                        applyMenuAction({ ...menuDialog, value: frame.id });
+                        setMenuDialog(null);
+                      }}
+                    >
+                      <Frame size={16} />
+                      {frame.title}
+                    </button>
+                  ),
+                )}
+                {!groupTargets(state, menuDialog.target.ids, room.id)
+                  .length && (
+                  <p className="empty-results">没有可加入的分组。</p>
+                )}
+              </div>
+            </Modal>
+          )}
+          {container && (
+            <CollectionPanel
+              container={container}
+              state={state}
+              workspace={workspace}
+              position={{ x: 100, y: 100 }}
+              anchorRef={arranged ? collectionAnchor : undefined}
+              onClose={() => setCollection(null)}
+              editing={editing}
+              onEdit={(noteId, blockId) => {
+                workspace.begin();
+                setEditing({ noteId, blockId });
+              }}
+              onExit={exitEdit}
+              onReference={locate}
+              onReferencePicker={pickReference}
+              onTakeOut={(id) => {
+                if (arranged) canvas.current?.takeOutArranged(id);
+                else
+                  update((s) =>
+                    takeOutObject(s, id, canvas.current.getPoint(), room.id),
+                  );
+              }}
+              onDelete={(id, ids) =>
+                update((s) => deleteCollectedObjects(s, id, ids))
+              }
+            />
+          )}
+          {panel === "search" && (
+            <SearchPanel
+              state={state}
+              boardId={room.id}
+              onClose={() => setPanel(null)}
+              onChoose={(object) => locate(object.id)}
+            />
+          )}
+          {panel === "reference" && (
+            <SearchPanel
+              state={state}
+              boardId={room.id}
+              sourceId={reference.noteId}
+              onClose={() => setPanel(null)}
+              onChoose={insertReference}
+            />
+          )}
+          {panel === "backlinks" && (
+            <SearchPanel
+              state={state}
+              boardId={room.id}
+              backlinks={reference.targetId}
+              onClose={() => setPanel(null)}
+              onChoose={(object) => locate(object.id)}
+            />
+          )}
+          {panel === "trash" && (
+            <TrashPanel
+              state={state}
+              readOnly={readOnly}
+              onClose={() => setPanel(null)}
+              onRestore={(id) => update((s) => restoreTrash(s, id))}
+            />
+          )}
+          {panel === "help" && <HelpPanel onClose={() => setPanel(null)} />}
+          {panel === "share" && (
+            <div className="dialog-backdrop">
+              <section
+                className="dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-label="邀请协作"
+              >
+                <button
+                  className="dialog-close icon-button"
+                  aria-label="关闭"
+                  onClick={() => setPanel(null)}
+                >
+                  <X size={20} />
+                </button>
+                <div className="eyebrow">好想法，值得一起完成</div>
+                <h2>邀请同伴加入画布</h2>
+                <p>获得链接的人可以查看和编辑此画布。</p>
+                <label>
+                  邀请链接
+                  <textarea
+                    readOnly
+                    value={share || "正在生成邀请链接…"}
+                    onFocus={(e) => e.target.select()}
+                  />
+                </label>
+                <button
+                  className="primary wide"
+                  onClick={copyShare}
+                  disabled={!share || sharing}
+                >
+                  <Copy size={16} />
+                  复制邀请链接
+                </button>
+                <div className="share-note">
+                  重置会让旧链接失效，已加入的成员仍可访问。
+                </div>
+                <button
+                  className="text-button"
+                  disabled={sharing}
+                  onClick={() => void shareNow(true)}
+                >
+                  重置邀请链接
+                </button>
+              </section>
+            </div>
+          )}
+          {imagePreview && (
+            <div
+              className="image-lightbox"
+              onClick={() => setImagePreview(null)}
+            >
+              <button aria-label="关闭预览">
+                <X />
+              </button>
+              <img
+                src={
+                  typeof imagePreview === "string"
+                    ? imagePreview
+                    : imagePreview.url
+                }
+                alt="图片预览"
+              />
+            </div>
+          )}
+          {toast && (
+            <div className="toast cloud-toast" role="status">
+              {toast.text}
+              {toast.action && (
+                <button onClick={toast.action.run}>{toast.action.label}</button>
               )}
             </div>
-          </Modal>
-        )}
-        {container && (
-          <CollectionPanel
-            container={container}
-            state={state}
-            workspace={workspace}
-            position={{ x: 100, y: 100 }}
-            onClose={() => setCollection(null)}
-            editing={editing}
-            onEdit={(noteId, blockId) => {
-              workspace.begin();
-              setEditing({ noteId, blockId });
+          )}
+          <input
+            ref={imageInput}
+            hidden
+            type="file"
+            multiple
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={(e) => {
+              void canvas.current?.addImages(
+                [...e.target.files],
+                imagePoint.current,
+              );
+              imagePoint.current = null;
+              e.target.value = "";
             }}
-            onExit={exitEdit}
-            onReference={locate}
-            onReferencePicker={pickReference}
-            onTakeOut={(id) => {
-              if (arranged) canvas.current?.takeOutArranged(id);
-              else
-                update((s) =>
-                  takeOutObject(s, id, canvas.current.getPoint(), room.id),
-                );
-            }}
-            onDelete={(id, ids) =>
-              update((s) => deleteCollectedObjects(s, id, ids))
-            }
           />
-        )}
-        {panel === "search" && (
-          <SearchPanel
-            state={state}
-            boardId={room.id}
-            onClose={() => setPanel(null)}
-            onChoose={(object) => locate(object.id)}
-          />
-        )}
-        {panel === "reference" && (
-          <SearchPanel
-            state={state}
-            boardId={room.id}
-            sourceId={reference.noteId}
-            onClose={() => setPanel(null)}
-            onChoose={insertReference}
-          />
-        )}
-        {panel === "backlinks" && (
-          <SearchPanel
-            state={state}
-            boardId={room.id}
-            backlinks={reference.targetId}
-            onClose={() => setPanel(null)}
-            onChoose={(object) => locate(object.id)}
-          />
-        )}
-        {panel === "trash" && (
-          <TrashPanel
-            state={state}
-            readOnly={readOnly}
-            onClose={() => setPanel(null)}
-            onRestore={(id) => update((s) => restoreTrash(s, id))}
-          />
-        )}
-        {panel === "help" && <HelpPanel onClose={() => setPanel(null)} />}
-        {panel === "share" && (
-          <div className="dialog-backdrop">
-            <section
-              className="dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-label="邀请协作"
-            >
-              <button
-                className="dialog-close icon-button"
-                aria-label="关闭"
-                onClick={() => setPanel(null)}
-              >
-                <X size={20} />
-              </button>
-              <div className="eyebrow">好想法，值得一起完成</div>
-              <h2>邀请同伴加入画布</h2>
-              <p>获得链接的人可以查看和编辑此画布。</p>
-              <label>
-                邀请链接
-                <textarea
-                  readOnly
-                  value={share || "正在生成邀请链接…"}
-                  onFocus={(e) => e.target.select()}
-                />
-              </label>
-              <button
-                className="primary wide"
-                onClick={copyShare}
-                disabled={!share || sharing}
-              >
-                <Copy size={16} />
-                复制邀请链接
-              </button>
-              <div className="share-note">
-                重置会让旧链接失效，已加入的成员仍可访问。
-              </div>
-              <button
-                className="text-button"
-                disabled={sharing}
-                onClick={() => void shareNow(true)}
-              >
-                重置邀请链接
-              </button>
-            </section>
-          </div>
-        )}
-        {imagePreview && (
-          <div className="image-lightbox" onClick={() => setImagePreview(null)}>
-            <button aria-label="关闭预览">
-              <X />
-            </button>
-            <img
-              src={
-                typeof imagePreview === "string"
-                  ? imagePreview
-                  : imagePreview.url
-              }
-              alt="图片预览"
-            />
-          </div>
-        )}
-        {toast && (
-          <div className="toast cloud-toast" role="status">
-            {toast.text}
-            {toast.action && (
-              <button onClick={toast.action.run}>{toast.action.label}</button>
-            )}
-          </div>
-        )}
-        <input
-          ref={imageInput}
-          hidden
-          type="file"
-          multiple
-          accept="image/png,image/jpeg,image/webp,image/gif"
-          onChange={(e) => {
-            void canvas.current?.addImages(
-              [...e.target.files],
-              imagePoint.current,
-            );
-            imagePoint.current = null;
-            e.target.value = "";
-          }}
-        />
-      </div>
-    </TodoToolsProvider>
+        </div>
+      </TodoToolsProvider>
+    </TaskAuthorsProvider>
   );
 }

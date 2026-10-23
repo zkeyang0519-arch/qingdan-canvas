@@ -5,6 +5,8 @@ import React, {
   useRef,
   useState,
   useId,
+  lazy,
+  Suspense,
 } from "react";
 import {
   Archive,
@@ -17,6 +19,9 @@ import {
   Undo2,
   Redo2,
   Trash2,
+  CalendarDays,
+  ListTodo,
+  ArrowDownWideNarrow,
 } from "lucide-react";
 import {
   blockText,
@@ -41,6 +46,9 @@ import {
   takeOutToPage,
   writablePage,
   setPageDeadline,
+  setArrangedView,
+  sortPendingPageTasks,
+  movePendingPageTask,
 } from "./arranged-model.js";
 import { deadlineInfo } from "../../shared/deadline.js";
 import {
@@ -53,6 +61,7 @@ import { HoverText } from "./ChecklistParts.jsx";
 import ProjectTabs from "./ProjectTabs.jsx";
 import { EditableBlock, RichText } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
+import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 import { Modal } from "./Panels.jsx";
 import ImageContent from "./ImageContent.jsx";
 import { parseClipboard } from "./paste.js";
@@ -60,6 +69,8 @@ import { prepareImageFile } from "./image-import.js";
 import TaskCompletionMotion from "./TaskCompletionMotion.jsx";
 import { captureCompletionSource } from "./taskCompletionMotion.js";
 import "./arranged.css";
+
+const DeadlineCalendar = lazy(() => import("./DeadlineCalendar.jsx"));
 
 const sideLabel = (side) => (side === "left" ? "左侧" : "右侧");
 const isEditor = (target) =>
@@ -167,10 +178,13 @@ function ChecklistPane({
 }) {
   const { state, update } = workspace;
   const root = useRef(null),
-    draftApi = useRef(null);
+    draftApi = useRef(null),
+    draggedTask = useRef(null);
   const [draft, setDraft] = useState(false),
     [revision, setRevision] = useState(0),
-    [located, setLocated] = useState(null);
+    [located, setLocated] = useState(null),
+    [dragging, setDragging] = useState(null),
+    [dropTarget, setDropTarget] = useState(null);
   const todoTools = useTodoTools();
   const frozen =
     blocked ||
@@ -178,6 +192,55 @@ function ChecklistPane({
     (page.group && effectivelyLocked(state.objects, page.group.id));
   const pending = page?.tasks.filter((t) => !t.block.done) || [],
     completed = page?.tasks.filter((t) => t.block.done) || [];
+  const orderDisabled =
+    frozen || workspace.readOnly || pending.some((task) => task.locked);
+  const finishDrag = () => {
+    const gesture = draggedTask.current;
+    draggedTask.current = null;
+    if (gesture?.element.hasPointerCapture?.(gesture.pointerId))
+      gesture.element.releasePointerCapture(gesture.pointerId);
+    setDragging(null);
+    setDropTarget(null);
+  };
+  const targetAt = (event) => {
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest('[data-reorderable="true"]');
+    if (!target || !root.current?.contains(target)) return null;
+    const rect = target.getBoundingClientRect();
+    return {
+      key: target.dataset.taskId,
+      placement:
+        event.clientY < rect.top + rect.height / 2 ? "before" : "after",
+    };
+  };
+  const changeOrder = (action) => {
+    if (orderDisabled) return;
+    onExit();
+    try {
+      update(action);
+    } catch (error) {
+      onToast(error.message);
+    }
+  };
+  useEffect(() => {
+    if (
+      draggedTask.current &&
+      (orderDisabled ||
+        !pending.some((task) => task.key === draggedTask.current.key))
+    )
+      finishDrag();
+  }, [state.objects, orderDisabled]);
+  useEffect(() => {
+    const cancel = (event) => {
+      if (event.key === "Escape" && draggedTask.current) {
+        event.preventDefault();
+        finishDrag();
+      }
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, []);
   const label = sideLabel(side);
   const addTodo = (text) => {
     if (workspace.readOnly || !page) return false;
@@ -200,7 +263,7 @@ function ChecklistPane({
     onExit();
     onEdit(task.note.id, task.key);
   };
-  apiRef.current = {
+  const paneApi = {
     addNote: () => {
       if (!frozen) {
         onExit();
@@ -217,6 +280,12 @@ function ChecklistPane({
     locate: (objectId) => setLocated(objectId),
     element: root.current,
   };
+  useLayoutEffect(() => {
+    apiRef.current = paneApi;
+    return () => {
+      if (apiRef.current === paneApi) apiRef.current = null;
+    };
+  });
   useEffect(() => {
     if (!located) return;
     const node = [
@@ -243,7 +312,9 @@ function ChecklistPane({
         data-task-id={task.key}
         data-object-id={task.note.id}
         data-deadline={deadline.status}
-        className={`todo-row ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""}`}
+        className={`todo-row ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""} ${dragging === task.key ? "is-reordering" : ""} ${dropTarget?.key === task.key ? `drop-${dropTarget.placement}` : ""}`}
+        data-reorderable={!orderDisabled && !task.block.done && !isEditing}
+        onDragStart={(e) => e.preventDefault()}
         onContextMenu={(e) => {
           if (!isEditor(e.target))
             todoTools?.showMenu(e, [task.note], task.key, frozen);
@@ -262,9 +333,65 @@ function ChecklistPane({
                   : [...selected, task.key]
                 : [task.key],
             );
+          if (
+            e.button !== 0 ||
+            e.pointerType === "touch" ||
+            orderDisabled ||
+            task.block.done ||
+            isEditing ||
+            e.target.closest(
+              "button,input,textarea,[contenteditable=true],a,.task-deadline-popover",
+            )
+          )
+            return;
+          e.preventDefault();
+          draggedTask.current = {
+            key: task.key,
+            x: e.clientX,
+            y: e.clientY,
+            pointerId: e.pointerId,
+            element: e.currentTarget,
+            started: false,
+          };
+          e.currentTarget.setPointerCapture?.(e.pointerId);
         }}
+        onPointerMove={(e) => {
+          const gesture = draggedTask.current;
+          if (!gesture || gesture.pointerId !== e.pointerId || orderDisabled)
+            return;
+          if (
+            !gesture.started &&
+            Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y) < 5
+          )
+            return;
+          gesture.started = true;
+          e.preventDefault();
+          setDragging(gesture.key);
+          const target = targetAt(e);
+          setDropTarget(target?.key !== gesture.key ? target : null);
+        }}
+        onPointerUp={(e) => {
+          const gesture = draggedTask.current;
+          if (!gesture || gesture.pointerId !== e.pointerId) return;
+          const target = gesture.started ? targetAt(e) : null;
+          finishDrag();
+          if (!target) return;
+          changeOrder((s) =>
+            movePendingPageTask(
+              s,
+              boardId,
+              page.id,
+              gesture.key,
+              target.key,
+              target.placement,
+            ),
+          );
+        }}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
       >
         <span className="todo-deadline-glow" aria-hidden="true" />
+        <TaskAuthorAvatar block={task.block} />
         <button
           className="todo-circle"
           role="checkbox"
@@ -327,17 +454,23 @@ function ChecklistPane({
                     },
                   ];
                   if (workspace.readOnly) return;
-                  update((s) =>
-                    insertPageBlocks(
-                      s,
-                      boardId,
-                      page.id,
-                      task.note.id,
-                      task.key,
-                      block,
-                      added,
-                    ),
-                  );
+                  try {
+                    update((s) =>
+                      insertPageBlocks(
+                        s,
+                        boardId,
+                        page.id,
+                        task.note.id,
+                        task.key,
+                        block,
+                        added,
+                      ),
+                    );
+                  } catch (error) {
+                    setRevision((value) => value + 1);
+                    onToast(error.message);
+                    return;
+                  }
                   setRevision((v) => v + 1);
                   onEdit(task.note.id, added.at(-1)?.id || task.key);
                 }}
@@ -457,6 +590,25 @@ function ChecklistPane({
                     effectivelyLocked(state.objects, page.group.id) && (
                       <LockKeyhole size={14} aria-label="灵感板已锁定" />
                     )}
+                  <button
+                    type="button"
+                    className="checklist-sort-deadline"
+                    aria-label="按截止时间排序"
+                    title={
+                      pending.some((task) => task.locked)
+                        ? "解锁待办后可排序"
+                        : "按截止时间从早到晚排列，未设置时间的放在最后；排序后仍可拖动"
+                    }
+                    disabled={orderDisabled || pending.length < 2}
+                    onClick={() => {
+                      changeOrder((s) =>
+                        sortPendingPageTasks(s, boardId, page.id),
+                      );
+                    }}
+                  >
+                    <ArrowDownWideNarrow size={14} aria-hidden="true" />
+                    DDL 排序
+                  </button>
                   <button
                     className="todo-panel-action"
                     aria-label={`添加${label}图片`}
@@ -689,6 +841,7 @@ export default function ArrangedWorkspace({
   onEdit,
   onExit,
   onCollection,
+  collectionAnchorRef,
   onReference,
   onReferencePicker,
   onImagePreview,
@@ -723,7 +876,8 @@ export default function ArrangedWorkspace({
     importToken = useRef(0),
     input = useRef(null),
     imagePage = useRef(null),
-    pendingLocate = useRef(null);
+    pendingLocate = useRef(null),
+    pendingAdd = useRef(false);
   const [selected, setSelected] = useState({ side: "left", keys: [] });
   const [dialog, setDialog] = useState(null),
     [title, setTitle] = useState(""),
@@ -782,7 +936,67 @@ export default function ArrangedWorkspace({
         navigation: true,
       });
       setSelected({ side, keys: [] });
+      setDialog(null);
     });
+  const changeView = (view) =>
+    navigate(() => {
+      setDialog(null);
+      setSelected({ side: "left", keys: [] });
+      update((s) => setArrangedView(s, boardId, view), {
+        record: false,
+        navigation: true,
+      });
+    });
+  const openDeadline = (pageId, task) =>
+    dialog?.type === "deadline" &&
+    dialog.pageId === pageId &&
+    dialog.noteId === task.note.id &&
+    dialog.blockId === task.key
+      ? setDialog(null)
+      : navigate(() =>
+          setDialog({
+            type: "deadline",
+            pageId,
+            noteId: task.note.id,
+            blockId: task.key,
+            dueAt: task.block.dueAt ?? null,
+            title: blockText(task.block),
+          }),
+        );
+  const closeDeadline = (editor) =>
+    setDialog((current) =>
+      current?.type === "deadline" && current === editor ? null : current,
+    );
+  const saveDeadline = (dueAt) => {
+    if (dialog?.type !== "deadline") return "截止时间选择已关闭。";
+    if (blocked || workspace.readOnly) return "这条待办当前无法编辑。";
+    update((s) =>
+      setPageDeadline(
+        s,
+        boardId,
+        dialog.pageId,
+        dialog.noteId,
+        dialog.blockId,
+        dueAt,
+        dialog.dueAt,
+      ),
+    );
+    const latest = writablePage(
+      workspace.current.current,
+      boardId,
+      dialog.pageId,
+    )?.tasks.find(
+      (task) =>
+        task.note.id === dialog.noteId &&
+        task.key === dialog.blockId &&
+        !task.locked,
+    );
+    if (!latest) return "这条待办已被锁定、收纳或删除，请关闭后重试。";
+    if ((latest.block.dueAt ?? null) !== dueAt)
+      return "截止时间已被协作者修改，请关闭后重新设置。";
+    setDialog(null);
+    return "";
+  };
   const create = (side) =>
     navigate(() => {
       setTitle("");
@@ -960,6 +1174,7 @@ export default function ArrangedWorkspace({
       (p) => p.id === objectId || p.objects.some((o) => o.id === objectId),
     );
     if (page) {
+      changeView("list");
       const tasks = page.tasks.filter((task) => task.note.id === objectId);
       const side =
         tasks.length && tasks.every((task) => task.block.done)
@@ -970,7 +1185,11 @@ export default function ArrangedWorkspace({
     }
   };
   useLayoutEffect(() => {
-    if (!pendingLocate.current) return;
+    if (pendingAdd.current && resolved.view === "list") {
+      pendingAdd.current = false;
+      panes.current.left.current?.addNote();
+    }
+    if (!pendingLocate.current || resolved.view !== "list") return;
     const { side, objectId } = pendingLocate.current;
     panes.current[side].current?.locate(objectId);
     pendingLocate.current = null;
@@ -979,6 +1198,11 @@ export default function ArrangedWorkspace({
     isBlocked: () => !!dialog || blocked,
     beforeNavigate: navigate,
     addNote: () => {
+      if (resolved.view === "calendar") {
+        pendingAdd.current = true;
+        changeView("list");
+        return;
+      }
       activate("left");
       panes.current.left.current?.addNote();
     },
@@ -988,10 +1212,19 @@ export default function ArrangedWorkspace({
     cancelImports: () => {
       importToken.current++;
     },
-    editSelected: () => panes.current[resolved.active].current?.editSelected(),
+    editSelected: () => {
+      if (resolved.view === "list")
+        panes.current[resolved.active].current?.editSelected();
+    },
     removeSelected: () => {
       const page = currentPage();
-      if (blocked || dialog || !page || selected.side !== resolved.active)
+      if (
+        resolved.view === "calendar" ||
+        blocked ||
+        dialog ||
+        !page ||
+        selected.side !== resolved.active
+      )
         return;
       onExit();
       const keys = page.tasks
@@ -1006,7 +1239,13 @@ export default function ArrangedWorkspace({
     },
     duplicateSelected: () => {
       const page = currentPage();
-      if (blocked || dialog || !page || selected.side !== resolved.active)
+      if (
+        resolved.view === "calendar" ||
+        blocked ||
+        dialog ||
+        !page ||
+        selected.side !== resolved.active
+      )
         return;
       const blocks = page.tasks
         .filter(
@@ -1024,6 +1263,7 @@ export default function ArrangedWorkspace({
     },
     clearSelection: () => setSelected({ side: resolved.active, keys: [] }),
     selectAll: () => {
+      if (resolved.view === "calendar") return;
       const page = currentPage();
       if (page)
         setSelected({
@@ -1043,6 +1283,7 @@ export default function ArrangedWorkspace({
           (p) => p.id === objectId || p.objects.some((o) => o.id === objectId),
         );
       if (!page) return;
+      changeView("list");
       const tasks = page.tasks.filter((task) => task.note.id === objectId);
       const side =
         tasks.length && tasks.every((task) => task.block.done)
@@ -1058,6 +1299,7 @@ export default function ArrangedWorkspace({
       ref={main}
       aria-label="排列视图"
       tabIndex={-1}
+      onContextMenu={(e) => e.preventDefault()}
       onCompositionStart={() => {
         composing.current = true;
       }}
@@ -1151,6 +1393,30 @@ export default function ArrangedWorkspace({
           )}
         </div>
         <div>
+          <div
+            className="arranged-view-switch"
+            role="group"
+            aria-label="清单展示方式"
+          >
+            <button
+              type="button"
+              aria-label="切换到清单"
+              aria-pressed={resolved.view === "list"}
+              onClick={() => changeView("list")}
+            >
+              <ListTodo size={14} />
+              清单
+            </button>
+            <button
+              type="button"
+              aria-label="切换到月历"
+              aria-pressed={resolved.view === "calendar"}
+              onClick={() => changeView("calendar")}
+            >
+              <CalendarDays size={14} />
+              月历
+            </button>
+          </div>
           {importing > 0 && <span role="status">正在读取图片…</span>}
           <button
             aria-label="排列撤销"
@@ -1169,6 +1435,7 @@ export default function ArrangedWorkspace({
             <Redo2 size={16} />
           </button>
           <button
+            ref={collectionAnchorRef}
             className="arranged-collection"
             aria-label="打开排列收纳框"
             onClick={() => navigate(() => onCollection(dockedCollectionId))}
@@ -1199,113 +1466,103 @@ export default function ArrangedWorkspace({
           </button>
         </div>
       </div>
-      <div
-        className="arranged-columns"
-        role="tabpanel"
-        id={panelId}
-        aria-label={resolved.page?.title || "项目清单"}
-      >
-        {["left", "right"].map((side) => (
-          <ChecklistPane
-            key={`${side}:${resolved[side]?.id || "empty"}`}
-            side={side}
-            page={resolved[side]}
-            active={resolved.active === side}
-            workspace={workspace}
-            boardId={boardId}
-            blocked={blocked || !!modalDialog}
-            editing={editing}
-            onEdit={onEdit}
-            onExit={onExit}
-            selected={selected.side === side ? selected.keys : []}
-            onSelect={(side, keys) => {
-              activate(side);
-              setSelected({ side, keys });
-            }}
-            onCreate={create}
-            onCollect={collect}
-            onClearCompleted={clearCompleted}
-            onPickImages={(pageId) => {
-              imagePage.current = pageId;
-              input.current.click();
-            }}
-            onReference={onReference}
-            onReferencePicker={onReferencePicker}
-            onImagePreview={onImagePreview}
-            onCollection={onCollection}
-            onActivate={activate}
-            assetUrls={assetUrls}
-            objectMap={objectMap}
-            apiRef={panes.current[side]}
-            onToast={onToast}
-            clock={clock}
-            activeMotions={activeMotions}
-            onCompletion={(motion) =>
-              setMotions((list) => [
-                ...list,
-                { ...motion, pageId: resolved.page.id },
-              ])
-            }
-            onDeadline={(pageId, task) =>
-              dialog?.type === "deadline" &&
-              dialog.pageId === pageId &&
-              dialog.noteId === task.note.id &&
-              dialog.blockId === task.key
-                ? setDialog(null)
-                : navigate(() =>
-                    setDialog({
-                      type: "deadline",
-                      pageId,
-                      noteId: task.note.id,
-                      blockId: task.key,
-                      dueAt: task.block.dueAt ?? null,
-                      title: blockText(task.block),
-                    }),
-                  )
-            }
-            deadlineEditor={dialog?.type === "deadline" ? dialog : null}
-            onDeadlineClose={(editor) =>
-              setDialog((current) =>
-                current?.type === "deadline" && current === editor
-                  ? null
-                  : current,
-              )
-            }
-            onDeadlineSave={(dueAt) => {
-              if (dialog?.type !== "deadline") return "截止时间选择已关闭。";
-              if (blocked || workspace.readOnly)
-                return "这条待办当前无法编辑。";
-              update((s) =>
-                setPageDeadline(
-                  s,
+      {resolved.view === "calendar" ? (
+        <div
+          className="arranged-calendar-panel"
+          role="tabpanel"
+          id={panelId}
+          aria-label={resolved.page?.title || "项目月历"}
+        >
+          <Suspense fallback={<p role="status">正在加载月历…</p>}>
+            <DeadlineCalendar
+              key={resolved.page?.id || "empty"}
+              page={resolved.page}
+              clock={clock}
+              disabled={blocked || workspace.readOnly || !!modalDialog}
+              deadlineEditor={dialog?.type === "deadline" ? dialog : null}
+              onDeadline={openDeadline}
+              onDeadlineClose={closeDeadline}
+              onDeadlineSave={saveDeadline}
+              onToggle={(task) => {
+                if (blocked || workspace.readOnly || dialog) return;
+                const latest = writablePage(
+                  workspace.current.current,
                   boardId,
-                  dialog.pageId,
-                  dialog.noteId,
-                  dialog.blockId,
-                  dueAt,
-                  dialog.dueAt,
-                ),
-              );
-              const latest = writablePage(
-                workspace.current.current,
-                boardId,
-                dialog.pageId,
-              )?.tasks.find(
-                (task) =>
-                  task.note.id === dialog.noteId &&
-                  task.key === dialog.blockId &&
-                  !task.locked,
-              );
-              if (!latest)
-                return "这条待办已被锁定、收纳或删除，请关闭后重试。";
-              if ((latest.block.dueAt ?? null) !== dueAt)
-                return "截止时间已被协作者修改，请关闭后重新设置。";
-              setDialog(null);
-              return "";
-            }}
-          />
-        ))}
-      </div>
+                  resolved.page.id,
+                )?.tasks.find(
+                  (t) =>
+                    t.note.id === task.note.id &&
+                    t.key === task.key &&
+                    !t.locked,
+                );
+                if (latest) workspace.toggleBlock(latest.note.id, latest.key);
+              }}
+              onLocate={(task) => {
+                changeView("list");
+                const side = task.block.done ? "right" : "left";
+                activate(side);
+                pendingLocate.current = { side, objectId: task.note.id };
+              }}
+              onList={() => changeView("list")}
+            />
+          </Suspense>
+        </div>
+      ) : (
+        <div
+          className="arranged-columns"
+          role="tabpanel"
+          id={panelId}
+          aria-label={resolved.page?.title || "项目清单"}
+        >
+          {["left", "right"].map((side) => (
+            <ChecklistPane
+              key={`${side}:${resolved[side]?.id || "empty"}`}
+              side={side}
+              page={resolved[side]}
+              active={resolved.active === side}
+              workspace={workspace}
+              boardId={boardId}
+              blocked={blocked || !!modalDialog}
+              editing={editing}
+              onEdit={onEdit}
+              onExit={onExit}
+              selected={selected.side === side ? selected.keys : []}
+              onSelect={(side, keys) => {
+                activate(side);
+                setSelected({ side, keys });
+              }}
+              onCreate={create}
+              onCollect={collect}
+              onClearCompleted={clearCompleted}
+              onPickImages={(pageId) => {
+                imagePage.current = pageId;
+                input.current.click();
+              }}
+              onReference={onReference}
+              onReferencePicker={onReferencePicker}
+              onImagePreview={onImagePreview}
+              onCollection={onCollection}
+              onActivate={activate}
+              assetUrls={assetUrls}
+              objectMap={objectMap}
+              apiRef={panes.current[side]}
+              onToast={onToast}
+              clock={clock}
+              activeMotions={activeMotions}
+              onCompletion={(motion) =>
+                setMotions((list) => [
+                  ...list,
+                  { ...motion, pageId: resolved.page.id },
+                ])
+              }
+              onDeadline={openDeadline}
+              deadlineEditor={dialog?.type === "deadline" ? dialog : null}
+              onDeadlineClose={closeDeadline}
+              onDeadlineSave={saveDeadline}
+            />
+          ))}
+        </div>
+      )}
       {activeMotions.map((entry) => (
         <TaskCompletionMotion
           key={entry.eventId}

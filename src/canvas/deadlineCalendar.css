@@ -1,0 +1,378 @@
+.deadline-calendar {
+  border: 1px solid #dce3d3;
+  border-radius: 16px;
+  background: #fbfcf7;
+  overflow: clip;
+  color: #4a5642;
+  --fc-monarch-background: #fbfcf7;
+  --fc-monarch-foreground: #4a5642;
+  --fc-monarch-border: #e2e7da;
+  --fc-monarch-faint: #f2f5ec;
+  --fc-monarch-muted: #eaf0e1;
+  --fc-monarch-primary: #6d8154;
+  --fc-monarch-outline: #91a47a;
+  --fc-monarch-event: #edf2e4;
+  --fc-monarch-event-contrast: #50623e;
+}
+.ddl-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: #fbfcf7;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e2e7da;
+}
+.ddl-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ddl-month-nav h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 18px 0 0;
+  letter-spacing: 0.4px;
+}
+.ddl-toolbar button,
+.ddl-day-panel header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 29px;
+  min-width: 29px;
+  padding: 0 8px;
+  border: 1px solid #dfe5d7;
+  border-radius: 7px;
+  background: #fff9;
+  color: #657455;
+}
+.ddl-toolbar button:hover,
+.ddl-task-actions button:hover {
+  background: #eaf0df;
+}
+.ddl-completed-filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ddl-completed-filter input {
+  accent-color: #768a58;
+  width: 14px;
+  height: 14px;
+}
+.ddl-calendar-body {
+  position: relative;
+  display: grid;
+}
+.ddl-month-scroll {
+  overflow-x: auto;
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.ddl-month-scroll > div {
+  min-width: 600px;
+  font-size: 12px;
+}
+.deadline-calendar .ddl-day-cell {
+  min-height: 88px;
+  vertical-align: top;
+}
+.deadline-calendar .ddl-weekday {
+  padding: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #89927f;
+  background: #f5f7f0;
+}
+/* Style the native date link itself so today's badge has only one layer. */
+.deadline-calendar .ddl-date-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  width: 27px;
+  min-width: 27px;
+  height: 27px;
+  padding: 0;
+  font-size: 12px;
+}
+.deadline-calendar .ddl-date-button:hover {
+  background: #e8eedc;
+}
+.deadline-calendar .ddl-date-button.is-today {
+  background: #758858;
+  color: white;
+}
+.deadline-calendar .ddl-event {
+  border: 0;
+  border-left: 2px solid #8da275;
+  border-radius: 4px;
+  background: #ebf1e2;
+  color: #526440;
+  margin-bottom: 3px;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+.ddl-event-content {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ddl-event-content time {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.ddl-event-content > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deadline-calendar .ddl-event.ddl-late {
+  background: #f5e7e1;
+  color: #a16752;
+  border-color: #c79681;
+}
+.deadline-calendar .ddl-event.ddl-urgent {
+  background: #f5eedb;
+  color: #9c8240;
+  border-color: #c6ad6f;
+}
+.deadline-calendar .ddl-event.ddl-done {
+  background: #eef0ea;
+  color: #939d88;
+  border-color: #bdc6b5;
+}
+.ddl-event.ddl-done .ddl-event-content > span {
+  text-decoration: line-through;
+}
+.deadline-calendar .ddl-more {
+  display: block;
+  padding: 3px 6px;
+  color: #71835c;
+  font-size: 11px;
+  font-weight: 500;
+}
+.ddl-day-panel {
+  position: sticky;
+  z-index: 7;
+  top: 76px;
+  grid-area: 1 / 1;
+  align-self: start;
+  margin: 12px 16px 12px auto;
+  width: min(390px, calc(100% - 24px));
+  max-height: min(640px, calc(100dvh - 296px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d5dfc9;
+  border-radius: 16px;
+  background: #fffffc;
+  box-shadow:
+    0 18px 65px #3549232a,
+    0 4px 15px #35492312;
+  outline: none;
+}
+.ddl-day-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 19px 20px 14px;
+  border-bottom: 1px solid #e7ecdf;
+}
+.ddl-eyebrow {
+  font-size: 10px;
+  color: #a1ad92;
+  letter-spacing: 2px;
+}
+.ddl-day-panel h3 {
+  font-size: 18px;
+  font-weight: 550;
+  margin: 7px 0 5px;
+}
+.ddl-day-panel header p {
+  font-size: 12px;
+  color: #88947d;
+  margin: 0;
+}
+.ddl-day-tasks {
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 17px;
+}
+.deadline-day-task {
+  display: flex;
+  gap: 11px;
+  padding: 16px 0;
+  border-bottom: 1px solid #edf0e7;
+}
+.deadline-day-task:last-child {
+  border-bottom: 0;
+}
+.ddl-complete {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-top: 2px;
+  border: 1.5px solid #a7b596;
+  border-radius: 50%;
+  color: #fff;
+  background: transparent;
+}
+.ddl-complete[aria-pressed="true"] {
+  background: #92a57c;
+  border-color: #92a57c;
+}
+.ddl-complete:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ddl-task-main {
+  min-width: 0;
+  flex: 1;
+}
+.ddl-task-title {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.ddl-done .ddl-task-title {
+  text-decoration: line-through;
+  color: #9aa38e;
+}
+.ddl-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #95a084;
+  margin-top: 4px;
+}
+.ddl-task-meta time {
+  font-variant-numeric: tabular-nums;
+  color: #78866b;
+}
+.ddl-late .ddl-task-meta > span {
+  color: #b3816d;
+}
+.ddl-urgent .ddl-task-meta > span {
+  color: #ab934f;
+}
+.ddl-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 9px;
+}
+.ddl-task-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #7a896a;
+  border: 0;
+  border-radius: 5px;
+  background: #f3f6ed;
+  padding: 4px 6px;
+}
+.ddl-task-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ddl-day-empty {
+  padding: 38px 10px;
+  color: #8e9d7e;
+  text-align: center;
+  font-size: 13px;
+}
+.ddl-day-empty span {
+  font-size: 11px;
+  color: #a2ac96;
+}
+.ddl-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid #e4e9dc;
+  padding: 13px 20px;
+  font-size: 11px;
+  color: #94a084;
+}
+.ddl-footer > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ddl-footer button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6c8052;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ddl-empty-hint {
+  margin: 0;
+  padding: 0 20px 16px;
+  font-size: 12px;
+  color: #7e8d6e;
+}
+.deadline-calendar button:focus-visible,
+.deadline-calendar a:focus-visible {
+  outline: 2px solid #8fa477;
+  outline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .arranged-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+    height: auto;
+    min-height: 31px;
+  }
+  .arranged-toolbar > div:last-child {
+    flex-wrap: wrap;
+  }
+  .ddl-toolbar {
+    flex-wrap: wrap;
+    padding: 13px;
+    gap: 10px;
+  }
+  .ddl-month-nav h2 {
+    font-size: 17px;
+    margin-right: 7px;
+  }
+  .ddl-day-panel {
+    position: fixed;
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    margin: 0;
+    max-height: 70dvh;
+    z-index: 70;
+  }
+  .ddl-footer {
+    padding: 12px;
+  }
+}

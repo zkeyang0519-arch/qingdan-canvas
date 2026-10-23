@@ -2204,6 +2204,18 @@ a:focus-visible,
   border-bottom: 1px solid #edf1e6;
   padding: 10px 14px;
 }
+.collection-panel-anchored {
+  display: flex;
+  flex-direction: column;
+}
+.collection-panel-anchored > header,
+.collection-panel-anchored > footer,
+.collection-panel-anchored > .collection-breadcrumb {
+  flex-shrink: 0;
+}
+.collection-panel-anchored > .collection-members {
+  min-height: 0;
+}
 .collection-panel > header > div {
   display: flex;
   align-items: center;
@@ -2501,7 +2513,7 @@ a:focus-visible,
   .return-button {
     padding: 5px;
   }
-  .collection-panel {
+  .collection-panel:not(.collection-panel-anchored) {
     top: 68px !important;
   }
 }

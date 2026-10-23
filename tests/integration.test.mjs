@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import path from "node:path";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 import { createHash, randomBytes } from "node:crypto";
 import { createObject, makeBlock } from "../src/canvas/model.js";
+import { sharedObject } from "../shared/canvas-contract.js";
 
 const cli = new URL(
   "../node_modules/wrangler/bin/wrangler.js",
@@ -40,7 +43,12 @@ async function freePort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
-async function socket(url, cookie) {
+async function socket(url, cookie, authors = true) {
+  if (authors) {
+    const capable = new URL(url);
+    capable.searchParams.set("authors", "1");
+    url = capable.href;
+  }
   const ws = new WebSocket(url.replace(/^http/, "ws"), {
     headers: { Cookie: cookie, Origin: new URL(url).origin },
   });
@@ -383,6 +391,7 @@ test(
         const result = await response.json();
         assert.equal(result.user.id, credentials.get("甲").user.id);
         assert.deepEqual(Object.keys(result.user).sort(), [
+          "avatarVersion",
           "id",
           "name",
           "username",
@@ -450,6 +459,104 @@ test(
     const initial = await sa.next((m) => m.type === "snapshot");
     await sb.next((m) => m.type === "snapshot");
     assert.equal(initial.rows.length, 1, "room has persistent collection");
+    await t.test(
+      "头像只允许本人上传，共享成员可读取，替换和移除实时更新成员资料",
+      async () => {
+        const aId = credentials.get("甲").user.id;
+        const bId = credentials.get("乙").user.id;
+        const png = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1cAAAAASUVORK5CYII=",
+          "base64",
+        );
+        const upload = (
+          cookie,
+          bytes = png,
+          mime = "image/png",
+          account = aId,
+        ) =>
+          fetch(`${base}/api/profile/avatar`, {
+            method: "PUT",
+            headers: {
+              Cookie: cookie,
+              "Content-Type": mime,
+              "X-QD-Account": account,
+            },
+            body: bytes,
+          });
+        assert.equal((await upload(" ")).status, 401);
+        assert.equal(
+          (await upload(b)).status,
+          401,
+          "切换账号的旧页面不能更新另一人头像",
+        );
+        assert.equal(
+          (await upload(a, Buffer.from("<svg/>"), "image/svg+xml")).status,
+          415,
+        );
+        assert.equal(
+          (await upload(a, Buffer.from("not an image"))).status,
+          415,
+        );
+        assert.equal(
+          (await upload(a, Buffer.alloc(2 * 1024 * 1024 + 1))).status,
+          413,
+        );
+        const firstResponse = await upload(a);
+        assert.equal(firstResponse.status, 200);
+        const first = (await firstResponse.json()).user;
+        assert.ok(first.avatarVersion);
+        const presence = await sb.next(
+          (m) =>
+            m.type === "presence" &&
+            m.profiles?.some(
+              (p) =>
+                p.userId === aId && p.avatarVersion === first.avatarVersion,
+            ),
+        );
+        assert.equal(
+          presence.profiles.find((p) => p.userId === aId).name,
+          credentials.get("甲").user.name,
+        );
+        assert.equal(
+          (await (await request("/api/session", a)).json()).user.avatarVersion,
+          first.avatarVersion,
+        );
+        const imagePath = `/api/avatars/${aId}?v=${first.avatarVersion}`;
+        const image = await request(imagePath, b);
+        assert.equal(image.status, 200);
+        assert.equal(image.headers.get("Content-Type"), "image/png");
+        assert.equal(image.headers.get("X-Content-Type-Options"), "nosniff");
+        assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+        assert.equal((await request(imagePath, outsider)).status, 403);
+        assert.equal((await request(imagePath, "")).status, 401);
+        assert.equal(
+          (await request(`/api/avatars/${bId}`, a, "PUT", {})).status,
+          405,
+        );
+        const second = (await (await upload(a)).json()).user;
+        assert.notEqual(second.avatarVersion, first.avatarVersion);
+        assert.equal((await upload(a, Buffer.from("bad"))).status, 415);
+        assert.equal(
+          (await (await request("/api/session", a)).json()).user.avatarVersion,
+          second.avatarVersion,
+          "失败上传保留已有头像",
+        );
+        const removed = await request("/api/profile/avatar", a, "DELETE");
+        assert.equal(removed.status, 200);
+        assert.equal((await removed.json()).user.avatarVersion, null);
+        await sb.next(
+          (m) =>
+            m.type === "presence" &&
+            m.profiles?.some(
+              (p) => p.userId === aId && p.avatarVersion === null,
+            ),
+        );
+        assert.equal((await request(imagePath, b)).status, 404);
+        // Keep an avatar on an offline member to check the complete author directory.
+        const bobUpload = await upload(b, png, "image/png", bId);
+        assert.equal(bobUpload.status, 200);
+      },
+    );
     const note = {
       ...createObject(room.id, "note", { x: 200, y: 180 }),
       noteKind: "checklist",
@@ -469,6 +576,14 @@ test(
     assert.equal(ack.rows[0].data.fixedHeight, true);
     assert.equal(ack.rows[0].data.height, 165.5);
     assert.equal(ack.rows[0].data.blocks[0].dueAt, "2026-10-22T02:00:00.000Z");
+    assert.equal(
+      ack.rows[0].data.blocks[0].createdByUserId,
+      credentials.get("甲").user.id,
+    );
+    assert.equal(
+      ack.rows[0].data.blocks[0].createdByName,
+      credentials.get("甲").user.name,
+    );
     assert.equal(Object.hasOwn(ack.rows[0].data, "layoutHeight"), false);
     const remote = await sb.next((m) => m.type === "changes");
     assert.equal(remote.rows[0].data.blocks[0].runs[0].text, "一起完成");
@@ -516,6 +631,134 @@ test(
       await request(`/api/rooms/${room.id}/snapshot`, a)
     ).json();
     assert.equal(snapshot.rows.find((r) => r.id === note.id).data.x, 200);
+    let archivedAuthors;
+    const commitAuthors = async (client, data, revision, id = data?.id) => {
+      const opId = crypto.randomUUID();
+      client.send({
+        type: "commit",
+        opId,
+        changes: [{ id, expectedRevision: revision, data }],
+      });
+      const reply = await client.next((m) => m.opId === opId);
+      assert.equal(reply.type, "ack", reply.message);
+      return reply.rows[0];
+    };
+    await t.test(
+      "逐条作者由登录身份核定，协作者编辑、删除和恢复不改作者",
+      async () => {
+        const aId = credentials.get("甲").user.id;
+        const bId = credentials.get("乙").user.id;
+        const forged = {
+          ...createObject(room.id, "note", { x: 650, y: 180 }),
+          noteKind: "checklist",
+          blocks: [
+            {
+              ...makeBlock("甲写的"),
+              createdByUserId: bId,
+              createdByName: "伪造",
+            },
+          ],
+        };
+        const first = await commitAuthors(sa, forged, 0);
+        assert.equal(first.data.blocks[0].createdByUserId, aId);
+        assert.notEqual(first.data.blocks[0].createdByName, "伪造");
+        const edited = {
+          ...first.data,
+          blocks: [
+            {
+              ...first.data.blocks[0],
+              done: true,
+              completedAt: new Date().toISOString(),
+              createdByUserId: bId,
+            },
+            {
+              ...makeBlock("乙写的"),
+              createdByUserId: aId,
+              createdByName: "伪造",
+            },
+          ],
+        };
+        const second = await commitAuthors(sb, edited, first.revision);
+        assert.deepEqual(
+          second.data.blocks.map((b) => b.createdByUserId),
+          [aId, bId],
+        );
+        const removed = await commitAuthors(
+          sb,
+          { ...second.data, blocks: second.data.blocks.slice(1) },
+          second.revision,
+        );
+        const strip = (block) => {
+          const { createdByUserId, createdByName, ...old } = block;
+          return old;
+        };
+        const restored = await commitAuthors(
+          sb,
+          { ...second.data, blocks: second.data.blocks.map(strip) },
+          removed.revision,
+        );
+        assert.deepEqual(
+          restored.data.blocks.map((b) => b.createdByUserId),
+          [aId, bId],
+        );
+        const deleted = await commitAuthors(
+          sb,
+          null,
+          restored.revision,
+          restored.id,
+        );
+        archivedAuthors = {
+          data: { ...restored.data, blocks: restored.data.blocks.map(strip) },
+          revision: deleted.revision,
+        };
+      },
+    );
+    await t.test(
+      "更新前已打开的页面继续正常协作，服务端仍为其新增待办记录作者",
+      async (subtest) => {
+        const legacy = await socket(
+          `${base}/api/rooms/${room.id}/socket`,
+          a,
+          false,
+        );
+        subtest.after(() => legacy.ws.terminate());
+        const oldSnapshot = await legacy.next((m) => m.type === "snapshot");
+        assert.equal(
+          oldSnapshot.rows.find((r) => r.id === note.id).data.blocks[0]
+            .createdByUserId,
+          undefined,
+        );
+        const oldNote = {
+          ...createObject(room.id, "note", { x: 600, y: 400 }),
+          blocks: [makeBlock("旧页面新增")],
+        };
+        const oldAck = await commitAuthors(legacy, oldNote, 0);
+        assert.equal(oldAck.data.blocks[0].createdByUserId, undefined);
+        const modern = await sb.next(
+          (m) =>
+            m.type === "changes" && m.rows.some((r) => r.id === oldNote.id),
+        );
+        assert.equal(
+          modern.rows.find((r) => r.id === oldNote.id).data.blocks[0]
+            .createdByUserId,
+          credentials.get("甲").user.id,
+        );
+        await commitAuthors(
+          sb,
+          { ...modern.rows.find((r) => r.id === oldNote.id).data, x: 650 },
+          1,
+        );
+        const legacyUpdate = await legacy.next(
+          (m) =>
+            m.type === "changes" && m.rows.some((r) => r.id === oldNote.id),
+        );
+        assert.equal(
+          legacyUpdate.rows[0].data.blocks[0].createdByUserId,
+          undefined,
+        );
+        assert.equal(legacyUpdate.rows[0].data.x, 650);
+      },
+    );
     // Upload and retrieve real R2 bytes; isolate by room membership.
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGQAAAABJRU5ErkJggg==",
@@ -592,10 +835,140 @@ test(
     sa.ws.close();
     sb.ws.close();
     await stop();
+    // Model an upgrade with a pre-feature task deleted before authors existed.
+    // Only this test's stopped, isolated workerd database is touched.
+    const legacyDeleted = {
+      ...createObject(room.id, "note", { x: 900, y: 200 }),
+      blocks: [makeBlock("旧版已删除待办")],
+    };
+    const legacyFirst = {
+      ...createObject(room.id, "note", { x: 900, y: 450 }),
+      noteKind: "checklist",
+      blocks: [makeBlock("甲最初写的待办")],
+    };
+    const legacySecond = {
+      ...legacyFirst,
+      blocks: [...legacyFirst.blocks, makeBlock("乙后来添加的待办")],
+    };
+    const legacyEdited = {
+      ...legacySecond,
+      blocks: legacySecond.blocks.map((block, index) =>
+        index
+          ? block
+          : { ...block, runs: [{ type: "text", text: "甲重写后的旧待办" }] },
+      ),
+    };
+    const legacyUnknown = {
+      ...createObject(room.id, "note", { x: 900, y: 650 }),
+      blocks: [makeBlock("缺少创建记录")],
+    };
+    const legacyLarge = sharedObject({
+      ...createObject(room.id, "note", { x: 900, y: 900 }),
+      blocks: [makeBlock("")],
+    });
+    legacyLarge.blocks[0].runs[0].text = "x".repeat(
+      255990 - JSON.stringify(legacyLarge).length,
+    );
+    assert.doesNotThrow(() => sharedObject(legacyLarge), "升级前合法的大对象");
+    const legacyCreateOp = {
+      type: "commit",
+      opId: "old-create-note",
+      changes: [{ id: legacyFirst.id, expectedRevision: 0, data: legacyFirst }],
+    };
+    const doDirectory = path.join(
+      state,
+      "v3",
+      "do",
+      "qingdan-canvas-CanvasRoom",
+    );
+    let seededLegacy = false;
+    for (const filename of await readdir(doDirectory)) {
+      if (!filename.endsWith(".sqlite") || filename === "metadata.sqlite")
+        continue;
+      const database = new DatabaseSync(path.join(doDirectory, filename));
+      try {
+        if (
+          !database
+            .prepare("SELECT name FROM sqlite_master WHERE name='objects'")
+            .get()
+        )
+          continue;
+        if (!database.prepare("SELECT id FROM objects WHERE id=?").get(note.id))
+          continue;
+        database.exec("DROP TABLE task_authors");
+        database.exec("DROP TABLE IF EXISTS room_migrations");
+        const legacyRow = {
+          id: legacyDeleted.id,
+          revision: 2,
+          deleted: true,
+          data: null,
+        };
+        database
+          .prepare("INSERT INTO objects(id,value) VALUES(?,?)")
+          .run(legacyRow.id, JSON.stringify(legacyRow));
+        const legacyReceipt = {
+          type: "ack",
+          opId: "legacy-authors",
+          rows: [
+            { ...legacyRow, revision: 1, deleted: false, data: legacyDeleted },
+          ],
+        };
+        database
+          .prepare(
+            "INSERT INTO receipts(id,user_id,payload,value) VALUES(?,?,?,?)",
+          )
+          .run(
+            legacyReceipt.opId,
+            credentials.get("乙").user.id,
+            "[]",
+            JSON.stringify(legacyReceipt),
+          );
+        for (const [data, revision] of [
+          [legacyEdited, 3],
+          [legacyUnknown, 4],
+          [legacyLarge, 1],
+        ]) {
+          database
+            .prepare("INSERT INTO objects(id,value) VALUES(?,?)")
+            .run(
+              data.id,
+              JSON.stringify({ id: data.id, revision, deleted: false, data }),
+            );
+        }
+        for (const [data, revision, person, opId] of [
+          [legacyFirst, 1, "甲", legacyCreateOp.opId],
+          [legacySecond, 2, "乙", "old-add-task"],
+          [legacyEdited, 3, "甲", "old-rewrite-task"],
+          [legacyUnknown, 4, "甲", "old-incomplete-history"],
+          [legacyLarge, 1, "甲", "old-large-note"],
+        ]) {
+          database
+            .prepare(
+              "INSERT INTO receipts(id,user_id,payload,value) VALUES(?,?,?,?)",
+            )
+            .run(
+              opId,
+              credentials.get(person).user.id,
+              JSON.stringify([
+                { id: data.id, expectedRevision: revision - 1, data },
+              ]),
+              JSON.stringify({
+                type: "ack",
+                opId,
+                rows: [{ id: data.id, revision, deleted: false, data }],
+              }),
+            );
+        }
+        seededLegacy = true;
+      } finally {
+        database.close();
+      }
+    }
+    assert.ok(seededLegacy);
     await start();
-    const restored = await (
-      await request(`/api/rooms/${room.id}/snapshot`, a)
-    ).json();
+    const restoredResponse = await request(`/api/rooms/${room.id}/snapshot`, a);
+    const restored = await restoredResponse.json();
+    assert.equal(restoredResponse.status, 200, JSON.stringify(restored));
     assert.equal(restored.rows.find((r) => r.id === note.id).revision, 1);
     assert.equal(
       restored.rows.find((r) => r.id === note.id).data.blocks[0].dueAt,
@@ -607,7 +980,114 @@ test(
     );
     const reconnected = await socket(`${base}/api/rooms/${room.id}/socket`, a);
     t.after(() => reconnected.ws.terminate());
-    await reconnected.next((m) => m.type === "snapshot");
+    const recoveredSnapshot = await reconnected.next(
+      (m) => m.type === "snapshot",
+    );
+    const directory = await reconnected.next((m) => m.type === "presence");
+    const offlineAuthor = directory.profiles.find(
+      (p) => p.userId === credentials.get("乙").user.id,
+    );
+    assert.ok(
+      offlineAuthor.avatarVersion,
+      "作者离线且服务重启后仍返回上传的头像",
+    );
+    assert.equal(
+      directory.members.some((m) => m.userId === offlineAuthor.userId),
+      false,
+    );
+    await t.test(
+      "升级后旧待办按创建回执关联上传头像，重写不改作者或丢失内容",
+      async () => {
+        const expected = [
+          credentials.get("甲").user.id,
+          credentials.get("乙").user.id,
+        ];
+        const recovered = recoveredSnapshot.rows.find(
+          (row) => row.id === legacyEdited.id,
+        );
+        assert.deepEqual(
+          recovered.data.blocks.map((block) => block.createdByUserId),
+          expected,
+        );
+        assert.deepEqual(
+          restored.rows.find((row) => row.id === legacyEdited.id),
+          recovered,
+          "HTTP 和实时快照一致",
+        );
+        assert.equal(recovered.revision, 3, "作者元信息恢复不改变内容版本");
+        assert.equal(recovered.data.blocks[0].runs[0].text, "甲重写后的旧待办");
+        const recoveredLarge = recoveredSnapshot.rows.find(
+          (row) => row.id === legacyLarge.id,
+        );
+        assert.equal(recoveredLarge.revision, 1);
+        assert.equal(
+          recoveredLarge.data.blocks[0].createdByUserId,
+          expected[0],
+        );
+        assert.equal(
+          recoveredLarge.data.blocks[0].runs[0].text,
+          legacyLarge.blocks[0].runs[0].text,
+          "作者元信息不能使已经存储的合法内容无法读取或被截断",
+        );
+        assert.deepEqual(
+          Object.keys(recoveredLarge.data.blocks[0]),
+          Object.keys(recovered.data.blocks[0]),
+          "恢复的作者字段与普通待办保持相同顺序",
+        );
+        const imageAuthor = directory.profiles.find(
+          (profile) =>
+            profile.userId === recovered.data.blocks[1].createdByUserId,
+        );
+        assert.ok(imageAuthor.avatarVersion);
+        assert.equal(
+          (
+            await request(
+              `/api/avatars/${imageAuthor.userId}?v=${imageAuthor.avatarVersion}`,
+              a,
+            )
+          ).status,
+          200,
+        );
+        reconnected.send(legacyCreateOp);
+        const replay = await reconnected.next(
+          (message) =>
+            message.type === "ack" && message.opId === legacyCreateOp.opId,
+        );
+        assert.equal(replay.rows[0].revision, 1);
+        assert.equal(
+          replay.rows[0].data.blocks[0].createdByUserId,
+          expected[0],
+          "旧回执重放也保留恢复的作者",
+        );
+        const edited = await commitAuthors(reconnected, legacyEdited, 3);
+        assert.deepEqual(
+          edited.data.blocks.map((block) => block.createdByUserId),
+          expected,
+        );
+        const unknown = await commitAuthors(reconnected, legacyUnknown, 4);
+        assert.equal(
+          unknown.data.blocks[0].createdByUserId,
+          undefined,
+          "无法证明的作者不归给重写者",
+        );
+      },
+    );
+    const legacyRecovered = await commitAuthors(reconnected, legacyDeleted, 2);
+    assert.equal(
+      legacyRecovered.data.blocks[0].createdByUserId,
+      credentials.get("乙").user.id,
+      "升级前已删除的待办恢复后保留创建回执的作者",
+    );
+    const recoveredAuthors = await commitAuthors(
+      reconnected,
+      archivedAuthors.data,
+      archivedAuthors.revision,
+    );
+    assert.deepEqual(
+      recoveredAuthors.data.blocks.map((b) => b.createdByUserId),
+      [credentials.get("甲").user.id, credentials.get("乙").user.id],
+      "重启后恢复整张清单仍保留逐条作者",
+    );
     reconnected.send(op);
     assert.equal(
       (await reconnected.next((m) => m.type === "ack")).rows[0].revision,

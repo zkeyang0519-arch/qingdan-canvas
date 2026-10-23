@@ -22,13 +22,22 @@ function changeView(state, boardId, change) {
   };
 }
 
+function savedArrangedView(state, boardId) {
+  const view = state.preferences.views[boardId]?.arranged?.view;
+  return ["list", "calendar"].includes(view) ? { view } : {};
+}
+
 export function setSurface(state, boardId, surface) {
   if (!["canvas", "arranged"].includes(surface)) return state;
   if (surface === "arranged") {
     const { page, active } = panePages(state, boardId);
     return changeView(state, boardId, {
       surface,
-      arranged: { pageId: page?.id, active },
+      arranged: {
+        ...savedArrangedView(state, boardId),
+        pageId: page?.id,
+        active,
+      },
     });
   }
   return changeView(state, boardId, { surface });
@@ -61,6 +70,7 @@ export function panePages(state, boardId) {
     left: page,
     right: page,
     active: saved.active === "right" ? "right" : "left",
+    view: saved.view === "calendar" ? "calendar" : "list",
   };
 }
 
@@ -71,14 +81,28 @@ export function choosePanePage(state, boardId, side, pageId) {
     !resolved.pages.some((p) => p.id === pageId)
   )
     return state;
-  return changeView(state, boardId, { arranged: { pageId, active: side } });
+  return changeView(state, boardId, {
+    arranged: { ...savedArrangedView(state, boardId), pageId, active: side },
+  });
+}
+
+export function setArrangedView(state, boardId, view) {
+  if (!["list", "calendar"].includes(view)) return state;
+  if (panePages(state, boardId).view === view) return state;
+  return changeView(state, boardId, {
+    arranged: { ...state.preferences.views[boardId]?.arranged, view },
+  });
 }
 
 export function activatePane(state, boardId, side) {
   const { page, active } = panePages(state, boardId);
   if (active === side || !["left", "right"].includes(side)) return state;
   return changeView(state, boardId, {
-    arranged: { pageId: page?.id, active: side },
+    arranged: {
+      ...savedArrangedView(state, boardId),
+      pageId: page?.id,
+      active: side,
+    },
   });
 }
 
@@ -230,7 +254,19 @@ export function insertPageBlocks(
   const task = pageTask(state, boardId, pageId, noteId, blockId);
   if (!task) return state;
   const blocks = [...task.note.blocks];
-  blocks.splice(task.index, 1, { ...task.block, runs: edited.runs }, ...extra);
+  // Equal ranks keep the note's physical block order. New lines stay next to
+  // their source without rewriting other notes (including locked notes).
+  const inserted = extra.map((block) =>
+    task.block.arrangedOrder === undefined || task.block.done
+      ? block
+      : { ...block, arrangedOrder: task.block.arrangedOrder },
+  );
+  blocks.splice(
+    task.index,
+    1,
+    { ...task.block, runs: edited.runs },
+    ...inserted,
+  );
   return patchObjects(state, { [noteId]: { blocks } });
 }
 
@@ -252,6 +288,80 @@ export function clearCompletedPageTasks(state, boardId, pageId) {
     pageId,
     page.tasks.filter((t) => t.block.done && !t.locked).map((t) => t.key),
   );
+}
+
+function pendingPageTasks(state, boardId, pageId) {
+  if (!writablePage(state, boardId, pageId)) return null;
+  const page = panePages(state, boardId).pages.find((p) => p.id === pageId);
+  const tasks = page.tasks.filter((task) => !task.block.done);
+  // Ordering writes task metadata, so a locked list must remain untouched.
+  return tasks.some((task) => task.locked) ? null : tasks;
+}
+
+function savePendingOrder(state, previous, ordered) {
+  if (ordered.every((task, index) => task.key === previous[index].key))
+    return state;
+  const ranks = new Map(ordered.map((task, index) => [task.key, index]));
+  const patches = {};
+  for (const { note } of ordered) {
+    if (
+      patches[note.id] ||
+      !note.blocks.some(
+        (block) =>
+          ranks.has(block.id) && block.arrangedOrder !== ranks.get(block.id),
+      )
+    )
+      continue;
+    patches[note.id] = {
+      blocks: note.blocks.map((block) =>
+        ranks.has(block.id)
+          ? { ...block, arrangedOrder: ranks.get(block.id) }
+          : block,
+      ),
+    };
+  }
+  if (Object.keys(patches).length > 200)
+    throw new Error("一次最多调整 200 张便签，请分批整理后再排序。");
+  const updatedAt = now();
+  return {
+    ...state,
+    objects: state.objects.map((object) =>
+      patches[object.id]
+        ? { ...object, ...patches[object.id], updatedAt }
+        : object,
+    ),
+  };
+}
+
+export function sortPendingPageTasks(state, boardId, pageId) {
+  const tasks = pendingPageTasks(state, boardId, pageId);
+  if (!tasks || tasks.length < 2) return state;
+  const deadline = (task) =>
+    validDeadline(task.block.dueAt) ? Date.parse(task.block.dueAt) : Infinity;
+  return savePendingOrder(
+    state,
+    tasks,
+    [...tasks].sort((a, b) => deadline(a) - deadline(b)),
+  );
+}
+
+export function movePendingPageTask(
+  state,
+  boardId,
+  pageId,
+  taskId,
+  targetId,
+  placement = "before",
+) {
+  if (taskId === targetId || !["before", "after"].includes(placement))
+    return state;
+  const tasks = pendingPageTasks(state, boardId, pageId);
+  const moving = tasks?.find((task) => task.key === taskId);
+  if (!moving || !tasks.some((task) => task.key === targetId)) return state;
+  const ordered = tasks.filter((task) => task.key !== taskId);
+  const index = ordered.findIndex((task) => task.key === targetId);
+  ordered.splice(index + (placement === "after" ? 1 : 0), 0, moving);
+  return savePendingOrder(state, tasks, ordered);
 }
 
 export function takeOutToPage(state, boardId, pageId, objectId) {

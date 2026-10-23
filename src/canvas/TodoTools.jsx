@@ -1,3 +1,4 @@
+import { TaskAuthorDetails } from "./TaskAuthors.jsx";
 import React, {
   createContext,
   useContext,
@@ -214,6 +215,13 @@ export function TodoToolsProvider({
           return;
         }
       }
+      if (panel.point) {
+        setPosition({
+          left: Math.max(12, Math.min(panel.point.x, w - r.width - 12)),
+          top: Math.max(12, Math.min(panel.point.y, h - r.height - 12)),
+        });
+        return;
+      }
       let left = a.right + 8,
         top = a.top - 8;
       if (left + r.width > w - 12) left = a.left - r.width - 8;
@@ -262,7 +270,10 @@ export function TodoToolsProvider({
       if (delay) openTimer.current = setTimeout(show, 300);
       else show();
     },
-    showMenu: (e, notes, blockId, frozen = false) =>
+    showMenu: (e, notes, blockId, frozen = false) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const compact = e.type === "contextmenu" && Boolean(blockId);
       open({
         type: "menu",
         anchor: e.currentTarget,
@@ -270,7 +281,10 @@ export function TodoToolsProvider({
         noteId: notes[0]?.id,
         blockId,
         frozen,
-      }),
+        compact,
+        point: compact ? { x: e.clientX, y: e.clientY } : null,
+      });
+    },
     leave,
     keep: () => clearTimers(),
   };
@@ -284,7 +298,7 @@ export function TodoToolsProvider({
             className={
               panel.type === "remark"
                 ? "todo-remark-popover"
-                : "todo-action-menu"
+                : `todo-action-menu${panel.compact ? " todo-action-menu-compact" : ""}`
             }
             style={position}
             role={panel.type === "remark" ? "dialog" : "menu"}
@@ -328,6 +342,7 @@ export function TodoToolsProvider({
                 <div className="todo-remark-title">
                   {blockText(block) || "空白事项"}
                 </div>
+                <TaskAuthorDetails block={block} />
                 {panel.editing ? (
                   <textarea
                     className="todo-remark-editor"
@@ -382,6 +397,17 @@ export function TodoToolsProvider({
                         : ""}
                 </footer>
               </>
+            ) : panel.type === "menu" && panel.compact ? (
+              <button
+                role="menuitem"
+                aria-label="删除待办"
+                disabled={panel.frozen || locked || !block}
+                onClick={() =>
+                  remove(panel.noteId, panel.blockId, panel.frozen)
+                }
+              >
+                删除
+              </button>
             ) : panel.type === "menu" ? (
               <>
                 <div className="todo-menu-heading">
@@ -395,17 +421,20 @@ export function TodoToolsProvider({
                   </button>
                 </div>
                 {panel.blockId ? (
-                  <button
-                    role="menuitem"
-                    aria-label="删除待办"
-                    disabled={panel.frozen || locked || !block}
-                    onClick={() =>
-                      remove(panel.noteId, panel.blockId, panel.frozen)
-                    }
-                  >
-                    <Trash2 size={15} />
-                    删除待办
-                  </button>
+                  <>
+                    {block && <TaskAuthorDetails block={block} />}
+                    <button
+                      role="menuitem"
+                      aria-label="删除待办"
+                      disabled={panel.frozen || locked || !block}
+                      onClick={() =>
+                        remove(panel.noteId, panel.blockId, panel.frozen)
+                      }
+                    >
+                      <Trash2 size={15} />
+                      删除待办
+                    </button>
+                  </>
                 ) : (
                   panel.notes.map((n) => {
                     const actual = workspace.state.objects.find(

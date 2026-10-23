@@ -114,6 +114,19 @@ export function todoPages(state, boardId) {
       });
   }
   if (loose.objects.length || !pages.length) pages.push(loose);
+  for (const page of pages) {
+    const pending = page.tasks
+      .filter((task) => !task.block.done)
+      .sort(
+        (a, b) =>
+          (a.block.arrangedOrder ?? Infinity) -
+          (b.block.arrangedOrder ?? Infinity),
+      );
+    let index = 0;
+    page.tasks = page.tasks.map((task) =>
+      task.block.done ? task : pending[index++],
+    );
+  }
   return pages;
 }
 export function addPageTodo(state, boardId, pageId, text) {

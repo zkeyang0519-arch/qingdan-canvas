@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import UserAvatar from "./UserAvatar.jsx";
 import {
   ArrowRight,
   Plus,
@@ -247,9 +248,11 @@ export default function App() {
           onClick={() => setDialog("profile")}
           disabled={!session || busy}
         >
-          <span className="avatar">
-            {(session?.user.name || "访").slice(0, 1)}
-          </span>
+          <UserAvatar
+            userId={session?.user.id}
+            avatarVersion={session?.user.avatarVersion}
+            name={session?.user.name || "连接中"}
+          />
           {session?.user.name || "连接中"}
         </button>
       </header>

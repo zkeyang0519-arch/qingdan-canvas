@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { LogOut } from "lucide-react";
 import { api, announceAccountChange } from "../api.js";
+import UserAvatar from "../UserAvatar.jsx";
+import { prepareAvatarImage } from "./avatar-image.js";
 
 export default function ProfileSettings({ user, onUpdate, onLogout }) {
   const [name, setName] = useState(user.name);
@@ -10,6 +12,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const fileInput = useRef(null);
   async function act(event, action) {
     event?.preventDefault();
     setBusy(true);
@@ -29,6 +32,74 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
       <p>
         用户名：<strong>{user.username}</strong>
       </p>
+      <div className="profile-avatar-setting">
+        <UserAvatar
+          userId={user.id}
+          name={user.name}
+          avatarVersion={user.avatarVersion}
+          className="profile-avatar"
+        />
+        <div>
+          <div className="profile-avatar-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() => fileInput.current?.click()}
+            >
+              {user.avatarVersion ? "更换头像" : "上传头像"}
+            </button>
+            {user.avatarVersion && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={(event) =>
+                  act(event, async () => {
+                    const result = await api("/api/profile/avatar", {
+                      method: "DELETE",
+                    });
+                    onUpdate(result);
+                    announceAccountChange();
+                    setNotice("头像已移除。");
+                  })
+                }
+              >
+                移除头像
+              </button>
+            )}
+          </div>
+          <small>
+            PNG、JPEG、WebP、GIF，最大 5 MB
+            <br />
+            自动居中裁剪为方形，GIF 使用静态画面。
+          </small>
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          aria-label="选择头像图片"
+          hidden
+          disabled={busy}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            void act(null, async () => {
+              const rawBody = await prepareAvatarImage(file);
+              const result = await api("/api/profile/avatar", {
+                method: "PUT",
+                rawBody,
+                accountId: user.id,
+              });
+              onUpdate(result);
+              announceAccountChange();
+              setNotice("头像已保存。");
+            });
+          }}
+        />
+      </div>
       <form
         onSubmit={(event) =>
           act(event, async () => {
