@@ -7,7 +7,7 @@
 ## 已有网站升级到账号版本
 
 1. 旧访客先等待“已同步”，需要时导出备份。保留原浏览器 Cookie，升级后用它认领旧画布。
-2. 在项目终端执行 `npm run db:remote`，确认目标为 `qingdan-canvas`，应用未执行的迁移，包括 `0002_accounts.sql` 和 `0003_account_avatars.sql`。它们新增账号等表及头像版本字段，不删除画布、旧会话或图片。
+2. 在项目终端执行 `npm run db:remote`，确认目标为 `qingdan-canvas`，应用未执行的迁移，包括 `0002_accounts.sql`、`0003_account_avatars.sql` 和 `0004_account_email_recovery.sql`。它们新增账号等表、头像版本及邮箱字段，不删除画布、旧会话或图片。
 3. 成功后再执行 `npm run deploy`，发布注册登录页面与权限逻辑。不要只部署代码而漏掉迁移。
 4. 打开线上网站，首次注册用户名、昵称和密码。若发现旧画布，勾选归入此账号；原房间、图片、灵感板和邀请继续保留。
 5. 在另一个浏览器登录同一账号，确认能看到原来的画布。再用另一个账号测试邀请协作。
@@ -17,6 +17,45 @@
 已经使用账号版本的网站升级头像功能时，也要先执行 `npm run db:remote`（预览站用 `npm run db:preview`）应用 `0003_account_avatars.sql`，再发布代码。头像复用私有 R2 桶，由本人或共享画布的成员登录后读取。该迁移只是新增可空字段，回退旧代码时可以保留，无需删除账号或画布。
 
 密码使用原生 scrypt 哈希（N=16384、r=8、p=5），按 [OWASP 的配置](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt)控制内存；[Workers 支持 Node crypto](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/)。发布验收时要检查注册/登录的实际 CPU 使用是否符合账号的 Worker 配额；本地运行不模拟线上 CPU 限制。若遇到 CPU 超限，应调整运行配额或采用托管认证，不应降低密码哈希强度。
+
+## 邮箱找回密码与头像裁剪升级
+
+先执行 `npm run db:remote`（预览站用 `npm run db:preview`），应用 `0004_account_email_recovery.sql`。迁移新增已验证邮箱字段及一次性验证码表，不改已有密码、画布或头像。确认迁移成功后再发布新代码。
+
+邮件通过 [Resend Send Email API](https://resend.com/docs/api-reference/emails/send-email) 发送。先在 Resend 验证自己的发信域名，创建发送权限的 API Key，再给 **目标 Worker** 配置以下三个变量。生产和分支预览需要分别配置，不能假设生产密钥会自动传入预览站。
+
+| 名称                | 内容                                                                |
+| ------------------- | ------------------------------------------------------------------- |
+| `RESEND_API_KEY`    | Resend 的发送 API Key，保存为 Worker secret                         |
+| `EMAIL_FROM`        | 已验证域名的发信地址，例如 `轻单 <noreply@你的域名>`                |
+| `EMAIL_CODE_SECRET` | 独立随机密钥，至少 32 个字符，用于验证码 HMAC，保存为 Worker secret |
+
+生产站可以在本项目终端输入：
+
+```powershell
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put EMAIL_FROM
+node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))" | npx wrangler secret put EMAIL_CODE_SECRET
+```
+
+前两个命令分别提示输入 API Key 和发信地址；第三个命令把生成的随机密钥直接交给 Wrangler。不要把密钥粘贴进源码、聊天或 `wrangler.jsonc`。本地开发可参考 `.dev.vars.example` 创建未跟踪的 `.dev.vars`；不要覆盖已有配置。
+
+配置完成后按原部署流程运行检查并发布。若未配置邮件，原有注册、登录、头像等功能仍可使用；邮箱界面会提示服务尚未启用。
+
+使用与验收：
+
+1. 登录后打开“账号设置 → 绑定邮箱与找回密码”，输入当前密码及邮箱，收到六位验证码后完成绑定。已有账号不会自动获得邮箱；已经忘记密码且从未绑定邮箱的账号，需要先由管理员恢复登录，再补绑邮箱。
+2. 退出后在登录页选择“忘记密码”，输入用户名和已验证邮箱，获取验证码并设置新密码。重置成功后使用新密码登录，其他设备的旧登录会失效。
+3. 验证码 10 分钟内有效，最多尝试 5 次；重发间隔 60 秒，另有每小时发送上限。重发后旧码失效；改密、改绑或成功使用后，相关旧验证码均不能继续使用。找回请求不会透露用户名或邮箱是否匹配。
+4. 上传头像后先调整圆形选区，可移动圆圈、改变范围、缩放原图；确认才保存。取消保留旧头像，导出的 256×256 头像圈外为透明，GIF 使用静态画面。
+
+自动化邮件测试只连接本地模拟邮件服务，不会发送真实邮件：
+
+```powershell
+node --test tests/email-recovery.test.mjs tests/email-recovery-worker.test.mjs
+```
+
+上线后仍需用自己的邮箱检查一次真实投递及垃圾邮件情况。更换 `EMAIL_CODE_SECRET` 会使尚未使用的验证码失效，需要重新获取。
 
 ## 1. 登录账号
 
@@ -71,7 +110,7 @@ npm run db:remote
 
 这里的 `--remote` 会写入真实 D1。先确认命令显示的是刚创建的 `qingdan-canvas`。本地测试用的是 `npm run db:local`，两者数据相互独立。
 
-迁移只创建表。原 `D:\TODO` 的浏览器数据和本地开发画布不会自动上传。
+迁移创建所需表并添加新字段。原 `D:\TODO` 的浏览器数据和本地开发画布不会自动上传。
 
 ## 5. 检查并部署 Worker
 
@@ -96,7 +135,7 @@ npm run deploy
 
 打开部署地址，注册用户名与密码，昵称可选。用户名不区分大小写，密码需要 9–128 个字符。注册后可以直接新建自己的画布，其他账号只有通过邀请加入后才能查看和编辑。
 
-密码只保存加盐哈希。账号设置支持修改密码和退出登录，暂不支持邮箱验证或找回密码。请妥善保存账号信息，不要贴进聊天或提交到源码。
+密码只保存加盐哈希。账号设置支持修改密码、验证绑定邮箱和退出登录。绑定完成后，可在登录页通过邮箱验证码找回密码；注册本身仍使用用户名。请妥善保存账号信息，不要贴进聊天或提交到源码。
 
 ## 7. 两个浏览器验收
 
@@ -142,7 +181,7 @@ npx wrangler r2 bucket create qingdan-canvas-preview-files
 npm run db:preview
 ```
 
-确认命令目标为 `qingdan-canvas-preview`，首次会依次应用 `0001_initial.sql`、`0002_accounts.sql` 和 `0003_account_avatars.sql`。这个命令使用独立的迁移配置，操作预览数据库。用于生产库的命令仍是 `npm run db:remote`。
+确认命令目标为 `qingdan-canvas-preview`，首次会依次应用 `0001_initial.sql`、`0002_accounts.sql`、`0003_account_avatars.sql` 和 `0004_account_email_recovery.sql`。这个命令使用独立的迁移配置，操作预览数据库。用于生产库的命令仍是 `npm run db:remote`。
 
 完成后提交并推送配置到 `develop`，让 Workers Builds 重新运行。Cloudflare 的构建设置应为：
 

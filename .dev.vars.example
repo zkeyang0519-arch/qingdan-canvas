@@ -1,0 +1,6 @@
+# Copy to .dev.vars only when testing with your own verified sender.
+# Automated tests use an isolated fake mail provider and need no secrets.
+RESEND_API_KEY=""
+EMAIL_FROM="轻单 <noreply@your-domain.example>"
+# A separate randomly generated secret, at least 32 characters.
+EMAIL_CODE_SECRET=""

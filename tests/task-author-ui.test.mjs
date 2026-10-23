@@ -24,6 +24,8 @@ for (const name of [
   "Event",
   "getComputedStyle",
   "localStorage",
+  "location",
+  "history",
 ])
   globalThis[name] = dom.window[name];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,7 +48,7 @@ const output = await mkdtemp(
 await build({
   stdin: {
     contents:
-      'export { TaskAuthorsProvider, AuthorAvatarToggle } from "./src/canvas/TaskAuthors.jsx"; export { default as Canvas } from "./src/canvas/Canvas.jsx"; export { default as Note } from "./src/canvas/Note.jsx"; export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, createInspirationBoard, makeBlock } from "./src/canvas/model.js"; export { default as ProfileSettings } from "./src/auth/ProfileSettings.jsx"; export { setActiveAccount } from "./src/api.js";',
+      'export { TaskAuthorsProvider, AuthorAvatarToggle } from "./src/canvas/TaskAuthors.jsx"; export { default as Canvas } from "./src/canvas/Canvas.jsx"; export { default as Note } from "./src/canvas/Note.jsx"; export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, createInspirationBoard, makeBlock } from "./src/canvas/model.js"; export { default as ProfileSettings } from "./src/auth/ProfileSettings.jsx"; export { default as App } from "./src/App.jsx"; export { setActiveAccount } from "./src/api.js";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url)),
     loader: "jsx",
   },
@@ -84,6 +86,7 @@ const {
   createInspirationBoard,
   makeBlock,
   ProfileSettings,
+  App,
   setActiveAccount,
 } = await import(pathToFileURL(path.join(output, "ui.mjs")));
 after(async () => {
@@ -97,7 +100,7 @@ const click = async (element) => {
   await act(async () => element.click());
 };
 
-test("账号设置上传真实图片请求，失败保留原头像，移除后恢复默认头像", async (t) => {
+test("头像需要确认裁剪才上传，取消与失败保留原头像，移除后恢复默认头像", async (t) => {
   const host = document.createElement("main");
   document.body.append(host);
   const root = createRoot(host);
@@ -109,9 +112,15 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
   setActiveAccount(alice.id);
   const requests = [];
   let fail = false;
+  let delayUpload = false;
+  let finishUpload;
   t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (url !== "/api/profile/avatar")
+      return new Response(JSON.stringify({ email: null, available: false }), {
+        headers: { "Content-Type": "application/json" },
+      });
     requests.push({ url, ...options });
-    return new Response(
+    const response = new Response(
       JSON.stringify(
         fail
           ? { error: "上传失败，请重试。" }
@@ -128,6 +137,11 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
         headers: { "Content-Type": "application/json" },
       },
     );
+    if (delayUpload && options.method === "PUT")
+      return new Promise((resolve) => {
+        finishUpload = () => resolve(response);
+      });
+    return response;
   });
   // JSDOM has no image decoder or canvas; exercise the real form and request code.
   const priorDecode = globalThis.createImageBitmap;
@@ -141,6 +155,12 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
     else delete globalThis.createImageBitmap;
   });
   t.mock.method(window.HTMLCanvasElement.prototype, "getContext", () => ({
+    clearRect() {},
+    save() {},
+    restore() {},
+    beginPath() {},
+    arc() {},
+    clip() {},
     drawImage() {},
   }));
   t.mock.method(
@@ -150,8 +170,10 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
       callback(new Blob(["encoded avatar"], { type: mime }));
     },
   );
+  let changeUser;
   function Profile() {
     const [user, setUser] = useState(alice);
+    changeUser = setUser;
     return React.createElement(ProfileSettings, {
       user,
       onUpdate: (result) => setUser(result.user),
@@ -188,6 +210,21 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
     { type: "image/png" },
   );
   await select(png);
+  assert.equal(requests.length, 0, "选图后先调整圆形选区，不立即上传");
+  assert.ok(host.querySelector('[aria-label="裁剪头像"]'));
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "取消裁剪",
+    ),
+  );
+  assert.equal(requests.length, 0);
+  assert.equal(host.querySelector(".profile-avatar img"), null);
+  await select(png);
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "确认头像",
+    ),
+  );
   assert.equal(requests[0].url, "/api/profile/avatar");
   assert.equal(requests[0].method, "PUT");
   assert.equal(requests[0].headers["X-QD-Account"], "alice");
@@ -198,9 +235,29 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
   assert.equal(requests[0].headers["Content-Type"], "image/webp");
   const src = host.querySelector(".profile-avatar img")?.getAttribute("src");
   assert.equal(src, "/api/avatars/alice?v=uploaded-v1&account=alice");
+  await select(png);
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "取消裁剪",
+    ),
+  );
+  assert.equal(
+    host.querySelector(".profile-avatar img")?.getAttribute("src"),
+    src,
+  );
+  assert.equal(requests.length, 1, "取消裁剪保留现有头像且没有上传请求");
   fail = true;
   await select(png);
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "确认头像",
+    ),
+  );
   assert.ok(host.querySelector('[role="alert"]'));
+  assert.ok(
+    host.querySelector('[aria-label="裁剪头像"]'),
+    "失败保留裁剪以便重试",
+  );
   assert.equal(
     host.querySelector(".profile-avatar img")?.getAttribute("src"),
     src,
@@ -221,6 +278,11 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
     setActiveAccount("bob");
     finishDecode();
   });
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "确认头像",
+    ),
+  );
   assert.equal(
     requests.at(-1).headers["X-QD-Account"],
     "alice",
@@ -236,6 +298,202 @@ test("账号设置上传真实图片请求，失败保留原头像，移除后�
   assert.equal(requests.at(-1).method, "DELETE");
   assert.equal(host.querySelector(".profile-avatar img"), null);
   assert.equal(host.querySelector(".profile-avatar").textContent, "小");
+  globalThis.createImageBitmap = async () => ({
+    width: 400,
+    height: 200,
+    close() {},
+  });
+  delayUpload = true;
+  await select(png);
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "确认头像",
+    ),
+  );
+  assert.ok(finishUpload);
+  await act(async () => {
+    setActiveAccount("bob");
+    changeUser({ ...bob, username: "bob" });
+  });
+  assert.equal(input.disabled, false, "换账号后解除旧头像上传的忙碌状态");
+  await act(async () => finishUpload());
+  assert.equal(
+    host.querySelector("strong").textContent,
+    "bob",
+    "旧上传结果不能覆盖新账号",
+  );
+  assert.equal(host.querySelector(".profile-avatar img"), null);
+  assert.equal(host.querySelector('[aria-label="裁剪头像"]'), null);
+});
+
+async function mountPendingAvatarApp(t, nextLoginUser = bob) {
+  history.replaceState(null, "", "/");
+  const host = document.createElement("main");
+  document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+    setActiveAccount(null);
+  });
+  let finishUpload;
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const json = (value) =>
+      new Response(JSON.stringify(value), {
+        headers: { "Content-Type": "application/json" },
+      });
+    if (url === "/api/session")
+      return json({
+        user: { ...alice, username: "alice", avatarVersion: "old-avatar" },
+      });
+    if (url === "/api/rooms") return json({ rooms: [] });
+    if (url === "/api/auth/login")
+      return json({
+        user: { ...nextLoginUser, avatarVersion: "new-session-avatar" },
+      });
+    if (url === "/api/profile/avatar" && options.method === "PUT") {
+      assert.equal(options.headers["X-QD-Account"], "alice");
+      return new Promise((resolve) => {
+        finishUpload = () =>
+          resolve(
+            json({
+              user: {
+                ...alice,
+                username: "alice",
+                avatarVersion: "uploaded-after-close",
+              },
+            }),
+          );
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const priorDecode = globalThis.createImageBitmap;
+  globalThis.createImageBitmap = async () => ({
+    width: 400,
+    height: 200,
+    close() {},
+  });
+  t.after(() => {
+    if (priorDecode) globalThis.createImageBitmap = priorDecode;
+    else delete globalThis.createImageBitmap;
+  });
+  t.mock.method(window.HTMLCanvasElement.prototype, "getContext", () => ({
+    clearRect() {},
+    save() {},
+    restore() {},
+    beginPath() {},
+    arc() {},
+    clip() {},
+    drawImage() {},
+  }));
+  t.mock.method(
+    window.HTMLCanvasElement.prototype,
+    "toBlob",
+    (callback, mime) => callback(new Blob(["encoded avatar"], { type: mime })),
+  );
+  await act(async () => root.render(React.createElement(App)));
+  await click(host.querySelector(".profile-button"));
+  const input = host.querySelector('input[type="file"]');
+  const png = new File(
+    [
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3WQAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    ],
+    "photo.png",
+    { type: "image/png" },
+  );
+  Object.defineProperty(input, "files", { configurable: true, value: [png] });
+  await act(async () =>
+    input.dispatchEvent(new Event("change", { bubbles: true })),
+  );
+  await click(
+    [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "确认头像",
+    ),
+  );
+  assert.ok(finishUpload, "上传已发出且仍在等待响应");
+  await click(host.querySelector('.dialog-close[aria-label="关闭"]'));
+  assert.equal(host.querySelector(".profile-settings"), null);
+  return {
+    host,
+    finish: async () => {
+      await act(async () => finishUpload());
+    },
+  };
+}
+
+test("确认上传后关闭资料弹窗，迟到的成功结果更新首页头像且重新打开仍显示新头像", async (t) => {
+  const f = await mountPendingAvatarApp(t);
+  assert.equal(
+    f.host.querySelector(".profile-button img").getAttribute("src"),
+    "/api/avatars/alice?v=old-avatar&account=alice",
+  );
+  await f.finish();
+  assert.equal(
+    f.host.querySelector(".profile-button img").getAttribute("src"),
+    "/api/avatars/alice?v=uploaded-after-close&account=alice",
+  );
+  await click(f.host.querySelector(".profile-button"));
+  assert.equal(
+    f.host.querySelector(".profile-avatar img").getAttribute("src"),
+    "/api/avatars/alice?v=uploaded-after-close&account=alice",
+  );
+  assert.equal(
+    f.host.querySelector(".profile-notice"),
+    null,
+    "关闭后的请求不向新资料弹窗写入局部状态",
+  );
+});
+
+test("关闭资料弹窗后重新登录，App 的账号与会话 epoch 防护拒绝旧头像响应", async (t) => {
+  for (const nextUser of [bob, { ...alice, name: "再次登录的小张" }]) {
+    await t.test(
+      nextUser.id === "bob" ? "另一账号" : "同一账号的新会话",
+      async (t) => {
+        const f = await mountPendingAvatarApp(t, nextUser);
+        await act(async () =>
+          window.dispatchEvent(new Event("qingdan-session-expired")),
+        );
+        const username = f.host.querySelector('input[autocomplete="username"]');
+        const password = f.host.querySelector(
+          'input[autocomplete="current-password"]',
+        );
+        const set = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value",
+        ).set;
+        await act(async () => {
+          set.call(username, nextUser.id);
+          username.dispatchEvent(new Event("input", { bubbles: true }));
+          set.call(password, "password-for-test");
+          password.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await act(async () =>
+          f.host
+            .querySelector("form")
+            .dispatchEvent(
+              new Event("submit", { bubbles: true, cancelable: true }),
+            ),
+        );
+        assert.equal(
+          f.host.querySelector(".profile-button").textContent,
+          nextUser.name,
+        );
+        await f.finish();
+        assert.equal(
+          f.host.querySelector(".profile-button").textContent,
+          nextUser.name,
+        );
+        assert.equal(
+          f.host.querySelector(".profile-button img").getAttribute("src"),
+          `/api/avatars/${nextUser.id}?v=new-session-avatar&account=${nextUser.id}`,
+        );
+      },
+    );
+  }
 });
 
 test("画布平移快捷键不会抢占头像开关的空格操作", async (t) => {

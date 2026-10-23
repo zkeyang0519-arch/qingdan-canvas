@@ -5,6 +5,9 @@ export interface Env {
   ROOMS: DurableObjectNamespace<CanvasRoom>;
   ASSETS: Fetcher;
   APP_ENV: string;
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
+  EMAIL_CODE_SECRET?: string;
 }
 export interface Session {
   id: string;

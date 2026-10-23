@@ -11,6 +11,7 @@ import {
 import { assetEndpoint } from "./assets";
 import { accountEndpoint } from "./accounts";
 import { readAvatar, updateAvatar } from "./avatars";
+import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 export { CanvasRoom } from "./room";
 
 export default {
@@ -31,6 +32,13 @@ export default {
           services: ["Workers", "Durable Objects", "D1", "R2"],
         });
       if (path === "/api/session") return await sessionEndpoint(request, env);
+      if (path.startsWith("/api/auth/password-reset/"))
+        return await passwordResetEndpoint(
+          request,
+          env,
+          path.slice("/api/auth/password-reset/".length),
+          ctx,
+        );
       if (path.startsWith("/api/auth/"))
         return await accountEndpoint(
           request,
@@ -47,6 +55,16 @@ export default {
       );
       if (path === "/api/profile/avatar")
         return await updateAvatar(request, env, user, ctx);
+      if (
+        path === "/api/profile/email" ||
+        path.startsWith("/api/profile/email/")
+      )
+        return await emailProfileEndpoint(
+          request,
+          env,
+          user,
+          path.slice("/api/profile/email".length).replace(/^\//, ""),
+        );
       const avatar = path.match(/^\/api\/avatars\/([a-zA-Z0-9_-]{1,100})$/);
       if (avatar) return await readAvatar(request, env, user, avatar[1]);
       if (path === "/api/rooms") {
