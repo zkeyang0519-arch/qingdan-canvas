@@ -320,9 +320,15 @@ async function click(host, text) {
   await act(async () => button.click());
 }
 
-test("鼠标拖动、触屏调整圆圈和缩放控件决定最终取样，透明圆形导出为二进制", async (t) => {
+test("20 MB 原图可拖动、触屏调整和缩放，透明圆形导出为二进制", async (t) => {
   let body;
+  const original = png();
   const f = await mount(t, {
+    file: new File(
+      [original, new Uint8Array(20 * 1024 * 1024 - original.size)],
+      "large.png",
+      { type: "image/png" },
+    ),
     onConfirm: async (blob) => {
       body = blob;
     },
@@ -497,13 +503,13 @@ test("图片编码失败保留裁剪位置，重试前不会提交头像", async
   assert.equal(f.host.querySelector('[role="alert"]'), null);
 });
 
-test("超过 5 MB 和无法识别的文件展示错误且不上传", async (t) => {
+test("超过 20 MB 和无法识别的文件展示错误且不上传", async (t) => {
   const f = await mount(t, {
-    file: new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", {
+    file: new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.png", {
       type: "image/png",
     }),
   });
-  assert.match(f.host.querySelector('[role="alert"]').textContent, /5\s*MB/);
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /20\s*MB/);
   assert.ok(
     [...f.host.querySelectorAll("button")].find(
       (button) => button.textContent === "确认头像",

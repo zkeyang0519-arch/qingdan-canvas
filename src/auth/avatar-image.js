@@ -2,8 +2,8 @@ import { prepareImageFile } from "../canvas/image-import.js";
 import { getAvatarSourceRect } from "./avatar-crop.js";
 
 export async function loadAvatarImage(file) {
-  if (file.size > 5 * 1024 * 1024)
-    throw new Error("请选择不超过 5 MB 的头像图片。");
+  if (file.size > 20 * 1024 * 1024)
+    throw new Error("请选择不超过 20 MB 的头像图片。");
   const imageFile = await prepareImageFile(file);
   let bitmap;
   try {
