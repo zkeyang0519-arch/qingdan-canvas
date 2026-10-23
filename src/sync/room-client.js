@@ -1,4 +1,5 @@
 import { changesFor, reconcile, ConflictError } from "./replica.js";
+import { adoptTaskAuthors } from "../../shared/task-authors.js";
 const overlay = (rows, incoming) => {
   const map = new Map(rows.map((r) => [r.id, r]));
   for (const row of incoming)
@@ -61,6 +62,10 @@ export class RoomReplica {
       this.remote = overlay(this.remote, message.rows);
       if (!this.flight) this.integrate();
     } else if (message.type === "ack" && message.opId === this.flight?.opId) {
+      this.objects = adoptTaskAuthors(
+        this.objects,
+        message.rows.filter((r) => !r.deleted && r.data).map((r) => r.data),
+      );
       this.base = overlay(this.base, message.rows);
       this.remote = overlay(this.remote, message.rows);
       this.flight = null;

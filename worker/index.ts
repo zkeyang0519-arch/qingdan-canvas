@@ -138,6 +138,10 @@ export default {
         forwarded.headers.set("X-QD-Name", encodeURIComponent(user.name));
         forwarded.headers.set("X-QD-Expires", String(user.expires_at));
         forwarded.headers.set("X-QD-Session", user.token_hash);
+        forwarded.headers.set(
+          "X-QD-Task-Authors",
+          url.searchParams.get("authors") === "1" ? "1" : "0",
+        );
         return await env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(
           forwarded,
         );

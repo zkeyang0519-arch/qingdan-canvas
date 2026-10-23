@@ -3,6 +3,10 @@ import { RoomReplica } from "./room-client.js";
 import { equal, undoChanges, ConflictError } from "./replica.js";
 import { claimDraftIdentity, openDrafts } from "./drafts.js";
 import { sharedObject } from "../../shared/canvas-contract.js";
+import {
+  attributeLocalBlocks,
+  rememberTaskAuthors,
+} from "../../shared/task-authors.js";
 import { defaultView } from "../canvas/geometry.js";
 import { patchObjects, now } from "../canvas/model.js";
 import { effectivelyLocked } from "../canvas/layout.js";
@@ -31,7 +35,9 @@ export function useRoomWorkspace(room, user) {
     life = useRef(null);
   const history = useRef({ past: [], future: [], base: null });
   const projections = useRef(new WeakMap());
+  const authors = useRef(new Map());
   const setCurrent = useCallback((value) => {
+    rememberTaskAuthors(value.objects, authors.current);
     current.current = value;
     setState(value);
   }, []);
@@ -204,6 +210,7 @@ export function useRoomWorkspace(room, user) {
       if (e.closed) return;
       const url = new URL(`/api/rooms/${room.id}/socket`, location.href);
       url.searchParams.set("account", user.id);
+      url.searchParams.set("authors", "1");
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url);
       socket.current = ws;
@@ -264,6 +271,15 @@ export function useRoomWorkspace(room, user) {
             ? await repository.get("drafts", originalKey)
             : null);
         if (e.closed) return;
+        authors.current = new Map();
+        for (const batch of saved?.trash || []) {
+          rememberTaskAuthors(batch.objects, authors.current);
+          if (batch.kind === "task")
+            rememberTaskAuthors(
+              [{ ...batch.task.note, blocks: [batch.task.block] }],
+              authors.current,
+            );
+        }
         const initial = {
           version: 2,
           revision: 0,
@@ -364,6 +380,10 @@ export function useRoomWorkspace(room, user) {
           };
           projections.current.set(options.source, proposed);
         }
+        next = {
+          ...next,
+          objects: attributeLocalBlocks(next.objects, user, authors.current),
+        };
         prepared = prepareEdit(next);
       } catch (err) {
         setError(
@@ -392,7 +412,7 @@ export function useRoomWorkspace(room, user) {
         engine.current.edit(prepared);
       } else void persist().catch(persistError);
     },
-    [setCurrent],
+    [setCurrent, user.id, user.name],
   );
   const begin = useCallback(() => {
     if (!history.current.base) history.current.base = current.current.objects;

@@ -53,6 +53,7 @@ import { HoverText } from "./ChecklistParts.jsx";
 import ProjectTabs from "./ProjectTabs.jsx";
 import { EditableBlock, RichText } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
+import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 import { Modal } from "./Panels.jsx";
 import ImageContent from "./ImageContent.jsx";
 import { parseClipboard } from "./paste.js";
@@ -265,6 +266,7 @@ function ChecklistPane({
         }}
       >
         <span className="todo-deadline-glow" aria-hidden="true" />
+        <TaskAuthorAvatar block={task.block} />
         <button
           className="todo-circle"
           role="checkbox"

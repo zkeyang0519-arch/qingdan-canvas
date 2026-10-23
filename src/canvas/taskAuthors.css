@@ -1,0 +1,72 @@
+.avatar.task-author-avatar {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  margin-top: 3px;
+  border-width: 1px;
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+.avatar.task-author-avatar.author-unknown {
+  color: #8b9187;
+  background: #eeeee8;
+}
+.task-author-details {
+  padding: 6px 12px 10px;
+  color: #76806f;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.author-avatar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 5px;
+  color: #6b7962;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border-radius: 7px;
+}
+.author-avatar-toggle:focus-visible {
+  outline: 2px solid #729069;
+  outline-offset: 2px;
+}
+.author-avatar-track {
+  width: 30px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 20px;
+  background: #cbd0c5;
+  transition: background 150ms;
+}
+.author-avatar-track > span {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px #32472920;
+  transition: transform 150ms;
+}
+.author-avatar-toggle[aria-checked="true"] .author-avatar-track {
+  background: #79946e;
+}
+.author-avatar-toggle[aria-checked="true"] .author-avatar-track > span {
+  transform: translateX(12px);
+}
+@media (max-width: 680px) {
+  .author-avatar-toggle {
+    flex-direction: column;
+    gap: 3px;
+    padding: 3px;
+    font-size: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .author-avatar-track,
+  .author-avatar-track > span {
+    transition: none;
+  }
+}

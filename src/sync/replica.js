@@ -1,4 +1,5 @@
 import { withoutLayoutMeasurement } from "../../shared/canvas-contract.js";
+import { adoptTaskAuthors } from "../../shared/task-authors.js";
 
 export const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const record = (value) =>
@@ -123,5 +124,9 @@ export function undoChanges(before, after, current) {
     });
   const rows = (objects) =>
     objects.map((data) => ({ id: data.id, data, deleted: false }));
-  return reconcile(rows(uploaded(after)), uploaded(before), rows(current));
+  return reconcile(
+    rows(adoptTaskAuthors(uploaded(after), current)),
+    adoptTaskAuthors(uploaded(before), current),
+    rows(current),
+  );
 }

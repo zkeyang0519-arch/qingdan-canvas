@@ -1,5 +1,6 @@
 import { parseBackup as parseLegacy } from "../store.js";
 import { validDeadline } from "../../shared/deadline.js";
+import { validTaskAuthor } from "../../shared/task-authors.js";
 import { defaultView, bounds } from "./geometry.js";
 import { validateImageData } from "./images.js";
 import { primaryCollection } from "./collectionDock.js";
@@ -360,6 +361,7 @@ export function validateWorkspace(value) {
       );
       for (const b of o.blocks) {
         requireValue(record(b), "清单条目无效。");
+        requireValue(validTaskAuthor(b), "待办作者无效。");
         requireValue(
           b.dueAt === undefined || b.dueAt === null || validDeadline(b.dueAt),
           "待办截止时间无效。",

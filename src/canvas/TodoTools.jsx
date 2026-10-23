@@ -1,3 +1,4 @@
+import { TaskAuthorDetails } from "./TaskAuthors.jsx";
 import React, {
   createContext,
   useContext,
@@ -328,6 +329,7 @@ export function TodoToolsProvider({
                 <div className="todo-remark-title">
                   {blockText(block) || "空白事项"}
                 </div>
+                <TaskAuthorDetails block={block} />
                 {panel.editing ? (
                   <textarea
                     className="todo-remark-editor"
@@ -395,17 +397,20 @@ export function TodoToolsProvider({
                   </button>
                 </div>
                 {panel.blockId ? (
-                  <button
-                    role="menuitem"
-                    aria-label="删除待办"
-                    disabled={panel.frozen || locked || !block}
-                    onClick={() =>
-                      remove(panel.noteId, panel.blockId, panel.frozen)
-                    }
-                  >
-                    <Trash2 size={15} />
-                    删除待办
-                  </button>
+                  <>
+                    {block && <TaskAuthorDetails block={block} />}
+                    <button
+                      role="menuitem"
+                      aria-label="删除待办"
+                      disabled={panel.frozen || locked || !block}
+                      onClick={() =>
+                        remove(panel.noteId, panel.blockId, panel.frozen)
+                      }
+                    >
+                      <Trash2 size={15} />
+                      删除待办
+                    </button>
+                  </>
                 ) : (
                   panel.notes.map((n) => {
                     const actual = workspace.state.objects.find(
