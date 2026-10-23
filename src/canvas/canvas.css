@@ -649,17 +649,16 @@ a:focus-visible,
   z-index: 5;
 }
 .board-member .note-paper {
-  padding-top: 36px;
-  border-radius: 5px;
-  border-color: #ffffff66;
+  padding: 18px 18px 20px;
+  border: 0;
+  border-radius: 2px;
   box-shadow:
-    inset 0 1px 0 #ffffff45,
-    0 2px 4px #645b410a,
-    0 7px 18px #645b411c;
+    0 2px 4px #645b4112,
+    0 8px 22px #645b4118;
   overflow: auto;
 }
 .board-member.canvas-object {
-  border-radius: 5px;
+  border-radius: 2px;
 }
 .board-member .color-sand {
   background: #f5eddc;
@@ -669,22 +668,6 @@ a:focus-visible,
 }
 .board-member .color-rose {
   background: #ead5c7;
-}
-.board-note-grip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 12px;
-  z-index: 2;
-  font-size: 11px;
-  color: #929580;
-  cursor: grab;
-  touch-action: none;
 }
 .inspiration-draft {
   position: absolute;
@@ -723,12 +706,12 @@ a:focus-visible,
 }
 .note-paper {
   background: #fff;
-  border: 1px solid #e4e8e1;
-  border-radius: 9px;
+  border: 0;
+  border-radius: 3px;
   padding: 16px;
   box-shadow:
-    0 3px 7px #27372404,
-    0 5px 20px #27372404;
+    0 2px 4px #27372408,
+    0 8px 22px #2737240c;
   color: #343a36;
   font-size: 16px;
   line-height: 1.7;
