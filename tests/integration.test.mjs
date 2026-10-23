@@ -7,7 +7,7 @@ import path from "node:path";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { createObject, makeBlock } from "../src/canvas/model.js";
 import { sharedObject } from "../shared/canvas-contract.js";
 
@@ -107,6 +107,39 @@ test(
     const legacyLoginRaw = randomBytes(32).toString("hex");
     const expiredRaw = randomBytes(32).toString("hex");
     const sha = (value) => createHash("sha256").update(value).digest("hex");
+    const emailSecret =
+      "integration-test-email-signing-secret-over-32-characters";
+    const registrations = new Map(
+      ["甲", "乙", "路人", "原访客", "验证"].map((name) => {
+        const username =
+          name === "原访客"
+            ? "legacy_owner"
+            : `user_${crypto.randomUUID().slice(0, 16)}`;
+        return [
+          name,
+          {
+            name,
+            username,
+            password: "Qd-test-9",
+            email: `${username}@example.test`,
+            challengeId: randomBytes(32).toString("hex"),
+            code: "123456",
+          },
+        ];
+      }),
+    );
+    // This suite confirms signed fixtures through the real registration route.
+    // Email delivery itself is covered by email-recovery-worker.test.mjs.
+    const registrationFixtures = [...registrations.values()]
+      .map(({ username, email, challengeId, code }) => {
+        const hash = createHmac("sha256", emailSecret)
+          .update(
+            JSON.stringify([challengeId, username, "register", email, code]),
+          )
+          .digest("hex");
+        return `INSERT INTO registration_challenges(id,username,email,code_hash,expires_at) VALUES('${challengeId}','${username}','${email}','${hash}',${Date.now() + 10 * 60 * 1000});`;
+      })
+      .join("\n");
     const fixture = `${state}/legacy.sql`;
     await writeFile(
       fixture,
@@ -118,6 +151,7 @@ test(
       INSERT INTO members VALUES('legacy-room','legacy-owner','owner',datetime('now'));
       INSERT INTO rooms VALUES('legacy-login-room','待迁移画布','legacy-login','${sha("legacy-login-invite")}',datetime('now'));
       INSERT INTO members VALUES('legacy-login-room','legacy-login','owner',datetime('now'));
+      ${registrationFixtures}
     `,
     );
     await command([
@@ -130,6 +164,16 @@ test(
       "--file",
       fixture,
     ]);
+    const testEnv = path.join(state, "registration.env");
+    await writeFile(
+      testEnv,
+      [
+        "APP_ENV=production",
+        "RESEND_API_KEY=integration-test-no-delivery",
+        "EMAIL_FROM=integration@example.test",
+        `EMAIL_CODE_SECRET=${emailSecret}`,
+      ].join("\n"),
+    );
     const port = await freePort(),
       base = `http://127.0.0.1:${port}`;
     let proc,
@@ -149,12 +193,19 @@ test(
           state,
           "--var",
           "APP_ENV:production",
+          "--env-file",
+          testEnv,
           "--inspector-port",
           "0",
         ],
         {
           cwd: root,
-          env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+          env: {
+            ...process.env,
+            WRANGLER_SEND_METRICS: "false",
+            CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "true",
+            CLOUDFLARE_INCLUDE_PROCESS_ENV: "false",
+          },
           windowsHide: true,
         },
       );
@@ -190,11 +241,7 @@ test(
     await start();
     const credentials = new Map();
     async function session(name) {
-      const input = {
-        name,
-        username: `user_${crypto.randomUUID().slice(0, 16)}`,
-        password: "Qd-test-9",
-      };
+      const input = registrations.get(name);
       const response = await fetch(base + "/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,24 +295,18 @@ test(
       },
     );
     await t.test("注册验证密码和用户名，用户名不区分大小写", async () => {
-      assert.equal(
-        (
-          await request("/api/auth/register", "", "POST", {
-            username: "bad",
-            password: "12345678",
-          })
-        ).status,
-        400,
-      );
-      assert.equal(
-        (
-          await request("/api/auth/register", "", "POST", {
-            username: "<script>",
-            password: "long-password-1234",
-          })
-        ).status,
-        400,
-      );
+      const invalidPassword = await request("/api/auth/register", "", "POST", {
+        ...registrations.get("验证"),
+        password: "12345678",
+      });
+      assert.equal(invalidPassword.status, 400);
+      assert.match((await invalidPassword.json()).error, /密码/);
+      const invalidUsername = await request("/api/auth/register", "", "POST", {
+        ...registrations.get("验证"),
+        username: "<script>",
+      });
+      assert.equal(invalidUsername.status, 400);
+      assert.match((await invalidUsername.json()).error, /用户名/);
       assert.equal(
         (
           await request("/api/auth/register", "", "POST", {
@@ -297,15 +338,15 @@ test(
             .legacyRoomCount,
           1,
         );
-        const input = {
-          username: "legacy_owner",
-          password: "legacy-password-1234",
-        };
-        assert.equal(
-          (await request("/api/auth/register", oldCookie, "POST", input))
-            .status,
-          400,
+        const input = registrations.get("原访客");
+        const unclaimed = await request(
+          "/api/auth/register",
+          oldCookie,
+          "POST",
+          input,
         );
+        assert.equal(unclaimed.status, 400);
+        assert.match((await unclaimed.json()).error, /勾选/);
         const response = await request(
           "/api/auth/register",
           oldCookie,

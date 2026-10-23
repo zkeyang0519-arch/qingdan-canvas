@@ -1,5 +1,6 @@
 import type { Env } from "./types";
 import { check, HttpError } from "./http";
+import type { EmailPurpose } from "./email-verification";
 
 export function emailAvailable(env: Env) {
   return !!(
@@ -19,12 +20,17 @@ export async function sendVerificationEmail(
   env: Env,
   email: string,
   code: string,
-  purpose: "bind" | "reset",
+  purpose: EmailPurpose,
   challengeId: string,
 ) {
   requireEmail(env);
   try {
-    const action = purpose === "bind" ? "绑定邮箱" : "重置密码";
+    const action =
+      purpose === "bind"
+        ? "绑定邮箱"
+        : purpose === "reset"
+          ? "重置密码"
+          : "注册账号并绑定邮箱";
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {

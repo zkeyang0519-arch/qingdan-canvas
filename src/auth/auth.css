@@ -1,3 +1,7 @@
+.auth-page {
+  height: 100dvh;
+  overflow-y: auto;
+}
 .auth-main {
   max-width: 1200px;
   margin: auto;

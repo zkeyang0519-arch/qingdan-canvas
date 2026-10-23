@@ -12,6 +12,7 @@ import { assetEndpoint } from "./assets";
 import { accountEndpoint } from "./accounts";
 import { readAvatar, updateAvatar } from "./avatars";
 import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
+import { registrationRequest } from "./registration";
 export { CanvasRoom } from "./room";
 
 export default {
@@ -32,6 +33,8 @@ export default {
           services: ["Workers", "Durable Objects", "D1", "R2"],
         });
       if (path === "/api/session") return await sessionEndpoint(request, env);
+      if (path === "/api/auth/register/request")
+        return await registrationRequest(request, env, ctx);
       if (path.startsWith("/api/auth/password-reset/"))
         return await passwordResetEndpoint(
           request,
