@@ -615,6 +615,24 @@ a:focus-visible,
   background: #e8dfcd;
   border-radius: 16px;
   box-shadow: 0 7px 24px #55553e0b;
+  transition:
+    transform 140ms ease-out,
+    border-color 140ms ease-out;
+}
+.inspiration-board.board-receiving .group-frame {
+  transform: scale(1.015);
+  border-color: #6e8b62;
+  box-shadow:
+    0 0 0 3px #8ca67c30,
+    0 9px 28px #55553e18;
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspiration-board .group-frame {
+    transition: none;
+  }
+  .inspiration-board.board-receiving .group-frame {
+    transform: none;
+  }
 }
 .inspiration-board .frame-heading {
   height: 50px;

@@ -25,7 +25,14 @@
   margin: 0 auto;
   overflow: hidden;
   border-radius: 8px;
-  background: #dce1d9;
+  background-color: #f1f3ee;
+  background-image: conic-gradient(
+    #dce1d9 25%,
+    transparent 0 50%,
+    #dce1d9 0 75%,
+    transparent 0
+  );
+  background-size: 16px 16px;
   isolation: isolate;
   touch-action: none;
 }
@@ -119,7 +126,14 @@
   height: 64px;
   margin-bottom: 7px;
   border-radius: 50%;
-  background: #fff;
+  background-color: #f1f3ee;
+  background-image: conic-gradient(
+    #dce1d9 25%,
+    transparent 0 50%,
+    #dce1d9 0 75%,
+    transparent 0
+  );
+  background-size: 8px 8px;
 }
 .avatar-cropper .form-error {
   color: #ae5144;

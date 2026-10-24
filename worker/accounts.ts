@@ -11,6 +11,9 @@ import {
   token,
 } from "./auth";
 import { hashPassword, verifyPassword } from "./passwords.js";
+import { limit } from "./auth-limits";
+import { verifyRegistration, claimRegistration } from "./registration";
+import { invalidCode } from "./email-verification";
 
 interface Account {
   id: string;
@@ -25,23 +28,6 @@ function password(value: unknown): asserts value is string {
     "密码需要 9–128 个字符。",
   );
 }
-export async function limit(
-  env: Env,
-  key: string,
-  max: number,
-  duration: number,
-) {
-  const now = Date.now();
-  const row = await env.DB.prepare(
-    `INSERT INTO auth_limits(key,attempts,reset_at) VALUES(?,1,?)
-    ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN reset_at<=? THEN 1 ELSE attempts+1 END,
-    reset_at=CASE WHEN reset_at<=? THEN excluded.reset_at ELSE reset_at END RETURNING attempts`,
-  )
-    .bind(await digest(key), now + duration, now, now)
-    .first<{ attempts: number }>();
-  check(row && row.attempts <= max, "尝试次数过多，请稍后再试。", 429);
-}
-
 export async function accountEndpoint(
   request: Request,
   env: Env,
@@ -156,21 +142,29 @@ export async function accountEndpoint(
         ? input.name.trim()
         : username;
     check(name.length <= 32, "昵称最多 32 个字。");
+    const challenge = await verifyRegistration(env, input, username);
+    const claim = token();
     account = {
       id: legacy?.id || crypto.randomUUID(),
       username,
       name,
       password_hash: await hashPassword(input.password),
     };
+    statements.push(claimRegistration(env, challenge, claim));
     statements.push(
       env.DB.prepare(
-        "INSERT INTO accounts(id,username,name,password_hash,created_at) VALUES(?,?,?,?,?)",
+        `INSERT INTO accounts(id,username,name,password_hash,created_at,email,email_verified_at)
+        SELECT ?,?,?,?,?,?,? FROM registration_challenges WHERE id=? AND consumed_by=?`,
       ).bind(
         account.id,
         username,
         name,
         account.password_hash,
         new Date().toISOString(),
+        challenge.email,
+        Date.now(),
+        challenge.id,
+        claim,
       ),
     );
   } else {
@@ -182,29 +176,37 @@ export async function accountEndpoint(
     // The primary key arbitrates simultaneous attempts to claim the same browser identity.
     statements.push(
       env.DB.prepare(
-        "INSERT INTO legacy_claims(legacy_id,account_id) VALUES(?,?)",
-      ).bind(legacy.id, account.id),
+        `INSERT INTO legacy_claims(legacy_id,account_id) SELECT ?,?
+        WHERE EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)`,
+      ).bind(legacy.id, account.id, account.id, account.password_hash),
     );
     if (legacy.id !== account.id) {
       statements.push(
         env.DB.prepare(
           `INSERT INTO members(room_id,user_id,role,joined_at)
         SELECT room_id,?,role,joined_at FROM members WHERE user_id=?
+        AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)
         ON CONFLICT(room_id,user_id) DO UPDATE SET role=CASE WHEN members.role='owner' OR excluded.role='owner' THEN 'owner' ELSE 'editor' END`,
-        ).bind(account.id, legacy.id),
+        ).bind(account.id, legacy.id, account.id, account.password_hash),
       );
       statements.push(
-        env.DB.prepare("UPDATE rooms SET owner_id=? WHERE owner_id=?").bind(
-          account.id,
-          legacy.id,
-        ),
+        env.DB.prepare(
+          `UPDATE rooms SET owner_id=? WHERE owner_id=?
+          AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)`,
+        ).bind(account.id, legacy.id, account.id, account.password_hash),
       );
       statements.push(
-        env.DB.prepare("DELETE FROM members WHERE user_id=?").bind(legacy.id),
+        env.DB.prepare(
+          `DELETE FROM members WHERE user_id=?
+          AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)`,
+        ).bind(legacy.id, account.id, account.password_hash),
       );
     }
     statements.push(
-      env.DB.prepare("DELETE FROM sessions WHERE id=?").bind(legacy.id),
+      env.DB.prepare(
+        `DELETE FROM sessions WHERE id=?
+        AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)`,
+      ).bind(legacy.id, account.id, account.password_hash),
     );
   }
   // Bind session creation to the credential just verified (a concurrent password reset wins).
@@ -225,12 +227,25 @@ export async function accountEndpoint(
   );
   try {
     const results = await env.DB.batch(statements);
+    if (action === "register")
+      check(
+        results[0].meta.changes === 1 && results[1].meta.changes === 1,
+        invalidCode,
+      );
     check(
       results[results.length - 3].meta.changes === 1,
       "账号信息已更新，请重新登录。",
       409,
     );
   } catch (error) {
+    if (
+      error instanceof Error &&
+      /UNIQUE constraint failed.*accounts\.email/.test(error.message)
+    )
+      throw new HttpError(
+        409,
+        "这个邮箱暂时无法用于注册，请使用其他邮箱或登录已有账号。",
+      );
     if (
       error instanceof Error &&
       /UNIQUE constraint failed/.test(error.message)

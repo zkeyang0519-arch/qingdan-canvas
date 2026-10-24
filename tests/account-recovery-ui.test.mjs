@@ -146,6 +146,15 @@ test("忘记密码保留用户名和邀请链接，返回后登录与注册仍�
     authenticated = [];
   t.mock.method(globalThis, "fetch", async (url, options) => {
     requests.push({ url, body: JSON.parse(options.body) });
+    if (url.endsWith("/request"))
+      return response(
+        {
+          challengeId: "registration-one",
+          retryAfter: 60,
+          message: "请检查邮箱。",
+        },
+        202,
+      );
     return response({ user: { id: "alice", username: "alice" } });
   });
   const f = await mount(t, AuthScreen, {
@@ -165,16 +174,341 @@ test("忘记密码保留用户名和邀请链接，返回后登录与注册仍�
   assert.equal(requests[0].url, "/api/auth/login");
   assert.equal(requests[0].body.claimLegacy, true);
   assert.equal(authenticated.length, 1);
+  assert.equal(f.host.querySelector('input[type="email"]'), null);
   await click(button(f.host, "注册账号"));
+  await fill(f.host, "邮箱", "alice@example.com");
+  await click(button(f.host, "发送验证码"));
+  await fill(f.host, "验证码", "123456");
   await fill(f.host, "密码", "registration-password");
   await fill(f.host, "确认密码", "registration-password");
   await submit(f.host);
-  assert.equal(requests[1].url, "/api/auth/register");
-  assert.equal(requests[1].body.password, "registration-password");
+  assert.equal(requests[1].url, "/api/auth/register/request");
+  assert.equal(requests[2].url, "/api/auth/register");
+  assert.equal(requests[2].body.password, "registration-password");
+  assert.equal(requests[2].body.email, "alice@example.com");
+  assert.equal(requests[2].body.claimLegacy, true);
+  assert.equal(authenticated.length, 2);
+  assert.equal(location.href, url);
+});
+
+const registrationMessage =
+  "如果该邮箱可以用于注册，验证码将发送至该邮箱，请检查收件箱和垃圾邮件。";
+function registrationChallenge(id = "register-one") {
+  return response(
+    { challengeId: id, retryAfter: 60, message: registrationMessage },
+    202,
+  );
+}
+async function startRegistration(host) {
+  await click(button(host, "注册账号"));
+  await fill(host, "用户名", "alice");
+  await fill(host, "邮箱", "alice@example.com");
+  await click(button(host, "发送验证码"));
+}
+async function registrationPassword(host) {
+  await fill(host, "密码", "registration-password");
+  await fill(host, "确认密码", "registration-password");
+}
+
+test("注册必须填写有效邮箱、先获取验证码并输入六位验证码", async (t) => {
+  const requests = [],
+    authenticated = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requests.push(url);
+    return registrationChallenge();
+  });
+  const f = await mount(t, AuthScreen, {
+    onAuthenticated: (value) => authenticated.push(value),
+  });
+  await click(button(f.host, "注册账号"));
+  await fill(f.host, "用户名", "alice");
+  await registrationPassword(f.host);
+  assert.equal(input(f.host, "邮箱").required, true);
+  assert.equal(input(f.host, "验证码").required, true);
+  await click(button(f.host, "发送验证码"));
+  assert.equal(requests.length, 0, "缺少邮箱时不可发送验证码");
+  await fill(f.host, "邮箱", "invalid-email");
+  await click(button(f.host, "发送验证码"));
+  assert.equal(requests.length, 0, "邮箱格式不正确时不可发送验证码");
+  await fill(f.host, "邮箱", "alice@example.com");
+  await fill(f.host, "验证码", "123456");
+  await submit(f.host);
+  assert.equal(requests.length, 0, "没有服务器凭证时不可注册");
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /获取|发送/);
+  await click(button(f.host, "发送验证码"));
+  await submit(f.host);
+  assert.equal(requests.length, 1, "缺少验证码时不可注册");
+  await fill(f.host, "验证码", "123");
+  await submit(f.host);
+  assert.equal(requests.length, 1, "不足六位的验证码不可注册");
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /六位/);
+  assert.match(
+    f.host.querySelector(".auth-footnote").textContent,
+    /注册.*验证.*邮箱/,
+  );
+  assert.equal(authenticated.length, 0);
+});
+
+test("注册发送不携带已有账号身份，展示统一提示和发送冷却", async (t) => {
+  const requests = [];
+  setActiveAccount("another-account");
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, options, body: JSON.parse(options.body) });
+    return registrationChallenge();
+  });
+  const f = await mount(t);
+  await startRegistration(f.host);
+  assert.equal(requests[0].url, "/api/auth/register/request");
+  assert.deepEqual(requests[0].body, {
+    username: "alice",
+    email: "alice@example.com",
+  });
+  assert.equal(requests[0].options.headers["X-QD-Account"], undefined);
   assert.equal(
-    f.host.querySelector('input[type="email"]'),
-    null,
-    "注册不要求邮箱",
+    f.host.querySelector('[role="status"]').textContent,
+    registrationMessage,
+  );
+  const resend = [...f.host.querySelectorAll("button")].find((item) =>
+    /60 秒后/.test(item.textContent),
+  );
+  assert.ok(resend?.disabled, "发送成功后提供 60 秒冷却");
+  await click(resend);
+  assert.equal(requests.length, 1);
+  assert.equal(input(f.host, "密码").value, "", "可先验证邮箱再填写密码");
+});
+
+test("注册先检查重复密码，再提交邮箱验证码和原有昵称及画布认领字段", async (t) => {
+  const requests = [],
+    authenticated = [];
+  const result = { user: { id: "alice-id", username: "alice", name: "小张" } };
+  setActiveAccount("another-account");
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, options, body: JSON.parse(options.body) });
+    return url.endsWith("/request")
+      ? registrationChallenge()
+      : response(result, 201);
+  });
+  const f = await mount(t, AuthScreen, {
+    legacyRoomCount: 2,
+    onAuthenticated: (value) => authenticated.push(value),
+  });
+  await startRegistration(f.host);
+  await fill(f.host, "昵称", "小张");
+  await fill(f.host, "验证码", "123456");
+  await registrationPassword(f.host);
+  await fill(f.host, "确认密码", "different-password");
+  await submit(f.host);
+  assert.equal(requests.length, 1);
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /不一致/);
+  await fill(f.host, "确认密码", "registration-password");
+  await submit(f.host);
+  assert.equal(requests[1].url, "/api/auth/register");
+  assert.deepEqual(requests[1].body, {
+    username: "alice",
+    name: "小张",
+    password: "registration-password",
+    claimLegacy: true,
+    email: "alice@example.com",
+    code: "123456",
+    challengeId: "register-one",
+  });
+  assert.equal(requests[1].options.headers["X-QD-Account"], undefined);
+  assert.deepEqual(authenticated, [result]);
+  assert.equal(input(f.host, "密码").value, "");
+  assert.equal(input(f.host, "确认密码").value, "");
+});
+
+test("注册发信失败保留输入，展示服务错误并禁止未经验证的注册", async (t) => {
+  const requests = [],
+    authenticated = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requests.push(url);
+    return response({ error: "邮件验证服务尚未启用，请联系管理员。" }, 503);
+  });
+  const f = await mount(t, AuthScreen, {
+    onAuthenticated: (value) => authenticated.push(value),
+  });
+  await startRegistration(f.host);
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /尚未启用/);
+  assert.equal(input(f.host, "邮箱").value, "alice@example.com");
+  assert.equal(button(f.host, "发送验证码").disabled, false);
+  await registrationPassword(f.host);
+  await fill(f.host, "验证码", "123456");
+  await submit(f.host);
+  assert.deepEqual(requests, ["/api/auth/register/request"]);
+  assert.equal(authenticated.length, 0);
+});
+
+test("过期注册验证码不会登录，重发后清除旧码并使用最新凭证", async (t) => {
+  let now = Date.now(),
+    issued = 0;
+  const requests = [],
+    authenticated = [];
+  const announcement = localStorage.getItem("qingdan.account-change");
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    if (url.endsWith("/request"))
+      return registrationChallenge(`register-${++issued}`);
+    return issued === 1
+      ? response({ error: "验证码无效或已过期，请重新获取。" }, 400)
+      : response({ user: { id: "alice-id", username: "alice" } }, 201);
+  });
+  const f = await mount(t, AuthScreen, {
+    onAuthenticated: (value) => authenticated.push(value),
+  });
+  await startRegistration(f.host);
+  await registrationPassword(f.host);
+  await fill(f.host, "验证码", "000001");
+  await submit(f.host);
+  assert.match(
+    f.host.querySelector('[role="alert"]').textContent,
+    /无效或已过期/,
+  );
+  assert.equal(input(f.host, "密码").value, "registration-password");
+  assert.equal(authenticated.length, 0);
+  assert.equal(localStorage.getItem("qingdan.account-change"), announcement);
+  now += 61000;
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 1050)));
+  await click(button(f.host, "重新发送验证码"));
+  assert.equal(input(f.host, "验证码").value, "");
+  assert.equal(f.host.querySelector('[role="alert"]'), null);
+  await fill(f.host, "验证码", "000002");
+  await submit(f.host);
+  assert.equal(requests.at(-1).body.challengeId, "register-2");
+  assert.equal(requests.at(-1).body.code, "000002");
+  assert.equal(authenticated.length, 1);
+});
+
+for (const [label, value] of [
+  ["用户名", "bob"],
+  ["邮箱", "bob@example.com"],
+]) {
+  test(`修改注册${label}会清除凭证与验证码并保留冷却`, async (t) => {
+    let now = Date.now(),
+      issued = 0;
+    const requests = [];
+    t.mock.method(Date, "now", () => now);
+    t.mock.method(globalThis, "fetch", async (url, options) => {
+      requests.push({ url, body: JSON.parse(options.body) });
+      return registrationChallenge(`register-${++issued}`);
+    });
+    const f = await mount(t);
+    await startRegistration(f.host);
+    await fill(f.host, "验证码", "111111");
+    await registrationPassword(f.host);
+    await fill(f.host, label, value);
+    assert.equal(input(f.host, "验证码").value, "");
+    assert.equal(f.host.querySelector('[role="status"]'), null);
+    await fill(f.host, "验证码", "111111");
+    await submit(f.host);
+    assert.equal(requests.length, 1, "改变身份后不能使用原来的凭证");
+    const resend = [...f.host.querySelectorAll("button")].find((item) =>
+      /秒后/.test(item.textContent),
+    );
+    assert.ok(resend?.disabled, "改写身份不能绕过发送冷却");
+    now += 61000;
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 1050)));
+    await click(button(f.host, "发送验证码"));
+    assert.equal(
+      requests[1].body[label === "用户名" ? "username" : "email"],
+      value,
+    );
+    assert.equal(input(f.host, "验证码").value, "");
+  });
+}
+
+for (const fails of [false, true]) {
+  test(`切到登录后忽略迟到的注册发送${fails ? "错误" : "凭证"}`, async (t) => {
+    const pending = deferred();
+    let requests = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      requests++;
+      return pending.promise;
+    });
+    const f = await mount(t);
+    await startRegistration(f.host);
+    await submit(f.host);
+    assert.equal(requests, 1, "发送期间不可提交注册");
+    await click(button(f.host, "登录"));
+    assert.equal(f.host.querySelector("h2").textContent, "欢迎回来");
+    await act(async () =>
+      pending.resolve(
+        fails
+          ? response({ error: "旧注册邮箱的发送失败" }, 503)
+          : registrationChallenge("stale-register"),
+      ),
+    );
+    assert.equal(f.host.querySelector('[role="status"]'), null);
+    assert.equal(f.host.querySelector('[role="alert"]'), null);
+    await click(button(f.host, "注册账号"));
+    assert.equal(input(f.host, "验证码").value, "");
+    await registrationPassword(f.host);
+    await fill(f.host, "验证码", "123456");
+    await submit(f.host);
+    assert.equal(requests, 1, "迟到凭证不能用于后续注册");
+    if (!fails) {
+      const resend = [...f.host.querySelectorAll("button")].find((item) =>
+        /秒后/.test(item.textContent),
+      );
+      assert.ok(resend?.disabled, "已发送邮件的冷却在模式切换后保留");
+    }
+  });
+}
+
+test("注册确认期间防止重复提交，卸载后不广播登录也不触发回调", async (t) => {
+  const pending = deferred(),
+    authenticated = [];
+  const announcement = localStorage.getItem("qingdan.account-change");
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requests++;
+    return url.endsWith("/request") ? registrationChallenge() : pending.promise;
+  });
+  const f = await mount(t, AuthScreen, {
+    onAuthenticated: (value) => authenticated.push(value),
+  });
+  await startRegistration(f.host);
+  await fill(f.host, "验证码", "123456");
+  await registrationPassword(f.host);
+  await submit(f.host);
+  await submit(f.host);
+  assert.equal(requests, 2, "确认期间不会重复注册");
+  for (const element of f.host.querySelectorAll("input"))
+    assert.equal(element.matches(":disabled"), true);
+  await f.unmount();
+  await act(async () =>
+    pending.resolve(response({ user: { id: "late-account" } }, 201)),
+  );
+  assert.equal(authenticated.length, 0);
+  assert.equal(localStorage.getItem("qingdan.account-change"), announcement);
+});
+
+test("等待注册邮件时重复点击当前标签页不会取消发送锁或清除密码", async (t) => {
+  const pending = deferred();
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    return pending.promise;
+  });
+  const f = await mount(t);
+  await click(button(f.host, "注册账号"));
+  await fill(f.host, "用户名", "alice");
+  await fill(f.host, "邮箱", "alice@example.com");
+  await registrationPassword(f.host);
+  const send = button(f.host, "发送验证码");
+  await act(async () => {
+    send.click();
+    send.click();
+  });
+  assert.equal(requests, 1, "同一事件循环内也只能发送一次");
+  await click(button(f.host, "注册账号"));
+  assert.equal(input(f.host, "密码").value, "registration-password");
+  assert.equal(input(f.host, "邮箱").matches(":disabled"), true);
+  await act(async () => pending.resolve(registrationChallenge()));
+  assert.equal(
+    f.host.querySelector('[role="status"]').textContent,
+    registrationMessage,
   );
 });
 

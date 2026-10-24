@@ -12,6 +12,7 @@ import { assetEndpoint } from "./assets";
 import { accountEndpoint } from "./accounts";
 import { readAvatar, updateAvatar } from "./avatars";
 import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
+import { registrationRequest } from "./registration";
 export { CanvasRoom } from "./room";
 
 export default {
@@ -32,6 +33,8 @@ export default {
           services: ["Workers", "Durable Objects", "D1", "R2"],
         });
       if (path === "/api/session") return await sessionEndpoint(request, env);
+      if (path === "/api/auth/register/request")
+        return await registrationRequest(request, env, ctx);
       if (path.startsWith("/api/auth/password-reset/"))
         return await passwordResetEndpoint(
           request,
@@ -172,6 +175,21 @@ export default {
         return await env.ROOMS.get(env.ROOMS.idFromName(roomId)).fetch(
           forwarded,
         );
+      }
+      if (!action && request.method === "PATCH") {
+        check(room.role === "owner", "只有创建者可以修改项目名称。", 403);
+        const input = await body(request);
+        check(
+          typeof input.name === "string" &&
+            input.name.trim().length > 0 &&
+            input.name.trim().length <= 80,
+          "项目名称需要 1–80 个字。",
+        );
+        const name = input.name.trim();
+        await env.DB.prepare("UPDATE rooms SET name=? WHERE id=?")
+          .bind(name, roomId)
+          .run();
+        return json({ room: publicRoom({ ...room, name }) });
       }
       check(request.method === "GET", "方法不支持。", 405);
       return json({ room: publicRoom(room) });

@@ -193,12 +193,12 @@ test("头像需要确认裁剪才上传，取消与失败保留原头像，移�
     );
   };
   await select(
-    new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", {
+    new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.png", {
       type: "image/png",
     }),
   );
   assert.equal(requests.length, 0);
-  assert.match(host.querySelector('[role="alert"]').textContent, /5\s*MB/);
+  assert.match(host.querySelector('[role="alert"]').textContent, /20\s*MB/);
   const png = new File(
     [
       Buffer.from(

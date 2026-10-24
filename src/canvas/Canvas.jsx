@@ -86,7 +86,7 @@ import {
 } from "./inspirationBoards.js";
 
 const GROUP_DWELL_MS = 2000;
-const BOARD_DWELL_MS = 1000;
+const BOARD_EXIT_DWELL_MS = 1000;
 
 export default function Canvas({
   workspace,
@@ -1532,12 +1532,22 @@ export default function Canvas({
     setDropTarget(drop?.id || null);
     let nextPlacement = null;
     const ungrouped = roots.every((o) => !o.parentId);
+    const boardMembers = roots.filter((o) =>
+      isInspirationBoard(g.snapshot.objects.find((f) => f.id === o.parentId)),
+    );
     let target = null;
-    if ((ungrouped || first?.type === "image") && !drop && !event.altKey) {
+    if (
+      (ungrouped || first?.type === "image" || boardMembers.length) &&
+      !drop &&
+      !event.altKey
+    ) {
       const targets = g.snapshot.objects
         .filter(
           (o) =>
             o.type === "frame" &&
+            (!boardMembers.length ||
+              first?.type === "image" ||
+              isInspirationBoard(o)) &&
             o.boardId === boardId &&
             !o.collapsed &&
             !movingIds.has(o.id) &&
@@ -1556,35 +1566,64 @@ export default function Canvas({
       target = targets[0];
       if (target?.id === first?.parentId && !g.detached) target = null;
     }
-    if (ungrouped && target) {
-      if (g.hover?.id !== target.id) {
+    const exiting =
+      boardMembers.length > 0 &&
+      !drop &&
+      !target &&
+      !event.altKey &&
+      !g.snapshot.objects.some(
+        (o) =>
+          o.type === "frame" &&
+          o.boardId === boardId &&
+          !movingIds.has(o.id) &&
+          !hiddenByAncestor(g.snapshot.objects, o.id) &&
+          contains(actual(o), world),
+      );
+    g.exitIds = [];
+    if (exiting || (target && (ungrouped || isInspirationBoard(target)))) {
+      const hoverId = exiting ? "canvas" : target.id;
+      const kind = exiting ? "exit" : "enter";
+      if (
+        g.hover?.id !== hoverId ||
+        g.hover?.kind !== kind ||
+        (exiting &&
+          Math.hypot(world.x - g.hover.point.x, world.y - g.hover.point.y) *
+            view.scale >
+            6)
+      ) {
         clearTimeout(groupTimer.current);
         const hover = {
-          id: target.id,
+          id: hoverId,
+          kind,
+          point: world,
           since: Date.now(),
-          duration: isInspirationBoard(target)
-            ? BOARD_DWELL_MS
-            : GROUP_DWELL_MS,
+          duration: exiting
+            ? BOARD_EXIT_DWELL_MS
+            : isInspirationBoard(target)
+              ? 0
+              : GROUP_DWELL_MS,
         };
         g.hover = hover;
-        groupTimer.current = setTimeout(() => {
-          if (
-            gesture.current === g &&
-            g.hover === hover &&
-            !live.current.blocked
-          )
-            moveRef.current(g.lastPointer);
-        }, hover.duration);
+        if (hover.duration)
+          groupTimer.current = setTimeout(() => {
+            if (
+              gesture.current === g &&
+              g.hover === hover &&
+              !live.current.blocked
+            )
+              moveRef.current(g.lastPointer);
+          }, hover.duration);
       }
       const ready = Date.now() - g.hover.since >= g.hover.duration;
       setGroupHover({
         ...g.hover,
-        title: target.title,
+        title: target?.title,
         ready,
         frame: target,
         x: p.x,
         y: p.y,
       });
+      if (exiting && ready) g.exitIds = boardMembers.map((o) => o.id);
       if (!ready) target = null;
     } else {
       clearTimeout(groupTimer.current);
@@ -1652,7 +1691,7 @@ export default function Canvas({
           frame: frameBounds(target, [...members, rect]),
           fixedBoard: isInspirationBoard(target),
         };
-      if (ungrouped && !rect)
+      if ((ungrouped || isInspirationBoard(target)) && !rect)
         setGroupHover((hover) => ({ ...hover, unavailable: true }));
     }
     g.placement = nextPlacement;
@@ -1738,6 +1777,20 @@ export default function Canvas({
               }),
               slot.ids,
               slot.targetId,
+            ),
+          { record: false, persist: false },
+        );
+      } else if (g.kind === "move" && g.exitIds?.length && !event.altKey) {
+        update(
+          (s) =>
+            reparentObjects(
+              s,
+              g.exitIds.filter(
+                (key) =>
+                  s.objects.find((o) => o.id === key)?.parentId ===
+                  g.snapshot.objects.find((o) => o.id === key)?.parentId,
+              ),
+              null,
             ),
           { record: false, persist: false },
         );
@@ -2130,7 +2183,7 @@ export default function Canvas({
                   ? (el) => arrangement.register(object.id, el)
                   : undefined
               }
-              className={`canvas-object ${isInspirationBoard(object) ? "inspiration-board" : ""} ${isInspirationBoard(objects.get(object.parentId)) ? "board-member" : ""} ${arranged ? "arranged-object" : ""} object-${object.type} ${selected ? "is-selected" : ""} ${editingImage ? "is-image-editing" : ""} ${temporaryVisible === object.id ? "located" : ""} ${receiving ? "receiving" : ""} ${lifted === object.id ? "is-lifted" : ""} ${placement?.targetId === object.id ? "drop-group" : ""}`}
+              className={`canvas-object ${isInspirationBoard(object) ? "inspiration-board" : ""} ${groupHover?.id === object.id && groupHover.ready && !groupHover.unavailable && isInspirationBoard(object) ? "board-receiving" : ""} ${isInspirationBoard(objects.get(object.parentId)) ? "board-member" : ""} ${arranged ? "arranged-object" : ""} object-${object.type} ${selected ? "is-selected" : ""} ${editingImage ? "is-image-editing" : ""} ${temporaryVisible === object.id ? "located" : ""} ${receiving ? "receiving" : ""} ${lifted === object.id ? "is-lifted" : ""} ${placement?.targetId === object.id ? "drop-group" : ""}`}
               data-object-id={object.id}
               style={{
                 visibility:
@@ -2419,6 +2472,7 @@ export default function Canvas({
           </>
         )}
         {groupHover &&
+          groupHover.frame &&
           !groupHover.ready &&
           !isInspirationBoard(groupHover.frame) && (
             <div
@@ -2560,12 +2614,22 @@ export default function Canvas({
           }}
         >
           <span>
-            {groupHover.unavailable
-              ? "空间不足，请调整位置"
-              : groupHover.ready
-                ? "松手放入"
-                : `停留 ${groupHover.duration / 1000} 秒后放入`}
-            「{groupHover.title || "未命名分组"}」
+            {groupHover.kind === "exit" ? (
+              groupHover.ready ? (
+                "松手放到画布"
+              ) : (
+                "停留 1 秒后移出灵感板"
+              )
+            ) : (
+              <>
+                {groupHover.unavailable
+                  ? "空间不足，请调整位置"
+                  : groupHover.ready
+                    ? "松手放入"
+                    : `停留 ${groupHover.duration / 1000} 秒后放入`}
+                「{groupHover.title || "未命名分组"}」
+              </>
+            )}
           </span>
           <span className="group-dwell-track" aria-hidden="true">
             <i

@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowRight, LockKeyhole, LayoutDashboard, Users } from "lucide-react";
 import { api, announceAccountChange } from "../api.js";
 import ForgotPassword from "./ForgotPassword.jsx";
+import useResendCooldown from "./useResendCooldown.js";
 
 export default function AuthScreen({
   legacyRoomCount = 0,
@@ -12,36 +13,137 @@ export default function AuthScreen({
   const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [challenge, setChallenge] = useState(null);
+  const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [claimLegacy, setClaimLegacy] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [retryIn, startCooldown] = useResendCooldown();
+  const usernameInput = useRef(null);
+  const emailInput = useRef(null);
+  const active = useRef(false);
+  const pending = useRef(null);
   const registering = mode === "register";
   const invited = new URLSearchParams(location.hash.slice(1)).has("invite");
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      pending.current = null;
+    };
+  }, []);
+
+  function current(action) {
+    return active.current && pending.current === action;
+  }
+  function clearRegistrationProof() {
+    pending.current = null;
+    setBusy(null);
+    setChallenge(null);
+    setCode("");
+    setError("");
+    setNotice("");
+  }
+  function changeMode(next) {
+    if (next === mode) return;
+    clearRegistrationProof();
+    setMode(next);
+    setPassword("");
+    setConfirm("");
+  }
+  async function requestCode() {
+    if (!registering || pending.current || retryIn || connectionError) return;
+    if (
+      !usernameInput.current.reportValidity() ||
+      !emailInput.current.reportValidity()
+    )
+      return;
+    const action = Symbol();
+    pending.current = action;
+    setBusy("request");
+    setError("");
+    setNotice("");
+    setChallenge(null);
+    setCode("");
+    try {
+      const result = await api("/api/auth/register/request", {
+        method: "POST",
+        accountId: null,
+        body: { username: username.trim(), email: email.trim() },
+      });
+      if (!active.current) return;
+      // A delivered email still needs its cooldown after leaving this form.
+      startCooldown(result.retryAfter);
+      if (!current(action)) return;
+      setChallenge(result);
+      setNotice(
+        result.message ||
+          "如果该邮箱可以用于注册，验证码将发送至该邮箱，请检查收件箱和垃圾邮件。",
+      );
+    } catch (err) {
+      if (current(action)) setError(err.message);
+    } finally {
+      if (current(action)) {
+        pending.current = null;
+        setBusy(null);
+      }
+    }
+  }
   async function submit(event) {
     event.preventDefault();
+    if (pending.current || connectionError || mode === "forgot") return;
     if (registering && password !== confirm) {
       setError("两次输入的密码不一致。");
       return;
     }
-    setBusy(true);
+    if (registering && !challenge) {
+      setError("请先发送邮箱验证码，完成邮箱验证后注册。");
+      return;
+    }
+    if (registering && !/^\d{6}$/.test(code)) {
+      setError("请输入六位数字验证码。");
+      return;
+    }
+    if (!event.currentTarget.reportValidity()) return;
+    const action = Symbol();
+    pending.current = action;
+    setBusy("submit");
     setError("");
     setNotice("");
     try {
       const result = await api(`/api/auth/${mode}`, {
         method: "POST",
-        body: { username, name, password, claimLegacy },
+        accountId: null,
+        body: {
+          username: username.trim(),
+          name,
+          password,
+          claimLegacy,
+          ...(registering && {
+            email: email.trim(),
+            code,
+            challengeId: challenge.challengeId,
+          }),
+        },
       });
+      if (!current(action)) return;
       setPassword("");
       setConfirm("");
+      setChallenge(null);
+      setCode("");
       announceAccountChange();
       await onAuthenticated(result);
     } catch (err) {
-      setError(err.message);
+      if (current(action)) setError(err.message);
     } finally {
-      setBusy(false);
+      if (current(action)) {
+        pending.current = null;
+        setBusy(null);
+      }
     }
   }
   return (
@@ -92,13 +194,11 @@ export default function AuthScreen({
               onRetry={onRetry}
               onBack={(value) => {
                 setUsername(value);
-                setMode("login");
+                changeMode("login");
               }}
               onSuccess={(value) => {
                 setUsername(value);
-                setMode("login");
-                setPassword("");
-                setConfirm("");
+                changeMode("login");
                 setNotice(
                   "密码已重置，请使用新密码登录。其他设备需要重新登录。",
                 );
@@ -110,28 +210,16 @@ export default function AuthScreen({
                 <button
                   type="button"
                   aria-pressed={registering}
-                  disabled={busy}
-                  onClick={() => {
-                    setMode("register");
-                    setError("");
-                    setNotice("");
-                    setPassword("");
-                    setConfirm("");
-                  }}
+                  disabled={busy === "submit"}
+                  onClick={() => changeMode("register")}
                 >
                   注册账号
                 </button>
                 <button
                   type="button"
                   aria-pressed={!registering}
-                  disabled={busy}
-                  onClick={() => {
-                    setMode("login");
-                    setError("");
-                    setNotice("");
-                    setPassword("");
-                    setConfirm("");
-                  }}
+                  disabled={busy === "submit"}
+                  onClick={() => changeMode("login")}
                 >
                   登录
                 </button>
@@ -141,7 +229,7 @@ export default function AuthScreen({
                 {invited
                   ? "你收到了一份画布邀请，登录后将继续加入。"
                   : registering
-                    ? "从一个账号开始，保存你的每个想法。"
+                    ? "验证并绑定邮箱，创建账号，保存你的每个想法。"
                     : "登录后，继续你的画布和清单。"}
               </p>
               {notice && (
@@ -149,17 +237,21 @@ export default function AuthScreen({
                   {notice}
                 </p>
               )}
-              <form onSubmit={submit}>
-                <fieldset disabled={busy || !!connectionError}>
+              <form onSubmit={submit} aria-busy={!!busy}>
+                <fieldset disabled={!!busy || !!connectionError}>
                   <label>
                     用户名
                     <input
+                      ref={usernameInput}
                       autoFocus
                       autoComplete="username"
                       autoCapitalize="none"
                       spellCheck={false}
                       value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      onChange={(e) => {
+                        setUsername(e.target.value);
+                        clearRegistrationProof();
+                      }}
                       minLength={3}
                       maxLength={32}
                       pattern="[a-zA-Z0-9_\-]{3,32}"
@@ -169,16 +261,72 @@ export default function AuthScreen({
                     <small>3–32 位英文字母、数字、下划线或短横线</small>
                   </label>
                   {registering && (
-                    <label>
-                      昵称
-                      <input
-                        autoComplete="nickname"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        maxLength={32}
-                        placeholder="同伴怎么称呼你（选填）"
-                      />
-                    </label>
+                    <>
+                      <label>
+                        昵称
+                        <input
+                          autoComplete="nickname"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          maxLength={32}
+                          placeholder="同伴怎么称呼你（选填）"
+                        />
+                      </label>
+                      <label>
+                        邮箱
+                        <input
+                          ref={emailInput}
+                          type="email"
+                          autoComplete="email"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          value={email}
+                          onChange={(event) => {
+                            setEmail(event.target.value);
+                            clearRegistrationProof();
+                          }}
+                          maxLength={254}
+                          required
+                          placeholder="用于验证注册及找回密码"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary wide"
+                        disabled={!!busy || retryIn > 0 || !!connectionError}
+                        onClick={requestCode}
+                      >
+                        {busy === "request"
+                          ? "正在发送…"
+                          : retryIn > 0
+                            ? `${retryIn} 秒后可重新发送`
+                            : challenge
+                              ? "重新发送验证码"
+                              : "发送验证码"}
+                      </button>
+                      <label>
+                        验证码
+                        <input
+                          autoComplete="one-time-code"
+                          inputMode="numeric"
+                          pattern="[0-9]{6}"
+                          value={code}
+                          onChange={(event) =>
+                            setCode(
+                              event.target.value.replace(/\D/g, "").slice(0, 6),
+                            )
+                          }
+                          minLength={6}
+                          maxLength={6}
+                          required
+                          placeholder="邮箱中的 6 位数字"
+                        />
+                      </label>
+                      <small className="account-hint">
+                        验证码 10 分钟内有效，最多尝试 5
+                        次。重新发送后请使用最新验证码。
+                      </small>
+                    </>
                   )}
                   <label>
                     密码
@@ -226,7 +374,7 @@ export default function AuthScreen({
                   )}
                   <button
                     className="primary wide"
-                    disabled={busy || !!connectionError}
+                    disabled={!!busy || !!connectionError}
                   >
                     {busy ? "请稍候…" : registering ? "注册并进入" : "登录"}
                     <ArrowRight size={16} />
@@ -251,20 +399,16 @@ export default function AuthScreen({
                 <button
                   type="button"
                   className="text-button auth-forgot"
-                  disabled={busy}
-                  onClick={() => {
-                    setMode("forgot");
-                    setError("");
-                    setNotice("");
-                    setPassword("");
-                    setConfirm("");
-                  }}
+                  disabled={!!busy}
+                  onClick={() => changeMode("forgot")}
                 >
                   忘记密码？
                 </button>
               )}
               <small className="auth-footnote">
-                建议登录后在账号设置中绑定邮箱，以便忘记密码时验证找回。
+                {registering
+                  ? "注册时必须验证并绑定邮箱，忘记密码时可使用该邮箱找回。"
+                  : "尚未绑定邮箱的旧账号，可登录后在账号设置中绑定，以便找回密码。"}
               </small>
             </>
           )}

@@ -19,6 +19,8 @@ import {
 } from "./workspace-changes.js";
 
 export function useRoomWorkspace(room, user) {
+  const latestRoomName = useRef(room.name);
+  latestRoomName.current = room.name;
   const [state, setState] = useState(null),
     [status, setStatus] = useState("loading");
   const [error, setError] = useState(""),
@@ -297,7 +299,7 @@ export function useRoomWorkspace(room, user) {
           boards: [
             {
               id: room.id,
-              name: room.name,
+              name: latestRoomName.current,
               type: "canvas",
               createdAt: room.createdAt,
             },
@@ -372,6 +374,22 @@ export function useRoomWorkspace(room, user) {
       window.removeEventListener("online", online);
     };
   }, [room.id, user.id]);
+  useEffect(() => {
+    const previous = current.current;
+    if (
+      !previous ||
+      !previous.boards.some(
+        (board) => board.id === room.id && board.name !== room.name,
+      )
+    )
+      return;
+    setCurrent({
+      ...previous,
+      boards: previous.boards.map((board) =>
+        board.id === room.id ? { ...board, name: room.name } : board,
+      ),
+    });
+  }, [room.id, room.name, setCurrent]);
   const update = useCallback(
     (action, options = {}) => {
       if (!current.current) return;

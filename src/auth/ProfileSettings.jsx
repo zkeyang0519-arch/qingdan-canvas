@@ -86,7 +86,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
             )}
           </div>
           <small>
-            PNG、JPEG、WebP、GIF，最大 5 MB
+            PNG、JPEG、WebP、GIF，最大 20 MB
             <br />
             可调整圆形范围与原图缩放，GIF 使用静态画面。
           </small>

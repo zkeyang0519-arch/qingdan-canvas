@@ -24,6 +24,7 @@ import {
   ArrowUpFromLine,
   ArrowDownToLine,
   Columns2,
+  Pencil,
 } from "lucide-react";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
@@ -35,6 +36,7 @@ import {
   AuthorAvatarToggle,
 } from "./canvas/TaskAuthors.jsx";
 import UserAvatar from "./UserAvatar.jsx";
+import RoomNameDialog from "./RoomNameDialog.jsx";
 import {
   CollectionPanel,
   SearchPanel,
@@ -100,6 +102,7 @@ export default function CanvasWorkspace({
   user,
   initialInvite,
   onLeave,
+  onRoomRenamed,
 }) {
   const workspace = useRoomWorkspace(room, user);
   const { state, update, readOnly } = workspace;
@@ -584,6 +587,20 @@ export default function CanvasWorkspace({
               </a>
               <span className="nav-divider" />
               <span className="board-title">{room.name}</span>
+              {room.role === "owner" && (
+                <button
+                  className="icon-button project-rename-button"
+                  aria-label={`修改项目名称：${room.name}`}
+                  title="修改项目名称"
+                  aria-haspopup="dialog"
+                  onClick={() => {
+                    exitEdit();
+                    setPanel("rename-project");
+                  }}
+                >
+                  <Pencil size={15} />
+                </button>
+              )}
               <span
                 className={`sync-indicator ${workspace.status}`}
                 role="status"
@@ -824,6 +841,14 @@ export default function CanvasWorkspace({
                 使用共享冲突内容
               </button>
             </div>
+          )}
+          {panel === "rename-project" && (
+            <RoomNameDialog
+              room={room}
+              accountId={user.id}
+              onRenamed={onRoomRenamed}
+              onClose={() => setPanel(null)}
+            />
           )}
           {context && (
             <ContextMenu

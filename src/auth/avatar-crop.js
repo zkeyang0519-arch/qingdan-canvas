@@ -29,31 +29,14 @@ export function getAvatarImageRect(image, crop = { zoom: 1 }) {
   };
 }
 
-function bounds(image, crop) {
-  const rect = getAvatarImageRect(image, crop);
-  const left = Math.max(0, rect.x);
-  const top = Math.max(0, rect.y);
-  const right = Math.min(AVATAR_STAGE_SIZE, rect.x + rect.width);
-  const bottom = Math.min(AVATAR_STAGE_SIZE, rect.y + rect.height);
-  const maxRadius = Math.min(right - left, bottom - top) / 2;
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    maxRadius,
-    minRadius: Math.min(16, maxRadius / 4),
-  };
-}
-
 function constrain(image, crop) {
   const zoom = clamp(crop.zoom, 1, 4);
   const rect = getAvatarImageRect(image, { ...crop, zoom });
-  const box = bounds(image, { ...crop, zoom });
-  const radius = clamp(crop.radius, box.minRadius, box.maxRadius);
+  const limits = getAvatarCropLimits();
+  const radius = clamp(crop.radius, limits.minRadius, limits.maxRadius);
   return {
-    x: clamp(crop.x, box.left + radius, box.right - radius),
-    y: clamp(crop.y, box.top + radius, box.bottom - radius),
+    x: clamp(crop.x, radius, AVATAR_STAGE_SIZE - radius),
+    y: clamp(crop.y, radius, AVATAR_STAGE_SIZE - radius),
     radius,
     zoom,
     offsetX: rect.x - (AVATAR_STAGE_SIZE - rect.width) / 2,
@@ -62,24 +45,19 @@ function constrain(image, crop) {
 }
 
 export function createAvatarCrop(image) {
+  const rect = getAvatarImageRect(image);
   return constrain(image, {
     x: AVATAR_STAGE_SIZE / 2,
     y: AVATAR_STAGE_SIZE / 2,
-    radius: bounds(image, { zoom: 1 }).maxRadius * 0.8,
+    radius: Math.min(rect.width, rect.height) * 0.4,
     zoom: 1,
   });
 }
 
-export function getAvatarCropLimits(image, crop) {
-  const box = bounds(image, crop);
+export function getAvatarCropLimits() {
   return {
-    minRadius: box.minRadius,
-    maxRadius: Math.min(
-      crop.x - box.left,
-      box.right - crop.x,
-      crop.y - box.top,
-      box.bottom - crop.y,
-    ),
+    minRadius: 16,
+    maxRadius: AVATAR_STAGE_SIZE / 2,
   };
 }
 
@@ -88,8 +66,7 @@ export function moveAvatarCrop(image, crop, dx, dy) {
 }
 
 export function resizeAvatarCrop(image, crop, radius) {
-  const limits = getAvatarCropLimits(image, crop);
-  return { ...crop, radius: clamp(radius, limits.minRadius, limits.maxRadius) };
+  return constrain(image, { ...crop, radius });
 }
 
 export function zoomAvatarCrop(image, crop, zoom) {
@@ -115,22 +92,10 @@ export function zoomAvatarCrop(image, crop, zoom) {
 export function getAvatarSourceRect(image, crop) {
   const valid = constrain(image, crop);
   const rect = getAvatarImageRect(image, valid);
-  const size = Math.min(
-    image.width,
-    image.height,
-    (valid.radius * 2) / rect.scale,
-  );
+  const size = (valid.radius * 2) / rect.scale;
   return {
-    x: clamp(
-      (valid.x - valid.radius - rect.x) / rect.scale,
-      0,
-      image.width - size,
-    ),
-    y: clamp(
-      (valid.y - valid.radius - rect.y) / rect.scale,
-      0,
-      image.height - size,
-    ),
+    x: (valid.x - valid.radius - rect.x) / rect.scale,
+    y: (valid.y - valid.radius - rect.y) / rect.scale,
     size,
   };
 }

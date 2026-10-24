@@ -33,7 +33,7 @@ after(async () => {
 
 const math = () => import("../src/auth/avatar-crop.js");
 
-test("圆形选区映射到原图，不把画布留白当作头像", async () => {
+test("初始圆形选区映射到原图，保持原图比例", async () => {
   const { createAvatarCrop, getAvatarSourceRect } = await math();
   const image = { width: 400, height: 200 };
   const crop = createAvatarCrop(image);
@@ -52,7 +52,7 @@ test("圆形选区映射到原图，不把画布留白当作头像", async () =>
   });
 });
 
-test("拖动与范围调整始终限制在图片和编辑区域内", async () => {
+test("选区可以越过原图留白，放大时自动内移直到顶到编辑区四边", async () => {
   const {
     createAvatarCrop,
     moveAvatarCrop,
@@ -64,7 +64,7 @@ test("拖动与范围调整始终限制在图片和编辑区域内", async () =>
   const moved = moveAvatarCrop(image, original, 1000, -1000);
   assert.deepEqual(moved, {
     x: 256,
-    y: 144,
+    y: 64,
     radius: 64,
     zoom: 1,
     offsetX: 0,
@@ -72,21 +72,17 @@ test("拖动与范围调整始终限制在图片和编辑区域内", async () =>
   });
   assert.deepEqual(getAvatarSourceRect(image, moved), {
     x: 240,
-    y: 0,
+    y: -100,
     size: 160,
   });
   const enlarged = resizeAvatarCrop(image, original, 1000);
-  assert.equal(enlarged.radius, 80);
+  assert.equal(enlarged.radius, 160);
   assert.deepEqual(getAvatarSourceRect(image, enlarged), {
-    x: 100,
-    y: 0,
-    size: 200,
+    x: 0,
+    y: -100,
+    size: 400,
   });
-  assert.equal(
-    resizeAvatarCrop(image, moved, 1000).radius,
-    64,
-    "靠近边缘放大不能越界",
-  );
+  assert.deepEqual(resizeAvatarCrop(image, moved, 1000), enlarged);
 });
 
 test("缩放原图会缩小实际取样范围，并限制缩放上下界", async () => {
@@ -132,7 +128,7 @@ test("放大以圆圈内的主体为中心，靠近原图边缘的内容仍可�
   );
 });
 
-test("横竖图、极端长宽比和缩小原图后仍只取图片内的像素", async () => {
+test("横竖图、极端长宽比及缩放后，圆圈均可到达四边且取样保留比例", async () => {
   const {
     createAvatarCrop,
     moveAvatarCrop,
@@ -153,9 +149,12 @@ test("横竖图、极端长宽比和缩小原图后仍只取图片内的像素",
       crop = resizeAvatarCrop(image, crop, 9000);
       const source = getAvatarSourceRect(image, crop);
       assert.ok(source.size > 0);
-      assert.ok(source.x >= -1e-8 && source.y >= -1e-8);
-      assert.ok(source.x + source.size <= image.width + 1e-8);
-      assert.ok(source.y + source.size <= image.height + 1e-8);
+      assert.equal(crop.radius, 160);
+      assert.equal(crop.x, 160);
+      assert.equal(crop.y, 160);
+      assert.ok(Number.isFinite(source.x) && Number.isFinite(source.y));
+      assert.ok(source.x < image.width && source.y < image.height);
+      assert.ok(source.x + source.size > 0 && source.y + source.size > 0);
     }
   }
 });
@@ -195,7 +194,7 @@ const png = () =>
     { type: "image/png" },
   );
 
-async function mount(t, props = {}) {
+async function mount(t, props = {}, imageSize = { width: 400, height: 200 }) {
   const AvatarCropper = await component();
   const host = document.createElement("main");
   document.body.append(host);
@@ -205,8 +204,7 @@ async function mount(t, props = {}) {
   const priorDecode = globalThis.createImageBitmap;
   globalThis.createImageBitmap = async () => {
     const bitmap = {
-      width: 400,
-      height: 200,
+      ...imageSize,
       closed: 0,
       close() {
         this.closed += 1;
@@ -237,12 +235,13 @@ async function mount(t, props = {}) {
   t.mock.method(
     window.HTMLCanvasElement.prototype,
     "toBlob",
-    function (callback, mime) {
+    function (callback, mime, quality) {
       exported.push({
         width: this.width,
         height: this.height,
         operations: contexts.get(this).operations,
         mime,
+        quality,
       });
       callback(new Blob(["encoded-avatar"], { type: mime }));
     },
@@ -320,9 +319,77 @@ async function click(host, text) {
   await act(async () => button.click());
 }
 
-test("鼠标拖动、触屏调整圆圈和缩放控件决定最终取样，透明圆形导出为二进制", async (t) => {
+test("圆圈大小滑块可选满编辑区，横图导出保留透明留白且不拉伸", async (t) => {
+  const f = await mount(t);
+  await range(f.host, "圆圈大小", 160);
+  const circle = f.host.querySelector('[aria-label="圆形裁剪选区"]');
+  assert.equal(circle.style.left, "0%");
+  assert.equal(circle.style.top, "0%");
+  assert.equal(circle.style.width, "100%");
+  assert.equal(circle.style.height, "100%");
+  await click(f.host, "确认头像");
+  const exported = f.exported[0];
+  assert.equal(exported.width, 256);
+  assert.equal(exported.height, 256);
+  assert.equal(exported.mime, "image/webp");
+  assert.equal(exported.quality, 0.85);
+  const draw = exported.operations.find(
+    (operation) => operation[0] === "drawImage",
+  );
+  assert.deepEqual(draw.slice(2), [0, 0, 400, 200, 0, 64, 256, 128]);
+  const preview = f.host
+    .querySelector('[aria-label="头像预览"]')
+    .getContext("2d");
+  assert.deepEqual(
+    preview.operations
+      .filter((op) => op[0] === "drawImage")
+      .at(-1)
+      .slice(2),
+    [0, 0, 400, 200, 0, 24, 96, 48],
+  );
+});
+
+test("竖图扩大至四边后保留左右透明留白", async (t) => {
+  const f = await mount(t, {}, { width: 200, height: 400 });
+  await range(f.host, "圆圈大小", 160);
+  await click(f.host, "确认头像");
+  const draw = f.exported[0].operations.find((op) => op[0] === "drawImage");
+  assert.deepEqual(draw.slice(2), [0, 0, 200, 400, 64, 0, 128, 256]);
+});
+
+test("缩小图片不会缩小已选满的圆圈，放大后的取景与导出一致", async () => {
+  const {
+    createAvatarCrop,
+    resizeAvatarCrop,
+    zoomAvatarCrop,
+    getAvatarSourceRect,
+  } = await math();
+  const image = { width: 400, height: 200 };
+  const full = resizeAvatarCrop(image, createAvatarCrop(image), 160);
+  const zoomed = zoomAvatarCrop(image, full, 4);
+  assert.deepEqual(getAvatarSourceRect(image, zoomed), {
+    x: 150,
+    y: 50,
+    size: 100,
+  });
+  const reduced = zoomAvatarCrop(image, zoomed, 1);
+  assert.equal(reduced.radius, 160);
+  assert.deepEqual(getAvatarSourceRect(image, reduced), {
+    x: 0,
+    y: -100,
+    size: 400,
+  });
+});
+
+test("20 MB 原图可拖动、触屏调整和缩放，透明圆形导出为二进制", async (t) => {
   let body;
+  const original = png();
   const f = await mount(t, {
+    file: new File(
+      [original, new Uint8Array(20 * 1024 * 1024 - original.size)],
+      "large.png",
+      { type: "image/png" },
+    ),
     onConfirm: async (blob) => {
       body = blob;
     },
@@ -497,13 +564,13 @@ test("图片编码失败保留裁剪位置，重试前不会提交头像", async
   assert.equal(f.host.querySelector('[role="alert"]'), null);
 });
 
-test("超过 5 MB 和无法识别的文件展示错误且不上传", async (t) => {
+test("超过 20 MB 和无法识别的文件展示错误且不上传", async (t) => {
   const f = await mount(t, {
-    file: new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", {
+    file: new File([new Uint8Array(20 * 1024 * 1024 + 1)], "large.png", {
       type: "image/png",
     }),
   });
-  assert.match(f.host.querySelector('[role="alert"]').textContent, /5\s*MB/);
+  assert.match(f.host.querySelector('[role="alert"]').textContent, /20\s*MB/);
   assert.ok(
     [...f.host.querySelectorAll("button")].find(
       (button) => button.textContent === "确认头像",

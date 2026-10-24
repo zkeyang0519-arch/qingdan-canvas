@@ -300,7 +300,9 @@ export default function AvatarCropper({
           {error}
         </p>
       )}
-      <p className="avatar-crop-note">仅保存圆圈内的内容，圈外为透明背景。</p>
+      <p className="avatar-crop-note">
+        圆圈可扩大至编辑区四边。仅保存圈内内容，图片留白和圈外区域均为透明背景。
+      </p>
       <div className="avatar-crop-actions">
         <button
           type="button"

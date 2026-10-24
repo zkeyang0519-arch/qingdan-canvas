@@ -7,7 +7,7 @@ import path from "node:path";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { createObject, makeBlock } from "../src/canvas/model.js";
 import { sharedObject } from "../shared/canvas-contract.js";
 
@@ -107,6 +107,39 @@ test(
     const legacyLoginRaw = randomBytes(32).toString("hex");
     const expiredRaw = randomBytes(32).toString("hex");
     const sha = (value) => createHash("sha256").update(value).digest("hex");
+    const emailSecret =
+      "integration-test-email-signing-secret-over-32-characters";
+    const registrations = new Map(
+      ["甲", "乙", "路人", "原访客", "验证"].map((name) => {
+        const username =
+          name === "原访客"
+            ? "legacy_owner"
+            : `user_${crypto.randomUUID().slice(0, 16)}`;
+        return [
+          name,
+          {
+            name,
+            username,
+            password: "Qd-test-9",
+            email: `${username}@example.test`,
+            challengeId: randomBytes(32).toString("hex"),
+            code: "123456",
+          },
+        ];
+      }),
+    );
+    // This suite confirms signed fixtures through the real registration route.
+    // Email delivery itself is covered by email-recovery-worker.test.mjs.
+    const registrationFixtures = [...registrations.values()]
+      .map(({ username, email, challengeId, code }) => {
+        const hash = createHmac("sha256", emailSecret)
+          .update(
+            JSON.stringify([challengeId, username, "register", email, code]),
+          )
+          .digest("hex");
+        return `INSERT INTO registration_challenges(id,username,email,code_hash,expires_at) VALUES('${challengeId}','${username}','${email}','${hash}',${Date.now() + 10 * 60 * 1000});`;
+      })
+      .join("\n");
     const fixture = `${state}/legacy.sql`;
     await writeFile(
       fixture,
@@ -118,6 +151,7 @@ test(
       INSERT INTO members VALUES('legacy-room','legacy-owner','owner',datetime('now'));
       INSERT INTO rooms VALUES('legacy-login-room','待迁移画布','legacy-login','${sha("legacy-login-invite")}',datetime('now'));
       INSERT INTO members VALUES('legacy-login-room','legacy-login','owner',datetime('now'));
+      ${registrationFixtures}
     `,
     );
     await command([
@@ -130,6 +164,16 @@ test(
       "--file",
       fixture,
     ]);
+    const testEnv = path.join(state, "registration.env");
+    await writeFile(
+      testEnv,
+      [
+        "APP_ENV=production",
+        "RESEND_API_KEY=integration-test-no-delivery",
+        "EMAIL_FROM=integration@example.test",
+        `EMAIL_CODE_SECRET=${emailSecret}`,
+      ].join("\n"),
+    );
     const port = await freePort(),
       base = `http://127.0.0.1:${port}`;
     let proc,
@@ -149,12 +193,19 @@ test(
           state,
           "--var",
           "APP_ENV:production",
+          "--env-file",
+          testEnv,
           "--inspector-port",
           "0",
         ],
         {
           cwd: root,
-          env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+          env: {
+            ...process.env,
+            WRANGLER_SEND_METRICS: "false",
+            CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "true",
+            CLOUDFLARE_INCLUDE_PROCESS_ENV: "false",
+          },
           windowsHide: true,
         },
       );
@@ -190,11 +241,7 @@ test(
     await start();
     const credentials = new Map();
     async function session(name) {
-      const input = {
-        name,
-        username: `user_${crypto.randomUUID().slice(0, 16)}`,
-        password: "Qd-test-9",
-      };
+      const input = registrations.get(name);
       const response = await fetch(base + "/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,24 +295,18 @@ test(
       },
     );
     await t.test("注册验证密码和用户名，用户名不区分大小写", async () => {
-      assert.equal(
-        (
-          await request("/api/auth/register", "", "POST", {
-            username: "bad",
-            password: "12345678",
-          })
-        ).status,
-        400,
-      );
-      assert.equal(
-        (
-          await request("/api/auth/register", "", "POST", {
-            username: "<script>",
-            password: "long-password-1234",
-          })
-        ).status,
-        400,
-      );
+      const invalidPassword = await request("/api/auth/register", "", "POST", {
+        ...registrations.get("验证"),
+        password: "12345678",
+      });
+      assert.equal(invalidPassword.status, 400);
+      assert.match((await invalidPassword.json()).error, /密码/);
+      const invalidUsername = await request("/api/auth/register", "", "POST", {
+        ...registrations.get("验证"),
+        username: "<script>",
+      });
+      assert.equal(invalidUsername.status, 400);
+      assert.match((await invalidUsername.json()).error, /用户名/);
       assert.equal(
         (
           await request("/api/auth/register", "", "POST", {
@@ -297,15 +338,15 @@ test(
             .legacyRoomCount,
           1,
         );
-        const input = {
-          username: "legacy_owner",
-          password: "legacy-password-1234",
-        };
-        assert.equal(
-          (await request("/api/auth/register", oldCookie, "POST", input))
-            .status,
-          400,
+        const input = registrations.get("原访客");
+        const unclaimed = await request(
+          "/api/auth/register",
+          oldCookie,
+          "POST",
+          input,
         );
+        assert.equal(unclaimed.status, 400);
+        assert.match((await unclaimed.json()).error, /勾选/);
         const response = await request(
           "/api/auth/register",
           oldCookie,
@@ -459,6 +500,88 @@ test(
     const initial = await sa.next((m) => m.type === "snapshot");
     await sb.next((m) => m.type === "snapshot");
     assert.equal(initial.rows.length, 1, "room has persistent collection");
+    await t.test(
+      "创建者修改项目名称后列表和详情持久更新，邀请及内容不变",
+      async () => {
+        const endpoint = `/api/rooms/${room.id}`;
+        const renamed = await request(endpoint, a, "PATCH", {
+          name: "  修改后的项目  ",
+          id: "cannot-replace-project",
+          owner_id: credentials.get("乙").user.id,
+        });
+        assert.equal(renamed.status, 200, await renamed.clone().text());
+        assert.deepEqual((await renamed.json()).room, {
+          ...room,
+          name: "修改后的项目",
+        });
+        const memberDetail = (await (await request(endpoint, b)).json()).room;
+        assert.equal(memberDetail.name, "修改后的项目");
+        assert.equal(memberDetail.role, "editor");
+        const listed = (await (await request("/api/rooms", a)).json()).rooms;
+        assert.equal(
+          listed.find((item) => item.id === room.id).name,
+          "修改后的项目",
+        );
+        assert.equal(
+          (await request(`${endpoint}/join`, b, "POST", { invite })).status,
+          200,
+        );
+        assert.deepEqual(
+          (await (await request(`${endpoint}/snapshot`, a)).json()).rows,
+          initial.rows,
+        );
+        for (const name of ["短", "名".repeat(80), "项目 ' 测试"])
+          assert.equal(
+            (await request(endpoint, a, "PATCH", { name })).status,
+            200,
+          );
+        assert.equal(
+          (await (await request(endpoint, a)).json()).room.name,
+          "项目 ' 测试",
+        );
+      },
+    );
+    await t.test(
+      "项目改名拒绝非法名称和非创建者请求，原名称保持不变",
+      async () => {
+        const endpoint = `/api/rooms/${room.id}`;
+        const before = (await (await request(endpoint, a)).json()).room;
+        for (const name of ["", " \n ", "名".repeat(81), 42, null, {}])
+          assert.equal(
+            (await request(endpoint, a, "PATCH", { name })).status,
+            400,
+          );
+        for (const [cookie, expected] of [
+          [b, 403],
+          [outsider, 403],
+          ["", 401],
+        ])
+          assert.equal(
+            (await request(endpoint, cookie, "PATCH", { name: "越权改名" }))
+              .status,
+            expected,
+          );
+        for (const [headers, expected] of [
+          [{ Origin: "https://evil.invalid" }, 403],
+          [{ "X-QD-Account": credentials.get("乙").user.id }, 401],
+        ]) {
+          const result = await fetch(base + endpoint, {
+            method: "PATCH",
+            headers: {
+              Cookie: a,
+              "Content-Type": "application/json",
+              ...headers,
+            },
+            body: JSON.stringify({ name: "越权改名" }),
+          });
+          assert.equal(result.status, expected);
+        }
+        assert.deepEqual(
+          (await (await request(endpoint, a)).json()).room,
+          before,
+        );
+      },
+    );
     await t.test(
       "头像只允许本人上传，共享成员可读取，替换和移除实时更新成员资料",
       async () => {
