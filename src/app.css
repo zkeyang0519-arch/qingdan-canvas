@@ -167,6 +167,26 @@
   box-shadow: 0 8px 28px #42563812;
   transform: translateY(-3px);
 }
+.room-card-item {
+  position: relative;
+  min-width: 0;
+}
+.room-card-item > .room-card {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.room-rename-button {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  background: #fffffff0;
+  border: 1px solid #dce3d5;
+  box-shadow: 0 2px 8px #4256380a;
+}
+.project-rename-button {
+  flex-shrink: 0;
+}
 .room-preview {
   height: 185px;
   background: #e9eee6;

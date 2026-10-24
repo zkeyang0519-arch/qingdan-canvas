@@ -26,7 +26,14 @@ const handlers = [
 
 function drag(
   t,
-  { noteKind = "text", selected = ["note"], scale = 1, extra = [] } = {},
+  {
+    noteKind = "text",
+    selected = ["note"],
+    scale = 1,
+    extra = [],
+    noteProps = {},
+    neighborProps = {},
+  } = {},
 ) {
   let now = 1000;
   class DragDate extends Date {
@@ -53,6 +60,7 @@ function drag(
     width: 200,
     height: 180,
     layoutHeight: 180,
+    ...noteProps,
   };
   const neighbor = {
     ...model.createInspirationBoard(boardId, {
@@ -62,6 +70,7 @@ function drag(
       height: 500,
     }),
     id: "neighbor",
+    ...neighborProps,
   };
   state.objects = [
     home,
@@ -70,20 +79,20 @@ function drag(
     ...extra.map((o) => ({ ...o, boardId })),
   ];
   const view = { ...geometry.defaultView(), scale };
+  const start = { x: (note.x + 40) * scale, y: (note.y + 50) * scale };
   const workspace = { current: { current: state } };
   const gesture = {
     current: {
       kind: "move",
       started: true,
-      start: { x: 300, y: 350 },
+      start,
       view,
       ids: selected,
       anchorId: selected[0],
       snapshot: state,
       pointerId: 1,
       alignmentMotion: {
-        x: 300,
-        y: 350,
+        ...start,
         at: now,
         slowSince: null,
         enabled: false,
@@ -123,7 +132,7 @@ function drag(
     viewport: { current: { hasPointerCapture: () => false } },
     window: {},
     GROUP_DWELL_MS: 2000,
-    BOARD_DWELL_MS: 1000,
+    BOARD_EXIT_DWELL_MS: 1000,
     update: (action) => {
       workspace.current.current =
         typeof action === "function"
@@ -146,14 +155,18 @@ function drag(
     "Selection",
   ])
     env[`set${key}`] = () => {};
+  let hover = null;
+  env.setGroupHover = (next) => {
+    hover = typeof next === "function" ? next(hover) : next;
+  };
   const { move, up } = new Function(
     ...Object.keys(env),
     `${handlers}\nreturn { move, up };`,
   )(...Object.values(env));
   env.moveRef.current = move;
   const event = (x, y, modifiers) => ({
-    clientX: 300 + x * scale,
-    clientY: 350 + y * scale,
+    clientX: start.x + x * scale,
+    clientY: start.y + y * scale,
     pointerId: 1,
     ...modifiers,
   });
@@ -176,10 +189,152 @@ function drag(
     },
     get: (id = "note") =>
       workspace.current.current.objects.find((o) => o.id === id),
+    hover: () => hover,
     home,
     neighbor,
   };
 }
+
+for (const scale of [0.5, 1, 2]) {
+  test(`loose notes enter a board immediately at zoom ${scale}`, (t) => {
+    const ui = drag(t, { scale, noteProps: { parentId: null, y: 850 } });
+    ui.move(0, -500);
+    assert.equal(ui.hover()?.ready, true);
+    ui.up(0, -500);
+    assert.equal(ui.get().parentId, "home");
+    assert.deepEqual(
+      ui.get("home"),
+      ui.home,
+      "receiving feedback does not resize stored geometry",
+    );
+  });
+}
+
+for (const noteProps of [{}, { noteKind: "checklist" }, { type: "image" }]) {
+  test(`board ${noteProps.type || noteProps.noteKind || "note"} can leave after a one-second canvas pause`, (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const ui = drag(t, { noteProps });
+    ui.move(-500, 0);
+    ui.tick(999);
+    assert.equal(ui.hover()?.ready, false);
+    assert.equal(
+      ui.get().parentId,
+      "home",
+      "membership is committed only on release",
+    );
+    ui.tick(1);
+    assert.equal(ui.hover()?.ready, true);
+    ui.up(-500, 0);
+    assert.equal(ui.get().parentId, null);
+    assert.deepEqual([ui.get().x, ui.get().y], [-240, 300]);
+    ui.tick(2000);
+    assert.equal(ui.get().parentId, null);
+  });
+}
+
+test("moving on the canvas restarts exit waiting while small screen-space jitter is allowed", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ui = drag(t, { scale: 2 });
+  ui.move(-500, 0);
+  ui.tick(800);
+  ui.move(-510, 0);
+  ui.tick(800);
+  assert.equal(ui.hover()?.ready, false);
+  ui.move(-508, 0, { elapsedMs: 0 });
+  ui.tick(200);
+  assert.equal(ui.hover()?.ready, true);
+  ui.up(-508, 0);
+  assert.equal(ui.get().parentId, null);
+});
+
+test("re-entering a board cancels exit readiness and early release returns inside", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ui = drag(t);
+  ui.move(-500, 0);
+  ui.tick(1000);
+  ui.move(0, 0);
+  ui.move(-500, 0);
+  ui.tick(500);
+  ui.up(-500, 0);
+  ui.tick(2000);
+  assert.equal(ui.get().parentId, "home");
+  assert.equal(ui.get().x, 150);
+  assert.equal(ui.hover(), null);
+});
+
+test("board members transfer directly to another board, but cannot detach on a locked board", (t) => {
+  const ui = drag(t);
+  ui.move(800, 0);
+  ui.up(800, 0);
+  assert.equal(ui.get().parentId, "neighbor");
+  assert.deepEqual(
+    [ui.get().x, ui.get().y],
+    [1060, 300],
+    "transfer preserves the requested landing point",
+  );
+  const locked = drag(t, { neighborProps: { locked: true } });
+  locked.move(800, 0);
+  locked.replay(2000);
+  locked.up(800, 0);
+  assert.equal(locked.get().parentId, "home");
+});
+
+test("multiple board members detach together after the same canvas pause", (t) => {
+  const second = {
+    ...model.createObject("", "note", { x: 500, y: 450 }),
+    id: "second",
+    parentId: "home",
+    width: 180,
+    height: 120,
+    layoutHeight: 120,
+  };
+  const ui = drag(t, { selected: ["note", "second"], extra: [second] });
+  ui.move(-700, 0);
+  ui.replay(1000);
+  ui.up(-700, 0);
+  assert.equal(ui.get().parentId, null);
+  assert.equal(ui.get("second").parentId, null);
+  assert.deepEqual(ui.get("home"), ui.home);
+});
+
+test("ordinary groups still require two seconds to accept a loose note", (t) => {
+  const group = {
+    ...model.createObject("", "frame", { x: 1500, y: 1000 }),
+    id: "group",
+    width: 600,
+    height: 500,
+  };
+  const ui = drag(t, { noteProps: { parentId: null, y: 850 }, extra: [group] });
+  ui.move(1400, 300);
+  assert.equal(ui.hover()?.ready, false);
+  ui.replay(1000);
+  assert.equal(ui.hover()?.ready, false);
+  ui.replay(1000);
+  assert.equal(ui.hover()?.ready, true);
+  ui.up(1400, 300);
+  assert.equal(ui.get().parentId, "group");
+});
+
+test("release before the exit deadline cannot be changed by a later timer", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ui = drag(t);
+  ui.move(-500, 0);
+  ui.tick(999);
+  ui.up(-500, 0, { elapsedMs: 0 });
+  ui.tick(2000);
+  assert.equal(ui.get().parentId, "home");
+  assert.equal(ui.get().x, 150);
+});
+
+test("a board without enough space refuses immediate entry without claiming the loose note", (t) => {
+  const ui = drag(t, {
+    noteProps: { parentId: null, y: 850, width: 4000 },
+  });
+  ui.move(0, -500);
+  assert.equal(ui.hover()?.unavailable, true);
+  ui.up(0, -500);
+  assert.equal(ui.get().parentId, null);
+});
 
 for (const noteKind of ["text", "checklist"]) {
   for (const { name, delta, during, after } of [

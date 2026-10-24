@@ -26,17 +26,25 @@ export function drawAvatarCrop(context, image, crop, size) {
   context.beginPath();
   context.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
   context.clip();
-  context.drawImage(
-    image,
-    source.x,
-    source.y,
-    source.size,
-    source.size,
-    0,
-    0,
-    size,
-    size,
-  );
+  // Intersect with the original image and keep the same scale. Letterboxing
+  // remains transparent instead of stretching the image to fill the circle.
+  const left = Math.max(0, source.x);
+  const top = Math.max(0, source.y);
+  const width = Math.min(image.width, source.x + source.size) - left;
+  const height = Math.min(image.height, source.y + source.size) - top;
+  const scale = size / source.size;
+  if (width > 0 && height > 0)
+    context.drawImage(
+      image,
+      left,
+      top,
+      width,
+      height,
+      (left - source.x) * scale,
+      (top - source.y) * scale,
+      width * scale,
+      height * scale,
+    );
   context.restore();
 }
 

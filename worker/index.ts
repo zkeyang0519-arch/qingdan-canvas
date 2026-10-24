@@ -176,6 +176,21 @@ export default {
           forwarded,
         );
       }
+      if (!action && request.method === "PATCH") {
+        check(room.role === "owner", "只有创建者可以修改项目名称。", 403);
+        const input = await body(request);
+        check(
+          typeof input.name === "string" &&
+            input.name.trim().length > 0 &&
+            input.name.trim().length <= 80,
+          "项目名称需要 1–80 个字。",
+        );
+        const name = input.name.trim();
+        await env.DB.prepare("UPDATE rooms SET name=? WHERE id=?")
+          .bind(name, roomId)
+          .run();
+        return json({ room: publicRoom({ ...room, name }) });
+      }
       check(request.method === "GET", "方法不支持。", 405);
       return json({ room: publicRoom(room) });
     } catch (error) {

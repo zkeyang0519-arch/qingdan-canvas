@@ -8,6 +8,7 @@ import {
   Link2,
   X,
   LoaderCircle,
+  Pencil,
 } from "lucide-react";
 import {
   api,
@@ -18,6 +19,7 @@ import {
 import CanvasWorkspace from "./CanvasWorkspace.jsx";
 import AuthScreen from "./auth/AuthScreen.jsx";
 import ProfileSettings from "./auth/ProfileSettings.jsx";
+import RoomNameDialog from "./RoomNameDialog.jsx";
 import "./auth/auth.css";
 
 export default function App() {
@@ -33,21 +35,34 @@ export default function App() {
   const [connectionError, setConnectionError] = useState("");
   const identity = useRef(null);
   const epoch = useRef(0);
+  const roomWrites = useRef(new Map());
   const [invite, setInvite] = useState("");
+  const [renameTarget, setRenameTarget] = useState(null);
+  const mergeRoomRead = (item, before) => {
+    const written = roomWrites.current.get(item.id);
+    // Only supersede reads that were already running when a save completed.
+    return written && written !== before.get(item.id)
+      ? { ...item, name: written.name }
+      : item;
+  };
   const refresh = async () => {
     const started = epoch.current;
+    const before = new Map(roomWrites.current);
     const result = await api("/api/rooms");
-    if (started === epoch.current) setRooms(result.rooms);
+    if (started === epoch.current)
+      setRooms(result.rooms.map((item) => mergeRoomRead(item, before)));
   };
   const enter = async (id) => {
     const started = epoch.current;
+    const before = new Map(roomWrites.current);
     const result = await api(`/api/rooms/${id}`);
     if (started !== epoch.current) return;
-    setRoom(result.room);
+    setRoom(mergeRoomRead(result.room, before));
     history.replaceState(null, "", `/?room=${id}`);
   };
   const authenticated = async (result) => {
     const started = ++epoch.current;
+    roomWrites.current.clear();
     identity.current = result.user.id;
     setActiveAccount(result.user.id);
     setSession(result);
@@ -95,6 +110,7 @@ export default function App() {
     })();
     const expired = () => {
       epoch.current++;
+      roomWrites.current.clear();
       identity.current = null;
       setActiveAccount(null);
       setRoom(null);
@@ -102,6 +118,7 @@ export default function App() {
       setSession(null);
       setDialog(null);
       setInvite("");
+      setRenameTarget(null);
     };
     const switched = (event) => {
       if (event.key === "qingdan.account-change") {
@@ -140,6 +157,7 @@ export default function App() {
     await api("/api/auth/logout", { method: "POST", body: {} });
     if (started !== epoch.current) return;
     epoch.current++;
+    roomWrites.current.clear();
     identity.current = null;
     setActiveAccount(null);
     setRoom(null);
@@ -147,6 +165,7 @@ export default function App() {
     setSession(null);
     setDialog(null);
     setInvite("");
+    setRenameTarget(null);
     setError("");
     history.replaceState(null, "", "/");
     announceAccountChange();
@@ -204,6 +223,22 @@ export default function App() {
     });
   };
   const renderedEpoch = epoch.current;
+  const roomRenamed = (renamed) => {
+    if (
+      epoch.current !== renderedEpoch ||
+      identity.current !== session?.user.id
+    )
+      return;
+    roomWrites.current.set(renamed.id, { name: renamed.name });
+    setRooms((items) =>
+      items.map((item) =>
+        item.id === renamed.id ? { ...item, name: renamed.name } : item,
+      ),
+    );
+    setRoom((current) =>
+      current?.id === renamed.id ? { ...current, name: renamed.name } : current,
+    );
+  };
   if (initializing)
     return (
       <div className="loading-screen">
@@ -227,6 +262,7 @@ export default function App() {
         room={room}
         user={session.user}
         initialInvite={invite}
+        onRoomRenamed={roomRenamed}
         onLeave={() => {
           setRoom(null);
           setInvite("");
@@ -309,36 +345,49 @@ export default function App() {
         ) : (
           <div className="room-grid">
             {rooms.map((item, index) => (
-              <button
-                className="room-card"
-                key={item.id}
-                disabled={busy}
-                onClick={() => void act(() => enter(item.id))}
-              >
-                <div className={`room-preview preview-${index % 3}`}>
-                  <div className="preview-paper">
-                    <i />
-                    <i />
-                    <i />
+              <div className="room-card-item" key={item.id}>
+                <button
+                  className="room-card"
+                  disabled={busy}
+                  onClick={() => void act(() => enter(item.id))}
+                >
+                  <div className={`room-preview preview-${index % 3}`}>
+                    <div className="preview-paper">
+                      <i />
+                      <i />
+                      <i />
+                    </div>
+                    <div className="preview-note">
+                      一起完成
+                      <br />
+                      <span>小小的计划，大大的可能。</span>
+                    </div>
+                    <span className="preview-check">✓</span>
                   </div>
-                  <div className="preview-note">
-                    一起完成
-                    <br />
-                    <span>小小的计划，大大的可能。</span>
+                  <div className="room-card-body">
+                    <h2>{item.name}</h2>
+                    <div>
+                      <span>
+                        <Users size={13} />
+                        {item.role === "owner" ? "我创建的" : "我参与的"}
+                      </span>
+                      <ArrowRight size={17} />
+                    </div>
                   </div>
-                  <span className="preview-check">✓</span>
-                </div>
-                <div className="room-card-body">
-                  <h2>{item.name}</h2>
-                  <div>
-                    <span>
-                      <Users size={13} />
-                      {item.role === "owner" ? "我创建的" : "我参与的"}
-                    </span>
-                    <ArrowRight size={17} />
-                  </div>
-                </div>
-              </button>
+                </button>
+                {item.role === "owner" && (
+                  <button
+                    className="room-rename-button icon-button"
+                    aria-label={`修改项目名称：${item.name}`}
+                    title="修改项目名称"
+                    aria-haspopup="dialog"
+                    disabled={busy}
+                    onClick={() => setRenameTarget(item)}
+                  >
+                    <Pencil size={16} />
+                  </button>
+                )}
+              </div>
             ))}
             <button
               className="room-card new-room-card"
@@ -358,6 +407,15 @@ export default function App() {
           编辑实时同步，图片与清单自动保存。进入画布后可邀请同伴。
         </div>
       </main>
+      {renameTarget && (
+        <RoomNameDialog
+          key={renameTarget.id}
+          room={renameTarget}
+          accountId={session.user.id}
+          onRenamed={roomRenamed}
+          onClose={() => setRenameTarget(null)}
+        />
+      )}
       {dialog && (
         <div
           className="dialog-backdrop"

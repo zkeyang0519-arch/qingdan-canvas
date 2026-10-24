@@ -501,6 +501,88 @@ test(
     await sb.next((m) => m.type === "snapshot");
     assert.equal(initial.rows.length, 1, "room has persistent collection");
     await t.test(
+      "创建者修改项目名称后列表和详情持久更新，邀请及内容不变",
+      async () => {
+        const endpoint = `/api/rooms/${room.id}`;
+        const renamed = await request(endpoint, a, "PATCH", {
+          name: "  修改后的项目  ",
+          id: "cannot-replace-project",
+          owner_id: credentials.get("乙").user.id,
+        });
+        assert.equal(renamed.status, 200, await renamed.clone().text());
+        assert.deepEqual((await renamed.json()).room, {
+          ...room,
+          name: "修改后的项目",
+        });
+        const memberDetail = (await (await request(endpoint, b)).json()).room;
+        assert.equal(memberDetail.name, "修改后的项目");
+        assert.equal(memberDetail.role, "editor");
+        const listed = (await (await request("/api/rooms", a)).json()).rooms;
+        assert.equal(
+          listed.find((item) => item.id === room.id).name,
+          "修改后的项目",
+        );
+        assert.equal(
+          (await request(`${endpoint}/join`, b, "POST", { invite })).status,
+          200,
+        );
+        assert.deepEqual(
+          (await (await request(`${endpoint}/snapshot`, a)).json()).rows,
+          initial.rows,
+        );
+        for (const name of ["短", "名".repeat(80), "项目 ' 测试"])
+          assert.equal(
+            (await request(endpoint, a, "PATCH", { name })).status,
+            200,
+          );
+        assert.equal(
+          (await (await request(endpoint, a)).json()).room.name,
+          "项目 ' 测试",
+        );
+      },
+    );
+    await t.test(
+      "项目改名拒绝非法名称和非创建者请求，原名称保持不变",
+      async () => {
+        const endpoint = `/api/rooms/${room.id}`;
+        const before = (await (await request(endpoint, a)).json()).room;
+        for (const name of ["", " \n ", "名".repeat(81), 42, null, {}])
+          assert.equal(
+            (await request(endpoint, a, "PATCH", { name })).status,
+            400,
+          );
+        for (const [cookie, expected] of [
+          [b, 403],
+          [outsider, 403],
+          ["", 401],
+        ])
+          assert.equal(
+            (await request(endpoint, cookie, "PATCH", { name: "越权改名" }))
+              .status,
+            expected,
+          );
+        for (const [headers, expected] of [
+          [{ Origin: "https://evil.invalid" }, 403],
+          [{ "X-QD-Account": credentials.get("乙").user.id }, 401],
+        ]) {
+          const result = await fetch(base + endpoint, {
+            method: "PATCH",
+            headers: {
+              Cookie: a,
+              "Content-Type": "application/json",
+              ...headers,
+            },
+            body: JSON.stringify({ name: "越权改名" }),
+          });
+          assert.equal(result.status, expected);
+        }
+        assert.deepEqual(
+          (await (await request(endpoint, a)).json()).room,
+          before,
+        );
+      },
+    );
+    await t.test(
       "头像只允许本人上传，共享成员可读取，替换和移除实时更新成员资料",
       async () => {
         const aId = credentials.get("甲").user.id;
