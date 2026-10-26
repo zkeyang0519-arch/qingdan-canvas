@@ -3,6 +3,7 @@ import { Plus, Link2, LockKeyhole } from "lucide-react";
 import { makeBlock, blockText } from "./model.js";
 import { parseClipboard } from "./paste.js";
 import { referenceLabel } from "./referenceText.js";
+import { formatCreatedAt } from "./dateFormat.js";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
 import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 
@@ -265,6 +266,16 @@ function Note({
       }}
     >
       {object.locked && <LockKeyhole className="note-lock" size={13} />}
+      {formatCreatedAt(object.createdAt) && (
+        <time
+          className="note-created-at"
+          dateTime={object.createdAt}
+          title={`创建于 ${formatCreatedAt(object.createdAt)}`}
+          aria-label={`${checkbox ? "清单" : "便签"}创建时间：${formatCreatedAt(object.createdAt)}`}
+        >
+          {formatCreatedAt(object.createdAt)}
+        </time>
+      )}
       {checkbox && (
         <ChecklistMenu notes={[object]} className="todo-note-menu" />
       )}

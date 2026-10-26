@@ -58,7 +58,7 @@
   border: 1px solid #d5a596;
   opacity: 1;
 }
-.todo-deadline-meta {
+.todo-created-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 8px;
@@ -68,7 +68,7 @@
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
-.todo-deadline-meta time {
+.todo-created-meta time {
   white-space: nowrap;
 }
 .todo-deadline-button {
@@ -201,7 +201,7 @@
 [data-deadline="late"] .todo-deadline-status {
   color: #985040;
 }
-[data-deadline="late"] .todo-deadline-meta {
+[data-deadline="late"] .todo-created-meta {
   color: #85695f;
 }
 [data-deadline="done"] .todo-deadline-button {
@@ -275,6 +275,29 @@
   color: #fffef8;
   font-weight: 600;
   box-shadow: 0 2px 4px #52644717;
+}
+.qingdan-calendar .rdp-range_start,
+.qingdan-calendar .rdp-range_end {
+  background: transparent;
+}
+.qingdan-calendar .rdp-range_start .rdp-day_button,
+.qingdan-calendar .rdp-range_end .rdp-day_button,
+.qingdan-calendar .rdp-range_start .rdp-day_button:hover,
+.qingdan-calendar .rdp-range_end .rdp-day_button:hover {
+  background: #748765;
+  color: #fffef8;
+  font-weight: 600;
+  box-shadow: 0 2px 4px #52644717;
+}
+.qingdan-calendar .rdp-range_middle {
+  background: #dfe8d5;
+  color: #536b47;
+}
+.qingdan-calendar .rdp-range_middle .rdp-day_button,
+.qingdan-calendar .rdp-range_middle .rdp-day_button:hover {
+  color: #536b47;
+  background: transparent;
+  font-weight: 550;
 }
 .qingdan-calendar .rdp-today:not(.rdp-selected) .rdp-day_button {
   background: #edf1e5;

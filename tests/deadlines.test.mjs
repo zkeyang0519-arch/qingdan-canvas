@@ -259,6 +259,42 @@ test("日历日期与时分独立，选新日期保留时分且早期年份不�
   );
 });
 
+test("截止日期按单日、向后区间、向前重置和区间后重选处理", () => {
+  const first = new Date(2028, 1, 10, 12),
+    later = new Date(2028, 1, 14, 12),
+    earlier = new Date(2028, 1, 6, 12),
+    last = new Date(2028, 1, 20, 12);
+  assert.deepEqual(
+    selection.selectDeadlineRange(
+      { from: first, to: undefined, interacted: false },
+      later,
+    ),
+    { from: later, to: undefined, interacted: true },
+    "第一次点击从已有日期开始新的单日选择",
+  );
+  assert.deepEqual(
+    selection.selectDeadlineRange(
+      { from: first, to: undefined, interacted: true },
+      later,
+    ),
+    { from: first, to: later, interacted: true },
+  );
+  assert.deepEqual(
+    selection.selectDeadlineRange(
+      { from: first, to: undefined, interacted: true },
+      earlier,
+    ),
+    { from: earlier, to: undefined, interacted: true },
+  );
+  assert.deepEqual(
+    selection.selectDeadlineRange(
+      { from: first, to: later, interacted: true },
+      last,
+    ),
+    { from: last, to: undefined, interacted: true },
+  );
+});
+
 test("上下放不下的弹层改从侧面展开，窄屏沿用可滚动的上下布局", () => {
   const panel = { width: 340, height: 650 };
   assert.equal(

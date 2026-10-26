@@ -62,6 +62,25 @@ export function selectDeadlineDate(parts, date) {
   };
 }
 
+const calendarDayValue = (date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+// The date picker deliberately keeps a lightweight local selection state. The
+// saved DDL is still the date of the latest click (the range is visual
+// guidance), so a range can be replaced with a new single date without
+// changing the data model.
+export function selectDeadlineRange(selection, date) {
+  const current = selection?.from;
+  if (
+    !current ||
+    !selection.interacted ||
+    selection.to ||
+    calendarDayValue(date) <= calendarDayValue(current)
+  )
+    return { from: date, to: undefined, interacted: true };
+  return { from: current, to: date, interacted: true };
+}
+
 export function deadlinePopoverSide(anchor, panel, viewport) {
   const gap = 20; // 8px anchor gap + 12px viewport padding.
   if (
