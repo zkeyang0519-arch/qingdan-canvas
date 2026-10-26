@@ -84,6 +84,7 @@ import {
   boardLeftLimit,
   boardsOverlap,
 } from "./inspirationBoards.js";
+import { formatCreatedAt } from "./dateFormat.js";
 
 const GROUP_DWELL_MS = 2000;
 const BOARD_EXIT_DWELL_MS = 1000;
@@ -2319,30 +2320,18 @@ export default function Canvas({
                     <span className="frame-title" title={object.title}>
                       {object.title}
                     </span>
-                    {(!isInspirationBoard(object) || object.collapsed) && (
+                    {isInspirationBoard(object) ? (
+                      <time
+                        className="frame-created-at"
+                        dateTime={object.createdAt}
+                        title={`创建于 ${formatCreatedAt(object.createdAt)}`}
+                      >
+                        {formatCreatedAt(object.createdAt)}
+                      </time>
+                    ) : (
                       <small>{members.length}</small>
                     )}
                     {object.locked && <LockKeyhole size={12} />}
-                    {isInspirationBoard(object) && !object.collapsed && (
-                      <button
-                        className="object-action board-add"
-                        aria-label="板内新建清单"
-                        disabled={
-                          blocked || effectivelyLocked(objects, object.id)
-                        }
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={() =>
-                          addNote(
-                            "checklist",
-                            { x: object.x + 28, y: object.y + 72 },
-                            object.id,
-                          )
-                        }
-                      >
-                        <Plus size={14} />
-                        清单
-                      </button>
-                    )}
                   </div>
                 </div>
               ) : (

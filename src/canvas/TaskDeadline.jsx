@@ -26,6 +26,7 @@ import {
   deadlineCalendarDate,
   deadlinePopoverSide,
   selectDeadlineDate,
+  selectDeadlineRange,
   updateDeadlineSelection,
   deadlineSelectionValue,
 } from "./deadlineInput.js";
@@ -268,6 +269,11 @@ function TimeWheel({ field, value, disabled, onChange, onMovingChange }) {
 function DeadlinePicker({ task, disabled, onClose, onSave }) {
   const [parts, setParts] = useState(() => deadlineSelection(task.dueAt));
   const [month, setMonth] = useState(() => deadlineCalendarDate(parts));
+  const [dateRange, setDateRange] = useState(() => ({
+    from: deadlineCalendarDate(parts),
+    to: undefined,
+    interacted: false,
+  }));
   const [error, setError] = useState("");
   const [moving, setMoving] = useState({ hour: false, minute: false });
   const settling = moving.hour || moving.minute;
@@ -278,6 +284,18 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
     const message = onSave(dueAt);
     if (message) setError(message);
   };
+  const selectDate = (selected) => {
+    if (disabled || !selected) return;
+    setDateRange((before) => selectDeadlineRange(before, selected));
+    setParts((before) => selectDeadlineDate(before, selected));
+    setMonth(selected);
+    setError("");
+  };
+  const formatCalendarDay = (value) =>
+    `${value.getFullYear()}年${value.getMonth() + 1}月${value.getDate()}日`;
+  const selectedDateSummary = dateRange.to
+    ? `${formatCalendarDay(dateRange.from)} – ${formatCalendarDay(dateRange.to)}`
+    : formatCalendarDay(date);
   return (
     <>
       <p className="task-deadline-title" title={task.title}>
@@ -297,9 +315,8 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
         <fieldset className="task-deadline-fields" disabled={disabled}>
           <legend className="task-deadline-sr-only">截止日期和时间</legend>
           <Calendar
-            mode="single"
-            required
-            selected={date}
+            mode="range"
+            selected={{ from: dateRange.from, to: dateRange.to }}
             month={month}
             onMonthChange={setMonth}
             startMonth={deadlineCalendarDate({
@@ -314,12 +331,7 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
             })}
             disabled={disabled}
             disableNavigation={disabled}
-            onSelect={(selected) => {
-              if (disabled || !selected) return;
-              setParts((before) => selectDeadlineDate(before, selected));
-              setMonth(selected);
-              setError("");
-            }}
+            onSelect={(_, selected) => selectDate(selected)}
           />
           <div className="task-deadline-time-heading">
             <span>
@@ -361,7 +373,7 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
         <div className="task-deadline-summary" aria-live="polite">
           <CalendarClock size={14} aria-hidden="true" />
           <span>
-            {parts.year} 年 {parts.month} 月 {parts.day} 日 ·{" "}
+            {selectedDateSummary} ·{" "}
             {String(parts.hour).padStart(2, "0")}:
             {String(parts.minute).padStart(2, "0")}
           </span>

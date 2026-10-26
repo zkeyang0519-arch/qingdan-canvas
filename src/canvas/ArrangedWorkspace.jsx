@@ -22,6 +22,7 @@ import {
   CalendarDays,
   ListTodo,
   ArrowDownWideNarrow,
+  BookmarkPlus,
 } from "lucide-react";
 import {
   blockText,
@@ -54,7 +55,6 @@ import { deadlineInfo } from "../../shared/deadline.js";
 import {
   TaskDeadlineButton,
   TaskDeadlinePopover,
-  formatDeadline,
   useDeadlineClock,
 } from "./TaskDeadline.jsx";
 import { HoverText } from "./ChecklistParts.jsx";
@@ -62,6 +62,14 @@ import ProjectTabs from "./ProjectTabs.jsx";
 import { EditableBlock, RichText } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
 import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
+import { formatCreatedAt } from "./dateFormat.js";
+import QuickTaskLibrary from "./QuickTaskLibrary.jsx";
+import {
+  addQuickTask,
+  loadQuickTasks,
+  removeQuickTask,
+  saveQuickTasks,
+} from "./quickTasks.js";
 import { Modal } from "./Panels.jsx";
 import ImageContent from "./ImageContent.jsx";
 import { parseClipboard } from "./paste.js";
@@ -494,12 +502,14 @@ function ChecklistPane({
               </HoverText>
             )}
           </div>
-          {deadline.status !== "none" && (
-            <div className="todo-deadline-meta">
-              <time dateTime={task.block.dueAt}>
-                {formatDeadline(task.block.dueAt)}
+          {formatCreatedAt(task.block.createdAt) && (
+            <div className="todo-created-meta" title="待办创建时间">
+              <time dateTime={task.block.createdAt}>
+                {formatCreatedAt(task.block.createdAt)}
               </time>
-              <span className="todo-deadline-status">{deadline.relative}</span>
+              {deadline.status !== "none" && (
+                <span className="todo-deadline-status">{deadline.relative}</span>
+              )}
             </div>
           )}
         </div>
@@ -519,6 +529,20 @@ function ChecklistPane({
             frozen={frozen}
             showMenu={false}
           />
+          <button
+            type="button"
+            className="todo-delete-trigger"
+            aria-label={`删除待办：${text || "空白待办"}`}
+            title="删除此待办"
+            disabled={frozen || task.locked || workspace.readOnly}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              todoTools?.remove(task.note.id, task.key, frozen);
+            }}
+          >
+            <Trash2 size={13} />
+          </button>
           <button
             aria-label={`收纳便签：${text || "空白待办"}`}
             title="收纳此便签的全部事项"
@@ -585,6 +609,15 @@ function ChecklistPane({
                 <h1>
                   未完成 <small>{pending.length}</small>
                 </h1>
+                {page.group?.createdAt && (
+                  <time
+                    className="checklist-created-at"
+                    dateTime={page.group.createdAt}
+                    title={`灵感板创建于 ${formatCreatedAt(page.group.createdAt)}`}
+                  >
+                    创建于 {formatCreatedAt(page.group.createdAt)}
+                  </time>
+                )}
                 <div className="checklist-panel-actions">
                   {page.group &&
                     effectivelyLocked(state.objects, page.group.id) && (
@@ -607,7 +640,6 @@ function ChecklistPane({
                     }}
                   >
                     <ArrowDownWideNarrow size={14} aria-hidden="true" />
-                    DDL 排序
                   </button>
                   <button
                     className="todo-panel-action"
@@ -771,9 +803,19 @@ function ChecklistPane({
                 <h1>
                   已完成 <small>{completed.length}</small>
                 </h1>
+                {page.group?.createdAt && (
+                  <time
+                    className="checklist-created-at"
+                    dateTime={page.group.createdAt}
+                    title={`灵感板创建于 ${formatCreatedAt(page.group.createdAt)}`}
+                  >
+                    创建于 {formatCreatedAt(page.group.createdAt)}
+                  </time>
+                )}
                 <button
                   type="button"
                   className="checklist-clear-completed"
+                  aria-label="清空已完成待办"
                   title="清空当前项目的已完成事项，可撤销；锁定事项会保留"
                   disabled={
                     frozen ||
@@ -849,6 +891,7 @@ export default function ArrangedWorkspace({
   apiRef,
   blocked,
   dockedCollectionId,
+  libraryKey,
 }) {
   const { state, update } = workspace;
   const clock = useDeadlineClock(state.objects);
@@ -882,7 +925,15 @@ export default function ArrangedWorkspace({
   const [dialog, setDialog] = useState(null),
     [title, setTitle] = useState(""),
     [importing, setImporting] = useState(0);
+  const quickTaskScope = libraryKey || boardId;
+  const [quickTasks, setQuickTasks] = useState(() =>
+    loadQuickTasks(quickTaskScope),
+  );
+  const [quickTaskLibraryOpen, setQuickTaskLibraryOpen] = useState(false);
   const modalDialog = dialog && dialog.type !== "deadline";
+  useEffect(() => {
+    setQuickTasks(loadQuickTasks(quickTaskScope));
+  }, [quickTaskScope]);
   const objectMap = useMemo(
     () => new Map(state.objects.map((o) => [o.id, o])),
     [state.objects],
@@ -1011,6 +1062,37 @@ export default function ArrangedWorkspace({
     const live = panePages(workspace.current.current, boardId);
     return live[live.active];
   };
+  const saveQuickTask = (text) => {
+    const next = addQuickTask(quickTasks, text);
+    if (next === quickTasks) return false;
+    setQuickTasks(next);
+    saveQuickTasks(quickTaskScope, next);
+    return true;
+  };
+  const useQuickTask = (item) => {
+    const page = currentPage();
+    if (blocked || workspace.readOnly || !page) return;
+    navigate(() => {
+      const blocks = parseClipboard(item.text);
+      if (!blocks.length) return;
+      const note = {
+        ...createObject(boardId, "note"),
+        noteKind: "checklist",
+        blocks,
+      };
+      update((s) => appendPageObjects(s, boardId, page.id, [note]));
+      setQuickTaskLibraryOpen(false);
+      if (workspace.current.current.objects.some((object) => object.id === note.id))
+        onToast(`已添加常用待办：${item.text}`);
+      else onToast("当前清单暂时无法添加常用待办。");
+    });
+  };
+  const deleteQuickTask = (itemId) => {
+    const next = removeQuickTask(quickTasks, itemId);
+    if (next === quickTasks) return;
+    setQuickTasks(next);
+    saveQuickTasks(quickTaskScope, next);
+  };
   const collect = (pageId, ids) => {
     if (blocked || workspace.readOnly) return;
     navigate(() => {
@@ -1039,6 +1121,15 @@ export default function ArrangedWorkspace({
   };
   const clearCompleted = (pageId) => {
     if (blocked || dialog || workspace.readOnly) return;
+    const page = writablePage(workspace.current.current, boardId, pageId);
+    const count =
+      page?.tasks.filter((task) => task.block.done && !task.locked).length || 0;
+    if (!count) return;
+    if (
+      typeof window.confirm === "function" &&
+      !window.confirm(`确定清空当前项目的 ${count} 条已完成待办吗？`)
+    )
+      return;
     navigate(() => {
       const before = workspace.current.current;
       update((s) => clearCompletedPageTasks(s, boardId, pageId));
@@ -1393,6 +1484,17 @@ export default function ArrangedWorkspace({
           )}
         </div>
         <div>
+          <button
+            type="button"
+            className="arranged-quick-tasks"
+            aria-label="打开常用清单"
+            title="打开常用清单库"
+            disabled={blocked || workspace.readOnly}
+            onClick={() => setQuickTaskLibraryOpen(true)}
+          >
+            <BookmarkPlus size={15} />
+            常用
+          </button>
           <div
             className="arranged-view-switch"
             role="group"
@@ -1575,6 +1677,16 @@ export default function ArrangedWorkspace({
           }
         />
       ))}
+      {quickTaskLibraryOpen && (
+        <QuickTaskLibrary
+          items={quickTasks}
+          existingTasks={resolved.page?.tasks || []}
+          onClose={() => setQuickTaskLibraryOpen(false)}
+          onUse={useQuickTask}
+          onCreate={saveQuickTask}
+          onRemove={deleteQuickTask}
+        />
+      )}
       <input
         type="file"
         ref={input}

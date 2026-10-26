@@ -641,6 +641,14 @@ a:focus-visible,
 .inspiration-board .frame-title {
   font-weight: 500;
 }
+.inspiration-board .frame-created-at {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #aaa994;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .inspiration-board .frame-heading > .object-action {
   flex-shrink: 0;
 }

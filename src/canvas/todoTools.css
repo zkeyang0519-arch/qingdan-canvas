@@ -54,6 +54,23 @@
   z-index: 3;
   opacity: 0;
 }
+.note-paper .note-created-at {
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  z-index: 2;
+  color: #a7ad9f;
+  font-size: 10px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.note-paper:has(.note-created-at) {
+  padding-top: 30px;
+}
+.board-member .note-paper:has(.note-created-at) {
+  padding-top: 36px;
+}
 .note-paper:hover .todo-note-menu,
 .note-paper:focus-within .todo-note-menu {
   opacity: 1;
@@ -246,6 +263,17 @@
 }
 .todo-row-tools .todo-more-trigger {
   cursor: pointer;
+}
+.todo-row-tools .todo-delete-trigger {
+  color: #a36557;
+}
+.todo-row-tools .todo-delete-trigger:hover:not(:disabled) {
+  background: #f7ece5;
+  color: #a0523d;
+}
+.todo-row-tools .todo-delete-trigger:focus-visible {
+  outline: 2px solid #c78b79;
+  outline-offset: 1px;
 }
 .todo-panel header > .todo-checklist-menu {
   flex-shrink: 0;

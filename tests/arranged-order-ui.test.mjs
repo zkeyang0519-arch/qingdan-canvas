@@ -36,6 +36,7 @@ globalThis.ResizeObserver = class {
 globalThis.requestAnimationFrame = (callback) =>
   setTimeout(() => callback(performance.now()), 10);
 globalThis.cancelAnimationFrame = clearTimeout;
+globalThis.localStorage = dom.window.localStorage;
 window.matchMedia = () => ({
   matches: false,
   addEventListener() {},
@@ -195,6 +196,8 @@ test("点击截止时间排序后可向上、向下拖动，无自动锁序，�
   const { host, controls } = await mount(t);
   const button = host.querySelector('[aria-label="按截止时间排序"]');
   assert.ok(button, "未完成栏提供一次性排序按钮");
+  assert.equal(button.textContent.trim(), "", "DDL 排序按钮只显示图标");
+  assert.ok(button.querySelector("svg"), "DDL 排序按钮保留排序图标");
   assert.deepEqual(order(host), ["none", "late", "early"]);
   await click(button);
   assert.deepEqual(order(host), ["early", "late", "none"]);
@@ -251,6 +254,39 @@ test("待办右键阻止浏览器默认菜单，仅显示删除，删除后只�
   assert.equal(document.querySelector('[role="menu"]'), null);
 });
 
+test("排列模式每条待办的删除按钮只移除当前待办", async (t) => {
+  const { host, controls } = await mount(t);
+  const button = host.querySelector('[aria-label="删除待办：晚截止"]');
+  assert.ok(button, "每条待办都应提供单条删除按钮");
+  await click(button);
+  assert.deepEqual(order(host), ["none", "early"]);
+  const doneRow = host.querySelector('[data-task-id="done"]');
+  assert.ok(doneRow, "完成栏待办不应被误删");
+  assert.equal(controls.state().trash[0].task.block.id, "late");
+});
+
+test("清空已完成先确认数量，取消确认不会删除待办", async (t) => {
+  const { host, controls } = await mount(t);
+  const clearButton = host.querySelector(
+    '[aria-label="清空已完成待办"]',
+  );
+  assert.ok(clearButton);
+  const originalConfirm = window.confirm;
+  let message = "";
+  window.confirm = (value) => {
+    message = value;
+    return false;
+  };
+  try {
+    await click(clearButton);
+  } finally {
+    window.confirm = originalConfirm;
+  }
+  assert.match(message, /1 条已完成待办/);
+  assert.ok(host.querySelector('[data-task-id="done"]'));
+  assert.equal(controls.state().trash.length, 0);
+});
+
 test("只读待办的紧凑右键菜单仍拦截浏览器菜单并禁止删除", async (t) => {
   const { host, controls } = await mount(t);
   await act(async () => controls.setReadOnly(true));
@@ -262,6 +298,35 @@ test("只读待办的紧凑右键菜单仍拦截浏览器菜单并禁止删除",
   await act(async () => row(host, "early").dispatchEvent(event));
   assert.equal(event.defaultPrevented, true);
   assert.equal(document.querySelector('[role="menuitem"]').disabled, true);
+});
+
+test("常用清单库可以保存模板并一键添加到当前清单", async (t) => {
+  window.localStorage.clear();
+  const { host, controls } = await mount(t);
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  const dialog = document.querySelector('[role="dialog"]');
+  assert.ok(dialog?.classList.contains("quick-task-library"));
+  const input = dialog.querySelector('textarea[aria-label="常用待办内容"]');
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  ).set;
+  await act(async () => {
+    setter.call(input, "中午12点吃饭");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click(dialog.querySelector('button[type="submit"]'));
+  const quick = dialog.querySelector(
+    '[aria-label="添加常用待办：中午12点吃饭"]',
+  );
+  assert.ok(quick, "保存后立即出现可复用的待办模板");
+  await click(quick);
+  const added = controls
+    .state()
+    .objects.flatMap((object) => object.blocks || [])
+    .find((block) => block.runs?.some((run) => run.text === "中午12点吃饭"));
+  assert.ok(added, "点击模板后新增待办");
+  assert.equal(document.querySelector('[role="dialog"]'), null);
 });
 
 test("大量已排序便签中回车拆分只改当前便签，后半段文字紧跟原事项", async (t) => {

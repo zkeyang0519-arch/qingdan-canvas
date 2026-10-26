@@ -25,6 +25,7 @@ import {
   ArrowDownToLine,
   Columns2,
   Pencil,
+  Server,
 } from "lucide-react";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
@@ -71,6 +72,7 @@ import { fitView, screenToWorld } from "./canvas/geometry.js";
 import { exportArchive, downloadBlob } from "./canvas/backup.js";
 import { useRoomWorkspace } from "./sync/useRoomWorkspace.js";
 import { api, inviteLink } from "./api.js";
+import OperationsCatalog from "./ops/OperationsCatalog.jsx";
 
 const contextIcons = {
   "new-note": StickyNote,
@@ -121,6 +123,7 @@ export default function CanvasWorkspace({
   const [sharing, setSharing] = useState(false),
     [imagePreview, setImagePreview] = useState(null);
   const [reference, setReference] = useState(null);
+  const [operationsOpen, setOperationsOpen] = useState(false);
   const [menuDialog, setMenuDialog] = useState(null),
     [nameDraft, setNameDraft] = useState("");
   const canvas = useRef(null),
@@ -601,6 +604,22 @@ export default function CanvasWorkspace({
                   <Pencil size={15} />
                 </button>
               )}
+              <button
+                className="ops-nav-entry"
+                aria-label="运维资产"
+                aria-pressed={operationsOpen}
+                onClick={() => {
+                  exitEdit();
+                  setPanel(null);
+                  setContext(null);
+                  setCollection(null);
+                  setMenuDialog(null);
+                  setOperationsOpen(true);
+                }}
+              >
+                <Server size={15} />
+                <span>运维资产</span>
+              </button>
               <span
                 className={`sync-indicator ${workspace.status}`}
                 role="status"
@@ -701,6 +720,12 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
+          {operationsOpen && (
+            <OperationsCatalog
+              onClose={() => setOperationsOpen(false)}
+              readOnly={readOnly}
+            />
+          )}
           {arranged ? (
             <ArrangedWorkspace
               workspace={workspace}
@@ -720,6 +745,7 @@ export default function CanvasWorkspace({
               apiRef={canvas}
               blocked={readOnly || !!panel || !!menuDialog}
               dockedCollectionId={primaryCollection(state, room.id)?.id}
+              libraryKey={user.id}
             />
           ) : (
             <Canvas
@@ -750,7 +776,9 @@ export default function CanvasWorkspace({
               onPickImages={() => imageInput.current.click()}
               apiRef={canvas}
               blocked={readOnly || !!panel || !!menuDialog}
-              dockedCollectionId={primaryCollection(state, room.id)?.id}
+              dockedCollectionId={
+                operationsOpen ? null : primaryCollection(state, room.id)?.id
+              }
             />
           )}
           {!arranged && (
@@ -949,7 +977,7 @@ export default function CanvasWorkspace({
               </div>
             </Modal>
           )}
-          {container && (
+          {container && !operationsOpen && (
             <CollectionPanel
               container={container}
               state={state}

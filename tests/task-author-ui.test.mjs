@@ -514,6 +514,43 @@ test("画布平移快捷键不会抢占头像开关的空格操作", async (t) =
   assert.equal(f.host.querySelector(".space-pan"), null);
 });
 
+test("灵感板和画布清单在抬头显示创建时间", async (t) => {
+  const noteView = await mount(t, { roomId: "creation-note" });
+  const noteTime = noteView.host.querySelector(".note-created-at");
+  assert.ok(noteTime, "清单便签需要创建时间");
+  assert.equal(
+    noteTime.getAttribute("dateTime"),
+    noteView.note.createdAt,
+  );
+
+  const canvasView = await mount(t, { canvas: true, roomId: "creation-board" });
+  const frameTime = canvasView.host.querySelector(".frame-created-at");
+  const frame = canvasView.state().objects.find((object) => object.type === "frame");
+  assert.ok(frameTime, "灵感板需要创建时间");
+  assert.equal(frameTime.getAttribute("dateTime"), frame.createdAt);
+});
+
+test("普通画布便签抬头也显示创建时间", async (t) => {
+  const f = await mount(t, { roomId: "creation-text-note", noteKind: "text" });
+  const created = f.host.querySelector(".note-created-at");
+  assert.ok(created, "普通便签需要创建时间");
+  assert.equal(created.getAttribute("dateTime"), f.note.createdAt);
+});
+
+test("排列模式的待办中间显示创建时间而不是截止时间", async (t) => {
+  const f = await mount(t, { arranged: true, roomId: "creation-arranged" });
+  const block = f.note.blocks[0];
+  const createdTime = f.host.querySelector(
+    `.todo-created-meta time[dateTime="${block.createdAt}"]`,
+  );
+  assert.ok(createdTime, "排列待办需要显示创建时间");
+  assert.equal(
+    f.host.querySelector(".todo-deadline-meta"),
+    null,
+    "创建时间展示不应继续使用截止时间元信息容器",
+  );
+});
+
 async function mount(
   t,
   {
@@ -521,6 +558,7 @@ async function mount(
     roomId = "room",
     arranged = false,
     canvas = false,
+    noteKind = "checklist",
     members = [],
     profiles = [],
   } = {},
@@ -531,7 +569,7 @@ async function mount(
   const note = {
     ...createObject(boardId, "note"),
     parentId: board.id,
-    noteKind: "checklist",
+    noteKind,
     blocks: [
       {
         ...makeBlock("小张的待办"),
@@ -617,7 +655,7 @@ async function mount(
                 boardId,
                 apiRef,
                 selection: [],
-                view: { mode: "canvas", x: 0, y: 0, zoom: 1 },
+                view: { mode: "canvas", x: 0, y: 0, scale: 1 },
                 onView() {},
                 setSelection() {},
                 onExit() {},

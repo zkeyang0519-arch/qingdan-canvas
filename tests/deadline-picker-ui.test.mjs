@@ -211,6 +211,48 @@ test("日历和时分在确认后一起保存，切换待办不会写入未保�
   assert.deepEqual(saves.at(-1), { index: 0, value: null });
 });
 
+test("DDL 日历按单日、向后区间、向前重置和区间后重选运行", async (t) => {
+  await mount(t);
+  const picker = dialog();
+  const day = (label) =>
+    [...picker.querySelectorAll(".rdp-day_button")].find((button) =>
+      button.getAttribute("aria-label")?.includes(label),
+    );
+  const rangeState = () => ({
+    starts: picker.querySelectorAll(".rdp-range_start").length,
+    ends: picker.querySelectorAll(".rdp-range_end").length,
+    middle: picker.querySelectorAll(".rdp-range_middle").length,
+  });
+
+  await click(day("2028年2月28日"));
+  assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
+  assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
+  assert.match(picker.querySelector(".task-deadline-summary").textContent, /28日/);
+  assert.doesNotMatch(
+    picker.querySelector(".task-deadline-summary").textContent,
+    /–/,
+  );
+
+  await click(day("2028年2月29日"));
+  assert.deepEqual(rangeState(), { starts: 1, ends: 1, middle: 0 });
+  assert.match(
+    picker.querySelector(".task-deadline-summary").textContent,
+    /28日.*29日/,
+  );
+
+  await click(day("2028年2月27日"));
+  assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
+  assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
+  assert.match(picker.querySelector(".task-deadline-summary").textContent, /27日/);
+
+  await click(day("2028年2月29日"));
+  assert.deepEqual(rangeState(), { starts: 1, ends: 1, middle: 1 });
+  await click(day("2028年2月28日"));
+  assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
+  assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
+  assert.match(picker.querySelector(".task-deadline-summary").textContent, /28日/);
+});
+
 test("小时和分钟循环到23与00，跨列操作保留选中的日期", async (t) => {
   const { saves } = await mount(t);
   const hour = dialog().querySelector('[aria-label="截止小时"]');
