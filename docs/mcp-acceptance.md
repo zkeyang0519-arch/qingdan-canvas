@@ -8,12 +8,15 @@
 
 | 命令                                                              | 本次最终结果                                                                                                       |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `npm test`                                                        | exit 0，427/427，0 失败，36410.2225 ms                                                                             |
+| `npm test`                                                        | exit 0，432/432，0 失败，38054.3059 ms（最终审查修复后）                                                          |
 | `npm run check`                                                   | exit 0，`tsc --noEmit`                                                                                             |
-| `npm run deploy:check`                                            | exit 0；Vite 2575 modules，5.10 s；Wrangler dry-run upload 1747.48 KiB / gzip 315.67 KiB，`--dry-run: exiting now` |
+| `npm run deploy:check`                                            | exit 0；Vite 2575 modules，5.12 s；Wrangler dry-run upload 1747.50 KiB / gzip 315.68 KiB，`--dry-run: exiting now` |
+| `node --test tests/mcp-domain.test.mjs`                            | exit 0，37/37，0 失败，359.4026 ms；含最终审查新增 5 项根级筛选/容器元数据回归                                  |
 | `node --test tests/mcp-oauth.test.mjs tests/mcp-storage.test.mjs` | exit 0，49/49，28288.1553 ms（大请求 fixture 加固前）；加固后完整 suite 的 OAuth21 + storage28 均通过              |
 
 固定运行组合为 `agents@0.30.1`、MCP server/client SDK `2.3.1`、Cloudflare OAuth provider `1.2.4`、Zod `4.6.7`。真实 handler 接受 `2025-03-26` 的 initialize/list/call（初始化响应明确返回该版本），以及 `2026-07-28` 的完整现代每请求 envelope、协议 header 和 method/name header。旧版本响应可能为 SSE，现代结果为 JSON。这里只记录已测试的两个协议版本，不推断四个应用实际协商了哪一版。
+
+独立全分支最终审查未发现 Critical 或 Important，记录的唯一 Minor 为开启收纳查询时未分组筛选误收直接位于收纳框的便签。该项已按先 RED（新增 5 项全部失败）、后 GREEN（domain 37/37）的流程修复，并完成上表全量验证；修复范围的独立复核待控制端执行。回归同时覆盖 note/task 搜索筛选、容器元数据和两种详情路径。
 
 ### 九工具与跨层覆盖
 
@@ -63,6 +66,7 @@ Task4 曾在并发构建/预览时遇到 >2 MiB 拒绝请求的 `ECONNRESET`，�
 | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
 | 业务语义先由共享命令/查询实现，协议依赖固定官方 provider+SDK                   | 共用旧网页验证、作者及对象版本；版本兼容仍需每次升级重新测试，注册表最新版本不能替代兼容证据                           |
 | 只提供九个 Tools；待办/文本段落都属便签 blocks                                 | 保持原数据模型；不扩展成画布布局、账号管理、图片或运维工具                                                             |
+| `ungrouped` 严格表示持久化 `parentId=null`；读取 `section_id` 可为 null         | 根便签返回 `ungrouped`；存在灵感板祖先时保留其 ID；直接收纳且无灵感板祖先时返回 null，并保留 `parent_id`、`archived`、`locked`。搜索和详情一致，写入目标合同不变 |
 | 权限每次取 token scope ∩ active D1 grant ∩ 显式画布选择 ∩ 当前成员             | token 有效不等于业务授权有效；写入前在 DO 再查，付出 D1 查询成本以即时撤权                                             |
 | D1 全局 grant/request 绑定 + DO 原子成功回执                                   | D1 负责跨画布仲裁，预留不是成功；断交后原参数重试可继续，绑定与成功回执不自动清理，会持续占用存储                      |
 | pending→provider 签发→D1 active，替换旧 grant 与激活同批                       | 两种存储无分布式事务；中断一律 fail closed。同客户端/资源重授权可能让其他设备重新连接                                  |

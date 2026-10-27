@@ -772,6 +772,96 @@ if (domain) {
     );
   });
 
+  const sectionRows = () => [
+    row({ ...frame("archive", { locked: true }), type: "collection" }),
+    row(frame("section", { parentId: "archive" })),
+    row(note("collected", [block("collected-task")], { parentId: "archive" })),
+    row(note("framed", [block("framed-task")], { parentId: "section" })),
+    row(note("root", [block("root-task")])),
+  ];
+  const containerMetadata = ({
+    note_id,
+    section_id,
+    parent_id,
+    archived,
+    locked,
+  }) => ({ note_id, section_id, parent_id, archived, locked });
+  const expectedContainers = [
+    {
+      note_id: "collected",
+      section_id: null,
+      parent_id: "archive",
+      archived: true,
+      locked: true,
+    },
+    {
+      note_id: "framed",
+      section_id: "section",
+      parent_id: "section",
+      archived: true,
+      locked: true,
+    },
+    {
+      note_id: "root",
+      section_id: "ungrouped",
+      parent_id: null,
+      archived: false,
+      locked: false,
+    },
+  ];
+
+  for (const kind of ["note", "task"]) {
+    test(`ungrouped ${kind} search selects only root notes when archives are enabled`, () => {
+      const rows = sectionRows();
+      assert.deepEqual(
+        query(
+          "search_content",
+          { kind, section_id: "ungrouped", include_archived: true },
+          rows,
+        ).items.map((item) => item.note_id),
+        ["root"],
+      );
+      assert.deepEqual(
+        query(
+          "search_content",
+          { kind, section_id: "section", include_archived: true },
+          rows,
+        ).items.map((item) => item.note_id),
+        ["framed"],
+      );
+    });
+
+    test(`${kind} search distinguishes collected container metadata from ungrouped`, () => {
+      assert.deepEqual(
+        query(
+          "search_content",
+          { kind, include_archived: true },
+          sectionRows(),
+        ).items.map(containerMetadata),
+        expectedContainers,
+      );
+    });
+  }
+
+  test("note and task details preserve nullable collected section metadata", () => {
+    const rows = sectionRows();
+    for (const expected of expectedContainers) {
+      for (const task_id of [undefined, `${expected.note_id}-task`]) {
+        const result = query(
+          "get_content",
+          {
+            note_id: expected.note_id,
+            ...(task_id ? { task_id } : {}),
+            include_archived: true,
+          },
+          rows,
+        );
+        assert.deepEqual(containerMetadata(result), expected);
+        assert.deepEqual(result.items.map(containerMetadata), [expected]);
+      }
+    }
+  });
+
   test("search matches the current one-level reference display in tasks and notes", () => {
     const rows = [
       row(

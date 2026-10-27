@@ -176,7 +176,7 @@ export function queryCanvas(
           (input.include_archived || !flags(live, r.data).archived) &&
           (!input.section_id ||
             (input.section_id === "ungrouped"
-              ? sectionId(live, r.data) === "ungrouped"
+              ? r.data.parentId === null
               : ancestry(live, r.data).some((p) => p.id === input.section_id))),
       );
       const items: Record<string, unknown>[] = [];

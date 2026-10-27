@@ -98,11 +98,14 @@ export function objectText(object: CanvasData): string {
     ? (object as NoteData).blocks.map(blockText).join("\n")
     : String(object.title || object.alt || "");
 }
-export function sectionId(rows: Map<string, Row>, object: CanvasData): string {
+export function sectionId(
+  rows: Map<string, Row>,
+  object: CanvasData,
+): string | null {
   return (
     ancestry(rows, object)
       .filter((p) => p.type === "frame")
-      .at(-1)?.id ?? "ungrouped"
+      .at(-1)?.id ?? (object.parentId === null ? "ungrouped" : null)
   );
 }
 export function snapshot(note: NoteData, taskId: string): DeletionSnapshot {
