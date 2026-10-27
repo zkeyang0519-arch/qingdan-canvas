@@ -19,10 +19,14 @@ import {
 import CanvasWorkspace from "./CanvasWorkspace.jsx";
 import AuthScreen from "./auth/AuthScreen.jsx";
 import ProfileSettings from "./auth/ProfileSettings.jsx";
+import McpConsent from "./auth/McpConsent.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
 import "./auth/auth.css";
 
 export default function App() {
+  const consentUrl = new URL(location.href);
+  const consentRoute = consentUrl.pathname === "/mcp/consent";
+  const consentHandle = consentUrl.searchParams.get("handle") || "";
   const [session, setSession] = useState(null),
     [rooms, setRooms] = useState([]);
   const [room, setRoom] = useState(null),
@@ -69,6 +73,8 @@ export default function App() {
     setError("");
     setBusy(true);
     try {
+      // OAuth's dedicated protected page must never consume room/invite input.
+      if (consentRoute) return;
       const url = new URL(location.href);
       const id = url.searchParams.get("room"),
         token = new URLSearchParams(url.hash.slice(1)).get("invite");
@@ -223,6 +229,8 @@ export default function App() {
     });
   };
   const renderedEpoch = epoch.current;
+  const isCurrentSession = () =>
+    epoch.current === renderedEpoch && identity.current === session?.user.id;
   const roomRenamed = (renamed) => {
     if (
       epoch.current !== renderedEpoch ||
@@ -253,6 +261,22 @@ export default function App() {
         onAuthenticated={authenticated}
         connectionError={connectionError}
         onRetry={() => location.reload()}
+      />
+    );
+  if (consentRoute)
+    return (
+      <McpConsent
+        handle={consentHandle}
+        user={session.user}
+        sessionEpoch={renderedEpoch}
+        isCurrentSession={isCurrentSession}
+        onFinish={(redirect) => {
+          if (!isCurrentSession()) return;
+          history.replaceState(null, "", "/");
+          // Native-app callbacks can leave this tab open; render the normal home.
+          void act(refresh);
+          location.assign(redirect);
+        }}
       />
     );
   if (room && session.user)
@@ -487,12 +511,16 @@ export default function App() {
               <ProfileSettings
                 key={session.user.id}
                 user={session.user}
-                onUpdate={(result) => {
+                sessionEpoch={renderedEpoch}
+                isCurrentSession={isCurrentSession}
+                onUpdate={(result, { sessionChanged = false } = {}) => {
                   if (
                     epoch.current === renderedEpoch &&
                     identity.current === result.user.id
-                  )
+                  ) {
+                    if (sessionChanged) epoch.current++;
                     setSession(result);
+                  }
                 }}
                 onLogout={logout}
               />
