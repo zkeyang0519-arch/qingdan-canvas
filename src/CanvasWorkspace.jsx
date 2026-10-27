@@ -743,8 +743,9 @@ export default function CanvasWorkspace({
               onImagePreview={setImagePreview}
               onToast={showToast}
               apiRef={canvas}
-              blocked={readOnly || !!panel || !!menuDialog}
+              blocked={readOnly || operationsOpen || !!panel || !!menuDialog}
               dockedCollectionId={primaryCollection(state, room.id)?.id}
+              hideCollection
               libraryKey={user.id}
             />
           ) : (
@@ -775,10 +776,9 @@ export default function CanvasWorkspace({
               }
               onPickImages={() => imageInput.current.click()}
               apiRef={canvas}
-              blocked={readOnly || !!panel || !!menuDialog}
-              dockedCollectionId={
-                operationsOpen ? null : primaryCollection(state, room.id)?.id
-              }
+              blocked={readOnly || operationsOpen || !!panel || !!menuDialog}
+              dockedCollectionId={primaryCollection(state, room.id)?.id}
+              hideCollection={operationsOpen}
             />
           )}
           {!arranged && (

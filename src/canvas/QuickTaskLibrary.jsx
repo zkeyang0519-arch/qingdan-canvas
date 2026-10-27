@@ -9,13 +9,19 @@ export default function QuickTaskLibrary({
   onUse,
   onCreate,
   onRemove,
+  busy = false,
+  ready = true,
+  error = "",
+  onRetry,
 }) {
   const [draft, setDraft] = useState("");
-  const save = (event) => {
+  const save = async (event) => {
     event.preventDefault();
+    if (busy || !ready) return;
     const value = draft.trim();
     if (!value) return;
-    if (onCreate(value) !== false) setDraft("");
+    if ((await onCreate(value)) !== false)
+      setDraft((before) => (before === draft ? "" : before));
   };
   const existing = existingTasks.filter(
     (task) => task.block?.runs && task.block.runs.length,
@@ -29,7 +35,17 @@ export default function QuickTaskLibrary({
     >
       <p className="quick-task-library-intro">
         把每天都会出现的待办存起来，点击一次就能添加到当前清单。
+        仅自己可见，保存在当前账号下。
       </p>
+      {busy && <p role="status">正在同步常用清单…</p>}
+      {error && (
+        <p role="alert" className="quick-task-error">
+          {error}{" "}
+          <button type="button" disabled={busy} onClick={onRetry}>
+            重试
+          </button>
+        </p>
+      )}
       <form className="quick-task-form" onSubmit={save}>
         <textarea
           aria-label="常用待办内容"
@@ -39,7 +55,11 @@ export default function QuickTaskLibrary({
           rows={2}
           maxLength={2000}
         />
-        <button type="submit" className="quick-task-save" disabled={!draft.trim()}>
+        <button
+          type="submit"
+          className="quick-task-save"
+          disabled={!draft.trim() || busy || !ready}
+        >
           <BookmarkPlus size={15} />
           保存到库
         </button>
@@ -59,6 +79,7 @@ export default function QuickTaskLibrary({
                   type="button"
                   key={task.key}
                   className="quick-task-existing-item"
+                  disabled={busy || !ready}
                   onClick={() => onCreate(text)}
                 >
                   <BookmarkPlus size={14} />
@@ -88,6 +109,7 @@ export default function QuickTaskLibrary({
                 <button
                   type="button"
                   className="quick-task-remove"
+                  disabled={busy || !ready}
                   aria-label={`删除常用待办：${item.text}`}
                   title="从常用清单库删除"
                   onClick={() => onRemove(item.id)}

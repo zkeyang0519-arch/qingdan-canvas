@@ -92,6 +92,7 @@ async function mount(t, { saveError = "" } = {}) {
   function Fixture() {
     const [active, setActive] = useState(0);
     const [values, setValues] = useState(["2028-02-29T02:05:00.000Z", null]);
+    const [starts, setStarts] = useState([null, null]);
     const [disabled, setDisabled] = useState(false);
     controls.setDisabled = setDisabled;
     return React.createElement(
@@ -106,12 +107,23 @@ async function mount(t, { saveError = "" } = {}) {
             {
               open: active === index,
               onOpenChange: (open) => setActive(open ? index : null),
-              task: { title: `待办 ${index + 1}`, dueAt: values[index] },
+              task: {
+                title: `待办 ${index + 1}`,
+                dueAt: values[index],
+                dueStartAt: starts[index],
+              },
               disabled,
               onClose: () => setActive(null),
-              onSave: (value) => {
+              onSave: (value, dueStartAt = null) => {
                 if (saveError) return saveError;
-                saves.push({ index, value });
+                saves.push({
+                  index,
+                  value,
+                  ...(dueStartAt ? { dueStartAt } : {}),
+                });
+                setStarts((before) =>
+                  before.map((old, i) => (i === index ? dueStartAt : old)),
+                );
                 setValues((before) =>
                   before.map((old, i) => (i === index ? value : old)),
                 );
@@ -151,6 +163,34 @@ const click = async (element) => {
   });
   await act(async () => element.click());
 };
+
+test("确认区间后重新打开保留两端，再点日期会保存为单日", async (t) => {
+  const { saves } = await mount(t);
+  const day = (label) =>
+    [...dialog().querySelectorAll(".rdp-day_button")].find((button) =>
+      button.getAttribute("aria-label")?.includes(label),
+    );
+  await click(day("2028年2月27日"));
+  await click(day("2028年2月28日"));
+  await click(byText("确定"));
+  assert.equal(
+    saves[0].dueStartAt,
+    new Date("2028-02-27T00:00:00").toISOString(),
+  );
+  await click(byText("选择时间 1"));
+  assert.match(
+    dialog().querySelector(".task-deadline-summary").textContent,
+    /2028年2月27日.*2028年2月28日/,
+  );
+  await click(day("2028年2月26日"));
+  await click(byText("确定"));
+  assert.equal(saves[1].dueStartAt, undefined);
+  await click(byText("选择时间 1"));
+  assert.doesNotMatch(
+    dialog().querySelector(".task-deadline-summary").textContent,
+    / – /,
+  );
+});
 
 test("截止弹层脱离待办行，取消和 Escape 放弃草稿且恢复按钮焦点", async (t) => {
   const { host, saves } = await mount(t);
@@ -227,7 +267,10 @@ test("DDL 日历按单日、向后区间、向前重置和区间后重选运行"
   await click(day("2028年2月28日"));
   assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
   assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
-  assert.match(picker.querySelector(".task-deadline-summary").textContent, /28日/);
+  assert.match(
+    picker.querySelector(".task-deadline-summary").textContent,
+    /28日/,
+  );
   assert.doesNotMatch(
     picker.querySelector(".task-deadline-summary").textContent,
     /–/,
@@ -243,14 +286,20 @@ test("DDL 日历按单日、向后区间、向前重置和区间后重选运行"
   await click(day("2028年2月27日"));
   assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
   assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
-  assert.match(picker.querySelector(".task-deadline-summary").textContent, /27日/);
+  assert.match(
+    picker.querySelector(".task-deadline-summary").textContent,
+    /27日/,
+  );
 
   await click(day("2028年2月29日"));
   assert.deepEqual(rangeState(), { starts: 1, ends: 1, middle: 1 });
   await click(day("2028年2月28日"));
   assert.deepEqual(rangeState(), { starts: 0, ends: 0, middle: 0 });
   assert.equal(picker.querySelectorAll(".rdp-selected").length, 1);
-  assert.match(picker.querySelector(".task-deadline-summary").textContent, /28日/);
+  assert.match(
+    picker.querySelector(".task-deadline-summary").textContent,
+    /28日/,
+  );
 });
 
 test("小时和分钟循环到23与00，跨列操作保留选中的日期", async (t) => {

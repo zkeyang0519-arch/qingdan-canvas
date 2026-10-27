@@ -65,10 +65,7 @@ export function selectDeadlineDate(parts, date) {
 const calendarDayValue = (date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
-// The date picker deliberately keeps a lightweight local selection state. The
-// saved DDL is still the date of the latest click (the range is visual
-// guidance), so a range can be replaced with a new single date without
-// changing the data model.
+// Each fresh click starts a single date; only a later second click makes a range.
 export function selectDeadlineRange(selection, date) {
   const current = selection?.from;
   if (

@@ -13,6 +13,7 @@ import { accountEndpoint } from "./accounts";
 import { readAvatar, updateAvatar } from "./avatars";
 import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 import { registrationRequest } from "./registration";
+import { quickTasksEndpoint } from "./quick-tasks";
 export { CanvasRoom } from "./room";
 
 export default {
@@ -58,6 +59,8 @@ export default {
       );
       if (path === "/api/profile/avatar")
         return await updateAvatar(request, env, user, ctx);
+      const quickTasks = path.match(/^\/api\/profile\/quick-tasks(?:\/([a-zA-Z0-9_-]{1,100}))?$/);
+      if (quickTasks) return await quickTasksEndpoint(request, env, user.id, quickTasks[1]);
       if (
         path === "/api/profile/email" ||
         path.startsWith("/api/profile/email/")

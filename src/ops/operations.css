@@ -87,7 +87,7 @@
 .ops-main { min-width: 0; overflow: auto; padding: 31px clamp(24px, 5vw, 70px) 55px; background: #f9faf6; }
 .ops-page-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
 .ops-page-title h1, .ops-detail-card h1 { margin: 0; color: #394638; font-size: 25px; letter-spacing: .01em; }
-.ops-page-title p:not(.ops-breadcrumb), .ops-detail-card p { margin: 6px 0 0; color: #8b9788; font-size: 13px; }
+.ops-detail-card p { margin: 6px 0 0; color: #8b9788; font-size: 13px; }
 .ops-breadcrumb { margin: 0 0 8px; color: #a0a99e; font-size: 11px; }
 .ops-primary { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #5b7961; border-radius: 8px; padding: 8px 12px; background: #5b7961; color: white; font-weight: 650; }
 .ops-primary:hover:not(:disabled) { background: #47634c; }
@@ -106,6 +106,29 @@
 .ops-record-list { display: grid; gap: 9px; max-width: 890px; }
 .ops-record { width: 100%; display: flex; align-items: stretch; gap: 0; min-width: 0; padding: 0; border: 1px solid #e1e7df; border-radius: 11px; background: #fff; color: #465246; text-align: left; overflow: hidden; }
 .ops-record:hover { border-color: #b7cbb3; box-shadow: 0 7px 18px #56745414; }
+.ops-record.server { position: relative; isolation: isolate; overflow: visible; }
+.ops-record.server > :not(.todo-deadline-glow) { position: relative; z-index: 1; }
+.ops-record.server > .ops-record-open { border-radius: inherit; }
+.ops-record.server > .ops-record-open:hover { background: transparent; }
+.ops-record.server[data-status="maintenance"] > .todo-deadline-glow {
+  background: #d3a14e42;
+  border: 1px solid #d3a14ebf;
+  box-shadow: 0 0 22px 5px #d3a14e47, inset 0 0 18px #d3a14e1f;
+  animation: task-deadline-breathe 3s ease-in-out infinite;
+}
+.ops-record.server[data-status="retired"] > .todo-deadline-glow {
+  background: #f2dcd3;
+  border: 1px solid #d5a596;
+  opacity: 1;
+}
+.ops-server-status-switch { align-self: center; display: inline-flex; flex-shrink: 0; gap: 2px; margin-right: 8px; padding: 3px; border: 1px solid #dce4d7; border-radius: 8px; background: #ffffffb3; }
+.ops-server-status-switch button { border: 0; border-radius: 5px; padding: 6px; background: transparent; color: #8b9586; font-size: 11px; white-space: nowrap; }
+.ops-server-status-switch button[aria-pressed="true"] { background: #e1eddc; color: #4d7049; }
+.ops-record[data-status="maintenance"] .ops-server-status-switch button[aria-pressed="true"] { background: #f4e4c9; color: #90631e; }
+.ops-record[data-status="retired"] .ops-server-status-switch button[aria-pressed="true"] { background: #ecd0c6; color: #985040; }
+.ops-server-status-switch button:hover:not(:disabled) { box-shadow: inset 0 0 0 1px #a6b79e; }
+.ops-server-status-switch button:focus-visible { outline: 2px solid #8f9f7b; outline-offset: 1px; }
+.ops-server-status-switch button:disabled { cursor: default; opacity: .65; }
 .ops-record-open { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 13px 14px; border: 0; background: transparent; color: inherit; text-align: left; }
 .ops-record-open:hover { background: #fbfcf9; }
 .ops-record-delete { align-self: center; width: 32px; height: 32px; margin-right: 8px; border: 0; border-radius: 7px; background: transparent; color: #a17868; opacity: .72; }
@@ -129,7 +152,6 @@
 .ops-empty { display: grid; justify-items: center; gap: 8px; max-width: 570px; margin: 45px auto; padding: 38px 20px; border: 1px dashed #cad6c6; border-radius: 14px; background: #fcfdf9; text-align: center; }
 .ops-empty-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 14px; background: #e8f0e4; color: #648365; }
 .ops-empty h2 { margin: 3px 0 0; color: #536252; font-size: 16px; }
-.ops-empty p { margin: 0 0 8px; color: #9aa498; font-size: 12px; }
 .ops-banner { display: flex; align-items: center; gap: 7px; margin: -8px 0 18px; padding: 9px 11px; border-radius: 8px; background: #fff1e3; color: #936a43; font-size: 12px; }
 .ops-detail-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
 .ops-back, .ops-detail-actions button, .ops-quiet { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #e1e7df; border-radius: 8px; padding: 7px 9px; background: #fff; color: #657365; font-size: 12px; }
@@ -157,6 +179,22 @@
 .ops-deployment-row strong { font-size: 12px; }
 .ops-deployment-row span { overflow: hidden; color: #8c988b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .ops-deployment-row em { padding: 3px 7px; border-radius: 6px; background: #e8f0f3; color: #5e7d8a; font-size: 10px; font-style: normal; }
+.ops-deployment-row > .ops-deadline-date { grid-column: 1 / -1; white-space: normal; }
+.ops-product-dates { display: grid; gap: 5px; margin-top: 6px; }
+.ops-product-dates:empty { display: none; }
+.ops-product-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ops-product-deadline { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; }
+.ops-product-deadline-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.ops-deadline-display { display: inline-flex; width: 40px; height: 40px; flex-shrink: 0; }
+.ops-deadline-display .todo-deadline-button:hover { background: transparent; }
+.ops-deadline-server-name { color: #667a60; font-size: 11px; overflow-wrap: anywhere; }
+.ops-deadline-date { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: #899681; font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.6; }
+.ops-deadline-date > svg { flex-shrink: 0; }
+.ops-deadline-date time { white-space: nowrap; }
+.ops-server-deadline { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.ops-record > .ops-server-deadline { align-self: center; max-width: 40%; margin: 8px 12px 8px 0; }
+.ops-server-deadline-detail { margin-top: 10px; padding: 7px 12px; background: #f1f5ee; border-radius: 9px; }
+.ops-field > .ops-server-deadline { padding: 5px 8px; border: 1px solid #dfe6dc; border-radius: 8px; background: #fff; }
 .ops-inline-empty { padding: 14px; border: 1px dashed #d4dfd0; border-radius: 9px; color: #9aa59a; background: #fcfdf9; font-size: 12px; }
 .ops-task-list { border: 1px solid #e1e7df; border-radius: 10px; background: #fff; padding: 0 12px; }
 .ops-task { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid #eff2ed; color: #5e6b5d; font-size: 12px; }
@@ -178,7 +216,6 @@
 .ops-field { display: grid; gap: 5px; margin-top: 12px; color: #748174; font-size: 11px; }
 .ops-field input, .ops-field select { width: 100%; padding: 9px 10px; border: 1px solid #dfe6dc; border-radius: 8px; outline: 0; background: #fff; color: #4f5d4e; }
 .ops-field input:focus, .ops-field select:focus { border-color: #9db49b; box-shadow: 0 0 0 3px #8aab8a22; }
-.ops-form-hint { margin: 0 0 8px; color: #9aa59b; font-size: 11px; }
 .ops-form-error { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: #fff0e4; color: #9c6c41; font-size: 11px; }
 .ops-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .ops-modal-actions button { padding: 8px 12px; border: 1px solid #dfe6dc; border-radius: 8px; background: #fff; color: #657265; }
@@ -198,4 +235,18 @@
   .ops-page-title .ops-primary { align-self: flex-start; }
   .ops-metrics { grid-template-columns: repeat(3, 1fr); }
   .ops-deployment-row { grid-template-columns: 75px minmax(0, 1fr) auto; }
+}
+@media (max-width: 1100px) {
+  .ops-record.server { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+  .ops-record.server > .ops-record-open { grid-column: 1 / -1; }
+  .ops-record.server > .ops-server-deadline { max-width: none; margin: 0 10px 10px 14px; }
+  .ops-server-status-switch, .ops-record.server > .ops-record-delete { margin-bottom: 10px; }
+}
+@media (max-width: 500px) {
+  .ops-record.server > .ops-server-deadline { grid-column: 1 / -1; }
+  .ops-server-status-switch { justify-self: start; margin-left: 14px; }
+  .ops-record.server > .ops-record-delete { grid-column: 3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ops-record.server[data-status="maintenance"] > .todo-deadline-glow { animation: none; opacity: .65; }
 }

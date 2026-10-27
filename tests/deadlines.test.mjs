@@ -15,6 +15,7 @@ import { todoPages } from "../src/canvas/todoPages.js";
 import * as selection from "../src/canvas/deadlineInput.js";
 
 const dueAt = "2026-10-22T02:00:00.000Z";
+const dueStartAt = "2026-10-19T16:00:00.000Z";
 function fixture() {
   const state = createWorkspace();
   const note = {
@@ -34,6 +35,108 @@ test("每条截止时间经过共享清理和备份读取后仍然保留", () =>
   assert.equal(shared.blocks[1].dueAt, null);
   const restored = validateWorkspace(JSON.parse(JSON.stringify(state)));
   assert.equal(restored.objects[0].blocks[0].dueAt, dueAt);
+});
+
+test("日期区间的起止时间经过共享同步、备份和撤销后保持完整", () => {
+  const { state, note } = fixture();
+  const base = prepareEdit(state)[0];
+  note.blocks[0].dueAt = dueAt;
+  note.blocks[0].dueStartAt = dueStartAt;
+  const changed = prepareEdit(state)[0];
+  assert.equal(changed.blocks[0].dueStartAt, dueStartAt);
+  assert.equal(changed.blocks[0].dueAt, dueAt);
+  assert.equal(
+    validateWorkspace(JSON.parse(JSON.stringify(state))).objects[0].blocks[0]
+      .dueStartAt,
+    dueStartAt,
+  );
+  const remote = structuredClone(base);
+  remote.blocks[1].runs[0].text = "协作者修改另一条";
+  const merged = mergeData(base, changed, remote);
+  assert.equal(merged.blocks[0].dueStartAt, dueStartAt);
+  const undone = undoChanges([base], [changed], [merged])[0];
+  assert.equal(undone.blocks[0].dueStartAt, undefined);
+  assert.equal(undone.blocks[0].dueAt, undefined);
+  assert.equal(undone.blocks[1].runs[0].text, "协作者修改另一条");
+});
+
+test("服务器和备份拒绝缺少结束时间、颠倒或无效的日期区间", () => {
+  for (const range of [
+    { dueStartAt, dueAt: null },
+    { dueStartAt: dueAt, dueAt: dueStartAt },
+    { dueStartAt: "not-a-date", dueAt },
+    { dueStartAt: dueAt, dueAt },
+  ]) {
+    const { state, note } = fixture();
+    Object.assign(note.blocks[0], range);
+    assert.throws(() => sharedObject(note));
+    assert.throws(() => validateWorkspace(state));
+  }
+});
+
+test("排列设置区间、重选单日和移除时间只修改目标待办", () => {
+  const { state, note } = fixture();
+  const boardId = state.boards[0].id;
+  const pageId = todoPages(state, boardId)[0].id;
+  const changed = arranged.setPageDeadline(
+    state,
+    boardId,
+    pageId,
+    note.id,
+    note.blocks[0].id,
+    dueAt,
+    null,
+    { dueStartAt },
+  );
+  assert.equal(changed.objects[0].blocks[0].dueStartAt, dueStartAt);
+  assert.equal(changed.objects[0].blocks[1], note.blocks[1]);
+  const single = arranged.setPageDeadline(
+    changed,
+    boardId,
+    pageId,
+    note.id,
+    note.blocks[0].id,
+    dueAt,
+    dueAt,
+    { expectedDueStartAt: dueStartAt },
+  );
+  assert.equal(single.objects[0].blocks[0].dueStartAt, null);
+  const removed = arranged.setPageDeadline(
+    changed,
+    boardId,
+    pageId,
+    note.id,
+    note.blocks[0].id,
+    null,
+    dueAt,
+    { expectedDueStartAt: dueStartAt },
+  );
+  assert.equal(removed.objects[0].blocks[0].dueStartAt, null);
+  assert.equal(removed.objects[0].blocks[0].dueAt, null);
+  assert.equal(
+    arranged.setPageDeadline(
+      changed,
+      boardId,
+      pageId,
+      note.id,
+      note.blocks[0].id,
+      dueAt,
+      dueAt,
+      { expectedDueStartAt: null },
+    ),
+    changed,
+  );
+});
+
+test("协作者同时修改区间两端时提示冲突，避免合并出错误的区间", () => {
+  const { state, note } = fixture();
+  Object.assign(note.blocks[0], { dueStartAt, dueAt });
+  const base = prepareEdit(state)[0];
+  const local = structuredClone(base),
+    remote = structuredClone(base);
+  local.blocks[0].dueStartAt = "2026-10-21T16:00:00.000Z";
+  remote.blocks[0].dueAt = "2026-10-20T16:00:00.000Z";
+  assert.throws(() => mergeData(base, local, remote), /冲突/);
 });
 
 test("没有截止时间的旧待办仍然有效", () => {

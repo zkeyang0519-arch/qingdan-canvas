@@ -267,6 +267,35 @@ test(
         },
         body: body ? JSON.stringify(body) : undefined,
       });
+    await t.test("常用清单保存在个人账号，可跨登录会话读取且不会泄露给其他账号", async () => {
+      const path = "/api/profile/quick-tasks";
+      assert.equal((await request(path, "")).status, 401);
+      const created = await request(path, a, "POST", { id: "lunch", text: "中午12点吃饭" });
+      assert.equal(created.status, 200, await created.clone().text());
+      const stored = (await created.json()).items;
+      assert.equal(stored[0].text, "中午12点吃饭");
+      assert.ok(Number.isFinite(Date.parse(stored[0].createdAt)));
+      assert.deepEqual((await (await request(path, b)).json()).items, []);
+      const secondLogin = await request("/api/auth/login", "", "POST", credentials.get("甲"));
+      assert.equal(secondLogin.status, 200);
+      const otherDevice = secondLogin.headers.get("set-cookie").split(";")[0];
+      assert.deepEqual((await (await request(path, otherDevice)).json()).items, stored);
+      assert.equal((await fetch(base + path, { headers: { Cookie: b, "X-QD-Account": credentials.get("甲").user.id } })).status, 401);
+      await request(path + "/lunch", b, "DELETE");
+      assert.deepEqual((await (await request(path, a)).json()).items, stored);
+      const repeated = await request(path, a, "POST", { id: "lunch", text: "中午12点吃饭" });
+      assert.deepEqual((await repeated.json()).items, stored);
+      assert.equal((await request(path, a, "POST", { text: "  " })).status, 400);
+      assert.equal((await request(path, a, "POST", { text: "x".repeat(2001) })).status, 400);
+      assert.deepEqual((await (await request(path + "/lunch", otherDevice, "DELETE")).json()).items, []);
+      assert.deepEqual((await (await request(path, a)).json()).items, []);
+      const parallel = await Promise.all([
+        request(path, a, "POST", { id: "breakfast", text: "吃早餐" }),
+        request(path, otherDevice, "POST", { id: "dinner", text: "吃晚饭" }),
+      ]);
+      assert.ok(parallel.every(response => response.status === 200));
+      assert.deepEqual((await (await request(path, a)).json()).items.map(item => item.id).sort(), ["breakfast", "dinner"]);
+    });
     await t.test(
       "未登录不能读取或创建画布，旧匿名接口不再创建身份",
       async () => {
@@ -683,7 +712,7 @@ test(
     const note = {
       ...createObject(room.id, "note", { x: 200, y: 180 }),
       noteKind: "checklist",
-      blocks: [{ ...makeBlock("一起完成"), dueAt: "2026-10-22T02:00:00.000Z" }],
+      blocks: [{ ...makeBlock("一起完成"), dueAt: "2026-10-22T02:00:00.000Z", dueStartAt: "2026-10-19T16:00:00.000Z" }],
       height: 165.5,
       fixedHeight: true,
       layoutHeight: 200,
@@ -699,6 +728,7 @@ test(
     assert.equal(ack.rows[0].data.fixedHeight, true);
     assert.equal(ack.rows[0].data.height, 165.5);
     assert.equal(ack.rows[0].data.blocks[0].dueAt, "2026-10-22T02:00:00.000Z");
+    assert.equal(ack.rows[0].data.blocks[0].dueStartAt, "2026-10-19T16:00:00.000Z");
     assert.equal(
       ack.rows[0].data.blocks[0].createdByUserId,
       credentials.get("甲").user.id,

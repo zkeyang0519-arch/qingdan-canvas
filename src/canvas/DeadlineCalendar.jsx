@@ -20,8 +20,8 @@ import {
   X,
 } from "lucide-react";
 import { deadlineInfo, validDeadline } from "../../shared/deadline.js";
-import { deadlineEvents, localDayKey } from "./deadline-calendar.js";
-import { TaskDeadlinePopover, formatDeadline } from "./TaskDeadline.jsx";
+import { deadlineEvents, deadlineEventOnDay, localDayKey } from "./deadline-calendar.js";
+import { TaskDeadlinePopover, formatDeadlineRange } from "./TaskDeadline.jsx";
 import "@fullcalendar/react/skeleton.css";
 import "@fullcalendar/react/themes/monarch/theme.css";
 import "@fullcalendar/react/themes/monarch/palettes/green.css";
@@ -79,7 +79,7 @@ export default function DeadlineCalendar({
   const undated = (page?.tasks || []).filter(
     (t) => !t.block.done && !validDeadline(t.block.dueAt),
   ).length;
-  const todayEvents = events.filter((e) => localDayKey(e.start) === day);
+  const todayEvents = events.filter((e) => deadlineEventOnDay(e, day));
   const tasksById = new Map(
     (page?.tasks || []).map((t) => [JSON.stringify([t.note.id, t.key]), t]),
   );
@@ -246,7 +246,7 @@ export default function DeadlineCalendar({
                 const task = liveTask || {
                   note: { id: deadlineEditor.noteId },
                   key: deadlineEditor.blockId,
-                  block: { dueAt: deadlineEditor.dueAt, done: false },
+                  block: { dueAt: deadlineEditor.dueAt, dueStartAt: deadlineEditor.dueStartAt, done: false },
                   locked: true,
                 };
                 const text = event.title,
@@ -304,7 +304,7 @@ export default function DeadlineCalendar({
                             type="button"
                             disabled={frozen}
                             aria-label={`修改截止时间：${text}`}
-                            title={formatDeadline(task.block.dueAt)}
+                            title={formatDeadlineRange(task.block.dueAt, task.block.dueStartAt)}
                           >
                             <Clock3 size={13} />
                             改期
