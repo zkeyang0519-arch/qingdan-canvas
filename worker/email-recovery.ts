@@ -275,7 +275,11 @@ export async function passwordResetEndpoint(
       AND EXISTS(SELECT 1 FROM email_challenges WHERE id=? AND consumed_by=?)`,
     ).bind(challenge.account_id, challenge.id, claim),
     invalidateOtherChallenges(env, challenge.account_id, challenge.id, claim),
-    revokeAllMcpGrantsStatement(env, challenge.account_id),
+    revokeAllMcpGrantsStatement(env, challenge.account_id, {
+      kind: "password-reset",
+      challengeId: challenge.id,
+      claim,
+    }),
   ]);
   check(
     results[0].meta.changes === 1 && results[1].meta.changes === 1,

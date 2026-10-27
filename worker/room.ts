@@ -8,19 +8,22 @@ import { recoverTaskAuthorsFromReceipts } from "./task-author-recovery.js";
 import { planCanvasCommand, planRestoreBlocks } from "./canvas-commands";
 import { queryCanvas } from "./canvas-queries";
 import type {
-  CanvasCommand,
   CanvasQuery,
   DeletionSnapshot,
   McpPrincipal,
 } from "./mcp/contracts";
 import { requireMcpGrant } from "./mcp/grants";
+import { reserveMcpRequest } from "./mcp/request-binding";
 import { isWriteTool } from "./mcp/canvas-rpc";
 import { McpBusinessError } from "./mcp/errors";
-import { parseToolInput, type ToolName } from "./mcp/schemas";
+import {
+  parseToolInput,
+  type ToolName,
+  type WriteToolName,
+} from "./mcp/schemas";
 import { limitedBytes } from "./http";
 import {
   initializeMcpStorage,
-  canonicalJson,
   recoveryLifetime,
   parseAuditInput,
   auditCursor,
@@ -305,16 +308,23 @@ export class CanvasRoom extends DurableObject<Env> {
     const parsed = parseToolInput(name, input.input);
     check(parsed.canvas_id === room, "Canvas mismatch.", 403);
     const principal = input.principal as McpPrincipal;
-    // Last asynchronous authorization read immediately precedes the synchronous
-    // transaction. A revocation completed before this check always wins.
-    const actor = await requireMcpGrant(
-      this.env,
-      principal,
-      room,
-      isWriteTool(name),
-    );
+    const write = isWriteTool(name);
+    // D1 binds the grant-wide key before any room can execute it. Reservation
+    // may survive a crash or business failure; it is not a successful receipt.
+    const binding = write
+      ? await reserveMcpRequest(
+          this.env,
+          room,
+          principal,
+          name as WriteToolName,
+          parsed,
+        )
+      : undefined;
+    // Reservation/digest work is asynchronous. Recheck authorization afterwards
+    // at the final pre-commit boundary, even for an identical reserved retry.
+    const actor = await requireMcpGrant(this.env, principal, room, write);
     this.ensureRoom(room);
-    if (!isWriteTool(name))
+    if (!write)
       return json(
         queryCanvas(this.rows(), { name, input: parsed } as CanvasQuery, {
           canvasId: room,
@@ -322,14 +332,7 @@ export class CanvasRoom extends DurableObject<Env> {
           sequence: this.sequence(),
         }),
       );
-    const command = { name, input: parsed } as CanvasCommand;
-    const payload = canonicalJson({
-      accountId: principal.accountId,
-      clientId: principal.clientId,
-      grantId: principal.grantId,
-      resource: principal.resource,
-      command,
-    });
+    const { command, payload } = binding!;
     let value: Record<string, unknown> = {},
       rows: Row[] = [];
     this.ctx.storage.transactionSync(() => {

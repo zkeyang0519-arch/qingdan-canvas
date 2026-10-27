@@ -35,3 +35,16 @@ CREATE TABLE mcp_grant_rooms (
   PRIMARY KEY(grant_id,room_id)
 );
 CREATE INDEX mcp_grant_rooms_room ON mcp_grant_rooms(room_id,grant_id);
+-- Immutable routing reservation only: successful results stay atomic in room DOs.
+CREATE TABLE mcp_request_bindings (
+  grant_id TEXT NOT NULL REFERENCES mcp_grants(id),
+  request_id TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  client_id TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  canvas_id TEXT NOT NULL REFERENCES rooms(id),
+  command TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(grant_id,request_id)
+);

@@ -108,7 +108,12 @@ export async function accountEndpoint(
         "INSERT INTO account_sessions(token_hash,account_id,expires_at) SELECT ?,id,? FROM accounts WHERE id=? AND password_hash=?",
       ).bind(hash, expires, account.id, nextHash),
     );
-    statements.push(revokeAllMcpGrantsStatement(env, account.id));
+    statements.push(
+      revokeAllMcpGrantsStatement(env, account.id, {
+        kind: "password",
+        passwordHash: nextHash,
+      }),
+    );
     const result = await env.DB.batch(statements);
     check(
       result[0].meta.changes === 1,

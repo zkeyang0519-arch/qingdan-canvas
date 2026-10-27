@@ -301,10 +301,27 @@ export async function activateMcpGrant(
   check(result[0].meta.changes === 1, "Grant activation denied.", 403);
   return { grantId, providerGrantId };
 }
-export function revokeAllMcpGrantsStatement(env: Env, accountId: string) {
+export type CredentialRevocationCondition =
+  | { kind: "password"; passwordHash: string }
+  | { kind: "password-reset"; challengeId: string; claim: string };
+export function revokeAllMcpGrantsStatement(
+  env: Env,
+  accountId: string,
+  condition?: CredentialRevocationCondition,
+) {
+  const predicate = !condition
+    ? ""
+    : condition.kind === "password"
+      ? " AND EXISTS(SELECT 1 FROM accounts WHERE id=? AND password_hash=?)"
+      : " AND EXISTS(SELECT 1 FROM email_challenges WHERE id=? AND consumed_by=?)";
+  const parameters = !condition
+    ? []
+    : condition.kind === "password"
+      ? [accountId, condition.passwordHash]
+      : [condition.challengeId, condition.claim];
   return env.DB.prepare(
-    `UPDATE mcp_grants SET state='revoked',revoked_at=? WHERE account_id=? AND state IN ('pending','active')`,
-  ).bind(Date.now(), accountId);
+    `UPDATE mcp_grants SET state='revoked',revoked_at=? WHERE account_id=? AND state IN ('pending','active')${predicate} RETURNING id,provider_grant_id`,
+  ).bind(Date.now(), accountId, ...parameters);
 }
 export async function listMcpGrants(env: Env, accountId: string) {
   const { results } = await env.DB.prepare(
@@ -322,36 +339,33 @@ export async function revokeMcpGrant(
   grantId: string,
 ) {
   valid(id, grantId);
-  const row = await env.DB.prepare(
-    "SELECT provider_grant_id FROM mcp_grants WHERE id=? AND account_id=?",
-  )
-    .bind(grantId, accountId)
-    .first<{ provider_grant_id: string | null }>();
-  check(row, "Grant not found.", 404);
-  await env.DB.batch([
+  const results = await env.DB.batch<{
+    id: string;
+    provider_grant_id: string | null;
+  }>([
     env.DB.prepare(
-      `UPDATE mcp_grants SET state='revoked',revoked_at=COALESCE(revoked_at,?) WHERE id=? AND account_id=?`,
+      `UPDATE mcp_grants SET state='revoked',revoked_at=COALESCE(revoked_at,?) WHERE id=? AND account_id=? RETURNING id,provider_grant_id`,
     ).bind(Date.now(), grantId, accountId),
     env.DB.prepare(
       `UPDATE mcp_consent_selections SET state='revoked' WHERE grant_id=? AND account_id=?`,
     ).bind(grantId, accountId),
   ]);
+  const row = results[0].results[0];
+  check(row, "Grant not found.", 404);
   return { grantId, providerGrantId: row.provider_grant_id };
 }
 export async function revokeAllMcpGrants(env: Env, accountId: string) {
-  const { results } = await env.DB.prepare(
-    `SELECT id,provider_grant_id FROM mcp_grants WHERE account_id=? AND state IN ('pending','active')`,
-  )
-    .bind(accountId)
-    .all<{ id: string; provider_grant_id: string | null }>();
-  await env.DB.batch([
+  const results = await env.DB.batch<{
+    id: string;
+    provider_grant_id: string | null;
+  }>([
     revokeAllMcpGrantsStatement(env, accountId),
     env.DB.prepare(
       `UPDATE mcp_consent_selections SET state='revoked' WHERE account_id=? AND state IN ('open','selected','pending','active')`,
     ).bind(accountId),
   ]);
   return {
-    items: results.map((r) => ({
+    items: results[0].results.map((r) => ({
       grantId: r.id,
       providerGrantId: r.provider_grant_id,
     })),

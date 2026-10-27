@@ -913,6 +913,28 @@ test(
           500,
         );
         await fixture({ sql: "DROP TRIGGER fail_snapshot" });
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_request_bindings WHERE grant_id=? AND request_id=?",
+              )
+              .bind(p.grantId, "rollback-delete")
+              .first()
+          ).n,
+          1,
+        );
+        assert.equal(
+          (
+            await mcp(p, "delete_task", {
+              request_id: "rollback-delete",
+              note_id: a.note_id,
+              task_id: a.task_ids[0],
+              expected_revision: 2,
+            })
+          ).code,
+          "IDEMPOTENCY_KEY_REUSED",
+        );
         assert.equal((await mcp(p, "get_canvas", {})).sequence, before);
         assert.equal(
           (await mcp(p, "get_content", { note_id: a.note_id })).items.length,
@@ -1219,6 +1241,382 @@ test(
         assert.equal(found.result.task_ids, undefined);
         const bob = await operations({ action: "list" }, bobRaw);
         assert.deepEqual(bob.items, []);
+      },
+    );
+    await t.test(
+      "grant/request binding rejects changed canvases at the private DO boundary",
+      async () => {
+        const p = await grant({ canvasIds: ["canvas", "other"] });
+        const requestId = "global-two-canvas";
+        const first = await create(p, requestId);
+        assert.equal(first.status, 200);
+        const ns = await mf.getDurableObjectNamespace("ROOMS");
+        const response = await ns
+          .get(ns.idFromName("other"))
+          .fetch("https://room/internal/mcp", {
+            method: "POST",
+            body: JSON.stringify({
+              canvasId: "other",
+              principal: p,
+              name: "create_note",
+              input: {
+                canvas_id: "other",
+                request_id: requestId,
+                target: { section_id: "ungrouped" },
+                blocks: [{ text: "first" }],
+              },
+            }),
+          });
+        assert.equal((await response.json()).code, "IDEMPOTENCY_KEY_REUSED");
+        assert.equal(
+          (
+            await request("/mcp", {
+              canvasId: "other",
+              principal: p,
+              name: "get_canvas",
+              input: { canvas_id: "other" },
+            })
+          ).sequence,
+          0,
+        );
+        assert.deepEqual(await create(p, requestId), first);
+        const concurrentId = "global-concurrent-two-canvas";
+        const beforeCanvas = (await mcp(p, "get_canvas", {})).sequence;
+        const beforeOther = (
+          await request("/mcp", {
+            canvasId: "other",
+            principal: p,
+            name: "get_canvas",
+            input: { canvas_id: "other" },
+          })
+        ).sequence;
+        const results = await Promise.all(
+          ["canvas", "other"].map((canvasId) =>
+            request("/mcp", {
+              canvasId,
+              principal: p,
+              name: "create_note",
+              input: {
+                canvas_id: canvasId,
+                request_id: concurrentId,
+                target: { section_id: "ungrouped" },
+                blocks: [{ text: "race" }],
+              },
+            }),
+          ),
+        );
+        assert.equal(
+          results.filter((result) => result.status === 200).length,
+          1,
+        );
+        assert.equal(
+          results.filter((result) => result.code === "IDEMPOTENCY_KEY_REUSED")
+            .length,
+          1,
+        );
+        const afterCanvas = (await mcp(p, "get_canvas", {})).sequence;
+        const afterOther = (
+          await request("/mcp", {
+            canvasId: "other",
+            principal: p,
+            name: "get_canvas",
+            input: { canvas_id: "other" },
+          })
+        ).sequence;
+        assert.equal(afterCanvas + afterOther - beforeCanvas - beforeOther, 1);
+      },
+    );
+    await t.test(
+      "reservation before delivery recovers with normalized input and cannot be claimed by another account",
+      async () => {
+        const p = await grant();
+        const requestId = "reserved-before-delivery";
+        const command = {
+          canvasId: "canvas",
+          principal: p,
+          name: "create_note",
+          input: {
+            canvas_id: "canvas",
+            request_id: requestId,
+            target: { section_id: "ungrouped" },
+            blocks: [{ text: "reserved", due_at: "2026-11-01T10:00:00+08:00" }],
+          },
+        };
+        assert.equal(
+          (
+            await request("/reserve", {
+              ...command,
+              principal: { ...p, accountId: "bob" },
+            })
+          ).status,
+          401,
+        );
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_request_bindings WHERE grant_id=? AND request_id=?",
+              )
+              .bind(p.grantId, requestId)
+              .first()
+          ).n,
+          0,
+        );
+        const reserved = await request("/reserve", command);
+        assert.equal(reserved.status, 200);
+        assert.match(reserved.inputDigest, /^[a-f0-9]{64}$/);
+        assert.deepEqual(
+          await fixture({
+            sql: "SELECT COUNT(*) AS n FROM mcp_receipts WHERE grant_id=?",
+            bindings: [p.grantId],
+          }),
+          [{ n: 0 }],
+        );
+        const before = (await mcp(p, "get_canvas", {})).sequence;
+        const retry = {
+          ...command,
+          input: {
+            ...command.input,
+            blocks: [{ due_at: "2026-11-01T02:00:00.000Z", text: "reserved" }],
+          },
+        };
+        const completed = await request("/mcp", retry);
+        assert.equal(completed.status, 200);
+        assert.equal(completed.sequence, before + 1);
+        assert.deepEqual(await request("/mcp", command), completed);
+        assert.deepEqual(
+          await fixture({
+            sql: "SELECT COUNT(*) AS n FROM mcp_receipts WHERE grant_id=?",
+            bindings: [p.grantId],
+          }),
+          [{ n: 1 }],
+        );
+        assert.equal(
+          (
+            await request("/reserve", {
+              ...command,
+              name: "create_tasks",
+              input: {
+                canvas_id: "canvas",
+                request_id: requestId,
+                target: { section_id: "ungrouped" },
+                items: [{ text: "reserved" }],
+              },
+            })
+          ).code,
+          "IDEMPOTENCY_KEY_REUSED",
+        );
+      },
+    );
+    await t.test(
+      "DO rechecks authorization after the asynchronous request reservation",
+      async () => {
+        const p = await grant();
+        const before = (await mcp(p, "get_canvas", {})).sequence;
+        await fixture({ revokeAfterReservation: p.grantId });
+        assert.equal(
+          (await create(p, "revoked-after-reservation")).status,
+          401,
+        );
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_request_bindings WHERE grant_id=?",
+              )
+              .bind(p.grantId)
+              .first()
+          ).n,
+          1,
+        );
+        assert.deepEqual(
+          await fixture({
+            sql: "SELECT COUNT(*) AS n FROM mcp_receipts WHERE grant_id=?",
+            bindings: [p.grantId],
+          }),
+          [{ n: 0 }],
+        );
+        assert.equal(
+          (await mcp(await grant(), "get_canvas", {})).sequence,
+          before,
+        );
+      },
+    );
+    const entered = async (gate) => {
+      for (let i = 0; i < 200; i++) {
+        if ((await request("/gate/status?gate=" + gate, {})).entered) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw Error("D1 gate did not enter: " + gate);
+    };
+    const reviveSession = () =>
+      db
+        .prepare("INSERT OR REPLACE INTO account_sessions VALUES(?,?,?)")
+        .bind(sha(raw), "alice", Date.now() + 86400000)
+        .run();
+    await t.test(
+      "losing password request cannot revoke a grant authorized after the winning change",
+      async () => {
+        await db
+          .prepare("UPDATE accounts SET password_hash=? WHERE id='alice'")
+          .bind(await hashPassword("race-old-password"))
+          .run();
+        const loser = request("/race/password?gate=password", {
+          currentPassword: "race-old-password",
+          password: "loser-new-password",
+        });
+        await entered("password");
+        assert.equal(
+          (
+            await request("/password", {
+              currentPassword: "race-old-password",
+              password: "winner-new-password",
+            })
+          ).status,
+          200,
+        );
+        await reviveSession();
+        const p = await grant();
+        await request("/gate/release?gate=password", {});
+        assert.equal((await loser).status, 409);
+        assert.equal(
+          (await request("/require", { principal: p, canvasId: "canvas" }))
+            .status,
+          200,
+        );
+      },
+    );
+    await t.test(
+      "losing reset challenge claimant cannot revoke a later authorized grant",
+      async () => {
+        const passwordHash = (
+          await db
+            .prepare("SELECT password_hash FROM accounts WHERE id='alice'")
+            .first()
+        ).password_hash;
+        const challengeId = "9".repeat(64),
+          email = "alice@example.test";
+        const codeHash = createHmac(
+          "sha256",
+          "test-only-email-signing-secret-over-32-characters",
+        )
+          .update(
+            JSON.stringify([challengeId, "alice", "reset", email, "123456"]),
+          )
+          .digest("hex");
+        await db
+          .prepare(
+            "INSERT INTO email_challenges(id,account_id,purpose,email,code_hash,credential_hash,prior_email,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+          )
+          .bind(
+            challengeId,
+            "alice",
+            "reset",
+            email,
+            codeHash,
+            passwordHash,
+            email,
+            Date.now() + 600000,
+          )
+          .run();
+        const body = {
+          username: "alice",
+          email,
+          challengeId,
+          code: "123456",
+          password: "losing-reset-password",
+        };
+        const loser = request("/race/reset?gate=reset", body);
+        await entered("reset");
+        assert.equal(
+          (
+            await request("/api/auth/password-reset/confirm", {
+              ...body,
+              password: "winner-reset-password",
+            })
+          ).status,
+          200,
+        );
+        await reviveSession();
+        const p = await grant();
+        await request("/gate/release?gate=reset", {});
+        assert.equal((await loser).status, 400);
+        assert.equal(
+          (await request("/require", { principal: p, canvasId: "canvas" }))
+            .status,
+          200,
+        );
+      },
+    );
+    await t.test(
+      "single revoke returns the provider ID activated before its revocation transaction",
+      async () => {
+        const pending = await consent();
+        const revoked = request("/race/revoke?gate=revoke", {
+          grantId: pending.grantId,
+        });
+        await entered("revoke");
+        const providerGrantId = "activated-during-revoke";
+        assert.equal(
+          (
+            await request("/activate", {
+              grantId: pending.grantId,
+              providerGrantId,
+            })
+          ).status,
+          200,
+        );
+        await request("/gate/release?gate=revoke", {});
+        assert.equal((await revoked).providerGrantId, providerGrantId);
+        assert.equal(
+          (
+            await db
+              .prepare("SELECT state FROM mcp_grants WHERE id=?")
+              .bind(pending.grantId)
+              .first()
+          ).state,
+          "revoked",
+        );
+      },
+    );
+    await t.test(
+      "revoke-all returns provider IDs for activation and new grants preceding its transaction",
+      async () => {
+        const pending = await consent();
+        const revoked = request("/race/revoke-all?gate=revoke-all", {});
+        await entered("revoke-all");
+        const providerGrantId = "activated-during-revoke-all";
+        assert.equal(
+          (
+            await request("/activate", {
+              grantId: pending.grantId,
+              providerGrantId,
+            })
+          ).status,
+          200,
+        );
+        const later = await grant();
+        await request("/gate/release?gate=revoke-all", {});
+        const result = await revoked;
+        assert.ok(
+          result.items.some(
+            (item) =>
+              item.grantId === pending.grantId &&
+              item.providerGrantId === providerGrantId,
+          ),
+        );
+        assert.ok(
+          result.items.some(
+            (item) =>
+              item.grantId === later.grantId &&
+              item.providerGrantId === "provider-" + later.grantId,
+          ),
+        );
+        assert.equal(
+          (await request("/require", { principal: later, canvasId: "canvas" }))
+            .status,
+          401,
+        );
       },
     );
   },
