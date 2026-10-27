@@ -87,12 +87,37 @@ export async function authorizationPage(request: Request, env: Env) {
     throw error;
   }
 }
-const selection = z.strictObject({
-  decision: z.enum(["approve", "deny"]),
-  scopes: z.array(z.enum(supportedScopes)).max(3),
-  canvas_ids: z.array(z.string().min(1).max(100)).max(2000),
-  csrf: z.string().min(1).max(256),
-});
+// 2000 IDs × (100 UTF-16 code units × 6 escaped JSON bytes + quotes/comma)
+// plus CSRF/scopes/keys fit below 1.25 MiB. Other JSON endpoints keep 16 KiB.
+const consentBodyLimit = 1280 * 1024;
+const selection = z
+  .strictObject({
+    decision: z.enum(["approve", "deny"]),
+    scopes: z.array(z.enum(supportedScopes)).max(3),
+    canvas_ids: z.array(z.string().min(1).max(100)).max(2000),
+    csrf: z.string().min(1).max(256),
+  })
+  .superRefine((input, ctx) => {
+    if (input.decision !== "approve") return;
+    if (
+      !input.scopes.includes("qingdan:read") ||
+      new Set(input.scopes).size !== input.scopes.length
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["scopes"],
+        message: "Approval requires read scope and unique scopes.",
+      });
+    if (
+      !input.canvas_ids.length ||
+      new Set(input.canvas_ids).size !== input.canvas_ids.length
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["canvas_ids"],
+        message: "Approval requires at least one unique canvas.",
+      });
+  });
 export async function consentApi(request: Request, env: Env) {
   sameOrigin(request);
   const session = await requireSession(request, env);
@@ -158,7 +183,7 @@ export async function consentApi(request: Request, env: Env) {
     });
   }
   check(request.method === "POST", "Method not allowed.", 405);
-  const parsed = selection.safeParse(await body(request));
+  const parsed = selection.safeParse(await body(request, consentBodyLimit));
   check(parsed.success, "Invalid consent input.");
   const input = parsed.data;
   check(input.csrf === context.csrf, "Invalid CSRF.", 403);

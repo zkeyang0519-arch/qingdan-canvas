@@ -98,6 +98,11 @@ export function providerOptions(env: Env): OAuthProviderOptions<Env> {
     },
     async tokenExchangeCallback(options) {
       try {
+        check(
+          typeof options.props?.appGrantId === "string",
+          "Missing app authorization.",
+          401,
+        );
         const principal = {
           accountId: options.userId,
           clientId: options.clientId,
@@ -111,19 +116,33 @@ export function providerOptions(env: Env): OAuthProviderOptions<Env> {
         )
           .bind(principal.grantId)
           .first<{ provider_grant_id: string; expires_at: number }>();
-        if (!row || row.provider_grant_id !== options.grantId)
-          throw new Error("Association mismatch");
+        check(
+          row && row.provider_grant_id === options.grantId,
+          "Association mismatch.",
+          401,
+        );
         const remaining = Math.floor((row.expires_at - Date.now()) / 1000);
-        if (remaining < 60) throw new Error("Expired");
+        check(remaining >= 60, "Authorization expired.", 401);
         return {
           accessTokenTTL: Math.min(900, remaining),
           refreshTokenTTL: options.scope.includes("offline_access")
             ? remaining
             : 0,
         };
-      } catch {
-        throw new OAuthError("invalid_grant", {
-          description: "Authorization is no longer active.",
+      } catch (error) {
+        // invalid_grant makes the provider revoke credentials. Only a verified
+        // authorization denial is terminal; database/validation faults can recover.
+        if (
+          error instanceof HttpError &&
+          (error.status === 401 || error.status === 403)
+        )
+          throw new OAuthError("invalid_grant", {
+            description: "Authorization is no longer active.",
+          });
+        throw new OAuthError("temporarily_unavailable", {
+          description: "Authorization could not be checked. Retry later.",
+          statusCode: 503,
+          headers: { "Retry-After": "5" },
         });
       }
     },

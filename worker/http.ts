@@ -59,7 +59,10 @@ export async function limitedBytes(request: Request, limit: number) {
   }
   return result;
 }
-export async function body(request: Request): Promise<Record<string, unknown>> {
+export async function body(
+  request: Request,
+  maxBytes = 16384,
+): Promise<Record<string, unknown>> {
   check(
     request.headers.get("Content-Type")?.split(";")[0] === "application/json",
     "需要 JSON 请求。",
@@ -68,7 +71,7 @@ export async function body(request: Request): Promise<Record<string, unknown>> {
   let input: unknown;
   try {
     input = JSON.parse(
-      new TextDecoder().decode(await limitedBytes(request, 16384)),
+      new TextDecoder().decode(await limitedBytes(request, maxBytes)),
     );
   } catch (e) {
     if (e instanceof HttpError) throw e;

@@ -2,6 +2,7 @@ import app from "../../worker/index";
 import type { Env } from "../../worker/types";
 export { CanvasRoom } from "../../worker/room";
 let displayCleanupFailure = false;
+let failedTokenQuery: string | null = null;
 let invalidateActivation = false,
   overlap = false,
   arrived = 0;
@@ -9,6 +10,10 @@ const sqlByStatement = new WeakMap<object, string>();
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
+    if (url.pathname === "/fixture/token-query-failure") {
+      failedTokenQuery = url.searchParams.get("query");
+      return Response.json({ ok: true });
+    }
     if (url.pathname === "/fixture/display-cleanup-failure") {
       displayCleanupFailure = true;
       return Response.json({ ok: true });
@@ -40,6 +45,25 @@ export default {
             ): D1PreparedStatement => {
               const proxy = new Proxy(statement, {
                 get(s, p) {
+                  if (p === "first")
+                    return (...args: unknown[]) => {
+                      const grantQuery = sql.includes(
+                        "SELECT g.*,a.name AS account_name",
+                      );
+                      const associationQuery = sql.includes(
+                        "SELECT provider_grant_id,expires_at",
+                      );
+                      if (
+                        (failedTokenQuery === "grant" && grantQuery) ||
+                        (failedTokenQuery === "association" && associationQuery)
+                      ) {
+                        failedTokenQuery = null;
+                        throw new Error("Injected transient D1 query failure");
+                      }
+                      return (s.first as (...args: unknown[]) => unknown)(
+                        ...args,
+                      );
+                    };
                   if (p === "bind")
                     return (...args: unknown[]) => wrap(s.bind(...args));
                   const v = Reflect.get(s, p);

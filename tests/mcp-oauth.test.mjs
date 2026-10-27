@@ -780,6 +780,224 @@ test(
         assert.equal(exchanged.status, 200, await exchanged.clone().text());
       },
     );
+
+    await t.test(
+      "transient D1 failures preserve code and refresh provider grants for retry",
+      async () => {
+        const approval = await approve(client);
+        assert.equal(approval.p.status, 200);
+        const code = new URL(
+          (await approval.p.json()).redirect_to,
+        ).searchParams.get("code");
+        const kv = await mf.getKVNamespace("OAUTH_KV");
+        const before = (await kv.list({ prefix: "grant:alice:" })).keys.map(
+          (k) => k.name,
+        );
+        await req("/fixture/token-query-failure?query=grant");
+        const failedCode = await exchange(client, code);
+        assert.equal(failedCode.status, 503, await failedCode.clone().text());
+        assert.equal(
+          (await failedCode.json()).error,
+          "temporarily_unavailable",
+        );
+        assert.equal(failedCode.headers.get("retry-after"), "5");
+        assert.deepEqual(
+          (await kv.list({ prefix: "grant:alice:" })).keys.map((k) => k.name),
+          before,
+        );
+        const success = await exchange(client, code);
+        assert.equal(success.status, 200, await success.clone().text());
+        const tokens = await success.json();
+        const refresh = () =>
+          req("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              client_id: client.client_id,
+              refresh_token: tokens.refresh_token,
+              resource: origin + "/mcp",
+            }),
+          });
+        await req("/fixture/token-query-failure?query=association");
+        const failedRefresh = await refresh();
+        assert.equal(
+          failedRefresh.status,
+          503,
+          await failedRefresh.clone().text(),
+        );
+        assert.equal(
+          (await failedRefresh.json()).error,
+          "temporarily_unavailable",
+        );
+        assert.deepEqual(
+          (await kv.list({ prefix: "grant:alice:" })).keys.map((k) => k.name),
+          before,
+        );
+        assert.equal(
+          (await rpc(tokens.access_token, "tools/list")).status,
+          200,
+        );
+        assert.equal((await refresh()).status, 200);
+      },
+    );
+    await t.test(
+      "approval validation returns400 without consuming a valid form; denial accepts empty arrays",
+      async () => {
+        const a = await start(client),
+          handle = new URL(a.headers.get("location"), origin).searchParams.get(
+            "handle",
+          ),
+          cookie = cookies(a) + "; qd_session=" + raw;
+        const display = await (
+          await req("/api/mcp/consent/" + handle, {
+            headers: { Cookie: cookie },
+          })
+        ).json();
+        const post = (input) =>
+          req("/api/mcp/consent/" + handle, {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              decision: "approve",
+              scopes: ["qingdan:read"],
+              canvas_ids: ["canvas"],
+              csrf: display.csrf,
+              ...input,
+            }),
+          });
+        const invalid = [
+          { scopes: [] },
+          { scopes: ["qingdan:write"] },
+          { scopes: ["qingdan:read", "qingdan:read"] },
+          { canvas_ids: [] },
+          { canvas_ids: ["canvas", "canvas"] },
+        ];
+        for (const input of invalid) {
+          const r = await post(input);
+          assert.equal(
+            r.status,
+            400,
+            JSON.stringify(input) + ": " + (await r.clone().text()),
+          );
+          assert.equal(
+            (
+              await db
+                .prepare(
+                  "SELECT state FROM mcp_consent_selections WHERE handle=?",
+                )
+                .bind(handle)
+                .first()
+            ).state,
+            "open",
+          );
+        }
+        const oversized = await post({ csrf: "x".repeat(2 * 1048576) });
+        assert.equal(oversized.status, 413);
+        const deny = await post({
+          decision: "deny",
+          scopes: [],
+          canvas_ids: [],
+        });
+        assert.equal(deny.status, 200, await deny.clone().text());
+        assert.equal(
+          new URL((await deny.json()).redirect_to).searchParams.get("error"),
+          "access_denied",
+        );
+        const normal = await req("/api/rooms", {
+          method: "POST",
+          headers: {
+            Cookie: "qd_session=" + raw,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ name: "x".repeat(17000) }),
+        });
+        assert.equal(normal.status, 413);
+      },
+    );
+    await t.test(
+      "all2000 selected valid-length room IDs can be submitted within a bounded consent payload",
+      async () => {
+        const ids = Array.from(
+          { length: 1998 },
+          (_, n) => "selected-" + String(n).padStart(91, "0"),
+        );
+        assert.ok(ids.every((id) => id.length === 100));
+        try {
+          for (let i = 0; i < ids.length; i += 50)
+            await db.batch(
+              ids
+                .slice(i, i + 50)
+                .flatMap((id) => [
+                  db
+                    .prepare(
+                      "INSERT INTO rooms VALUES(?,?,'alice','invite','2026-01-01')",
+                    )
+                    .bind(id, "Selected"),
+                  db
+                    .prepare(
+                      "INSERT INTO members VALUES(?,'alice','owner','2026-01-01')",
+                    )
+                    .bind(id),
+                ]),
+            );
+          const a = await start(client),
+            handle = new URL(
+              a.headers.get("location"),
+              origin,
+            ).searchParams.get("handle"),
+            cookie = cookies(a) + "; qd_session=" + raw;
+          const displayResponse = await req("/api/mcp/consent/" + handle, {
+            headers: { Cookie: cookie },
+          });
+          assert.equal(
+            displayResponse.status,
+            200,
+            await displayResponse.clone().text(),
+          );
+          const display = await displayResponse.json();
+          assert.equal(display.canvases.length, 2000);
+          const payload = JSON.stringify({
+            decision: "approve",
+            scopes: ["qingdan:read", "qingdan:write", "offline_access"],
+            canvas_ids: ["canvas", "other", ...ids],
+            csrf: display.csrf,
+          });
+          assert.ok(Buffer.byteLength(payload) > 200000);
+          const response = await req("/api/mcp/consent/" + handle, {
+            method: "POST",
+            headers: { Cookie: cookie, "Content-Type": "application/json" },
+            body: payload,
+          });
+          assert.equal(response.status, 200, await response.clone().text());
+          const code = new URL(
+            (await response.json()).redirect_to,
+          ).searchParams.get("code");
+          assert.equal((await exchange(client, code)).status, 200);
+          const row = await db
+            .prepare(
+              "SELECT g.state,COUNT(gr.room_id) AS n FROM mcp_grants g JOIN mcp_grant_rooms gr ON gr.grant_id=g.id WHERE g.consent_handle=? GROUP BY g.id",
+            )
+            .bind(handle)
+            .first();
+          assert.equal(row.state, "active");
+          assert.equal(row.n, 2000);
+        } finally {
+          for (let i = 0; i < ids.length; i += 50)
+            await db.batch(
+              ids
+                .slice(i, i + 50)
+                .flatMap((id) => [
+                  db
+                    .prepare("DELETE FROM mcp_grant_rooms WHERE room_id=?")
+                    .bind(id),
+                  db.prepare("DELETE FROM members WHERE room_id=?").bind(id),
+                  db.prepare("DELETE FROM rooms WHERE id=?").bind(id),
+                ]),
+            );
+        }
+      },
+    );
     await t.test(
       "ordinary logout preserves grant, password change revokes provider and read-only consent omits refresh",
       async () => {
