@@ -1,3 +1,4 @@
+import { cleanupProviderGrants } from "./mcp/provider-cleanup";
 import type { Env } from "./types";
 import { body, check, HttpError, json } from "./http";
 import {
@@ -119,6 +120,11 @@ export async function accountEndpoint(
       result[0].meta.changes === 1,
       "密码已经更新，请重新登录后再试。",
       409,
+    );
+    await cleanupProviderGrants(
+      env,
+      account.id,
+      result[3].results as { provider_grant_id: string | null }[],
     );
     return json({ user: publicUser(account) }, 200, {
       "Set-Cookie": sessionCookie(request, raw),

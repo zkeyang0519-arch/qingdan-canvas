@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Env, Session } from "../types";
 import type { McpPrincipal } from "./contracts";
-import { check } from "../http";
+import { check, HttpError } from "../http";
 import { McpBusinessError } from "./errors";
 import { parseToolInput } from "./schemas";
 
@@ -275,6 +275,7 @@ export async function activateMcpGrant(
   session: Session,
   grantId: string,
   providerGrantId: string,
+  replacePrevious = false,
 ) {
   valid(id, grantId);
   valid(id, providerGrantId);
@@ -297,9 +298,25 @@ export async function activateMcpGrant(
     env.DB.prepare(
       `UPDATE mcp_consent_selections SET state='active' WHERE grant_id=? AND state='pending' AND EXISTS(SELECT 1 FROM mcp_grants WHERE id=? AND state='active' AND provider_grant_id=?)`,
     ).bind(grantId, grantId, providerGrantId),
+    ...(replacePrevious
+      ? [
+          env.DB.prepare(
+            `UPDATE mcp_grants SET state='revoked',revoked_at=? WHERE account_id=? AND id<>? AND state='active' AND EXISTS(SELECT 1 FROM mcp_grants current WHERE current.id=? AND current.state='active' AND current.provider_grant_id=? AND current.account_id=mcp_grants.account_id AND current.client_id=mcp_grants.client_id AND current.resource=mcp_grants.resource) RETURNING provider_grant_id`,
+          ).bind(now, session.id, grantId, grantId, providerGrantId),
+          env.DB.prepare(
+            `UPDATE mcp_consent_selections SET state='revoked' WHERE account_id=? AND state='active' AND grant_id IN (SELECT id FROM mcp_grants WHERE account_id=? AND state='revoked')`,
+          ).bind(session.id, session.id),
+        ]
+      : []),
   ]);
   check(result[0].meta.changes === 1, "Grant activation denied.", 403);
-  return { grantId, providerGrantId };
+  return {
+    grantId,
+    providerGrantId,
+    replaced: replacePrevious
+      ? (result[2].results as { provider_grant_id: string | null }[])
+      : [],
+  };
 }
 export type CredentialRevocationCondition =
   | { kind: "password"; passwordHash: string }
@@ -323,14 +340,64 @@ export function revokeAllMcpGrantsStatement(
     `UPDATE mcp_grants SET state='revoked',revoked_at=? WHERE account_id=? AND state IN ('pending','active')${predicate} RETURNING id,provider_grant_id`,
   ).bind(Date.now(), accountId, ...parameters);
 }
-export async function listMcpGrants(env: Env, accountId: string) {
+export async function listMcpGrants(
+  env: Env,
+  accountId: string,
+  options: { limit?: number; cursor?: string } = {},
+) {
+  const limit = options.limit ?? 20;
+  check(
+    Number.isInteger(limit) && limit >= 1 && limit <= 50,
+    "Invalid grant page limit.",
+  );
+  let before = Number.MAX_SAFE_INTEGER,
+    after = "";
+  if (options.cursor) {
+    try {
+      check(options.cursor.length <= 2048, "Invalid cursor.");
+      const c = JSON.parse(atob(options.cursor));
+      check(
+        c.v === 1 &&
+          c.account === accountId &&
+          Number.isSafeInteger(c.before) &&
+          typeof c.after === "string" &&
+          c.after.length <= 256 &&
+          btoa(JSON.stringify(c)) === options.cursor,
+        "Invalid cursor.",
+      );
+      before = c.before;
+      after = c.after;
+    } catch {
+      throw new HttpError(400, "Invalid grant cursor.");
+    }
+  }
   const { results } = await env.DB.prepare(
-    `SELECT id,provider_grant_id,client_id,resource,scopes,state,created_at,expires_at,revoked_at,last_used_at FROM mcp_grants WHERE account_id=? ORDER BY created_at DESC,id DESC`,
+    `SELECT id,provider_grant_id,client_id,resource,scopes,state,created_at,expires_at,revoked_at,last_used_at FROM mcp_grants WHERE account_id=? AND (created_at<? OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?`,
   )
-    .bind(accountId)
+    .bind(accountId, before, before, after, limit + 1)
     .all<GrantRow>();
+  const items = results
+    .slice(0, limit)
+    .map((r) => ({
+      ...r,
+      scopes: JSON.parse(r.scopes) as (
+        "qingdan:read" | "qingdan:write" | "offline_access"
+      )[],
+    }));
+  const last = items.at(-1);
   return {
-    items: results.map((r) => ({ ...r, scopes: JSON.parse(r.scopes) })),
+    items,
+    next_cursor:
+      results.length > limit && last
+        ? btoa(
+            JSON.stringify({
+              v: 1,
+              account: accountId,
+              before: last.created_at,
+              after: last.id,
+            }),
+          )
+        : null,
   };
 }
 export async function revokeMcpGrant(

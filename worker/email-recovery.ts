@@ -1,3 +1,4 @@
+import { cleanupProviderGrants } from "./mcp/provider-cleanup";
 import { revokeAllMcpGrantsStatement } from "./mcp/grants";
 import type { Env, Session } from "./types";
 import { body, check, HttpError, json } from "./http";
@@ -284,6 +285,11 @@ export async function passwordResetEndpoint(
   check(
     results[0].meta.changes === 1 && results[1].meta.changes === 1,
     invalidCode,
+  );
+  await cleanupProviderGrants(
+    env,
+    challenge.account_id,
+    results[4].results as { provider_grant_id: string | null }[],
   );
   return json({ ok: true });
 }

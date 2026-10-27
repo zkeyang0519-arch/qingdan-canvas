@@ -9,6 +9,9 @@ export interface Env {
   EMAIL_FROM?: string;
   EMAIL_CODE_SECRET?: string;
   PUBLIC_ORIGIN?: string;
+  MCP_ENABLED?: string;
+  MCP_ALLOWED_ORIGINS?: string;
+  OAUTH_KV?: KVNamespace;
 }
 export interface Session {
   id: string;
