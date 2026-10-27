@@ -16,7 +16,7 @@
 
 固定运行组合为 `agents@0.30.1`、MCP server/client SDK `2.3.1`、Cloudflare OAuth provider `1.2.4`、Zod `4.6.7`。真实 handler 接受 `2025-03-26` 的 initialize/list/call（初始化响应明确返回该版本），以及 `2026-07-28` 的完整现代每请求 envelope、协议 header 和 method/name header。旧版本响应可能为 SSE，现代结果为 JSON。这里只记录已测试的两个协议版本，不推断四个应用实际协商了哪一版。
 
-独立全分支最终审查未发现 Critical 或 Important，记录的唯一 Minor 为开启收纳查询时未分组筛选误收直接位于收纳框的便签。该项已按先 RED（新增 5 项全部失败）、后 GREEN（domain 37/37）的流程修复，并完成上表全量验证；修复范围的独立复核待控制端执行。回归同时覆盖 note/task 搜索筛选、容器元数据和两种详情路径。
+独立全分支最终审查未发现 Critical 或 Important，记录的唯一 Minor 为开启收纳查询时未分组筛选误收直接位于收纳框的便签。该项已按先 RED（新增 5 项全部失败）、后 GREEN（domain 37/37）的流程修复，并完成上表全量验证；修复范围的独立复核已通过，确认问题已解决且没有引入新问题。回归同时覆盖 note/task 搜索筛选、容器元数据和两种详情路径。
 
 ### 九工具与跨层覆盖
 
@@ -56,7 +56,7 @@
 
 故意注入的 tree/snapshot/broadcast 故障，以及预期 provider OAuth/CIMD 和 SDK JSON 通知模式诊断，由 test-only fixture 捕获并逐条核对文本及次数。未知 warn/error 仍输出，且额外消息会使断言失败；没有重试隐藏失败。
 
-Task4 曾在并发构建/预览时遇到 >2 MiB 拒绝请求的 `ECONNRESET`，当时随后 OAuth18/18、全量422/422均通过。Task5 首次最终全量在没有额外预览/构建时再次复现：427项中425通过，失败为该请求和父用例，36314.2353ms；异常位于 Miniflare.dispatchFetch→undici 上传，尚未取得413。检查生产限流逻辑及 Miniflare 转发代码后，将超大请求构造移到 test-only workerd fixture，仍调用相同生产 app.fetch/consent 端点，分别断言声明 >2 MiB 的 Content-Length 和无声明长度的64KiB分块流都返回413，并确认流式输入被提前取消。有效的2000画布大表单仍从真实HTTP代理上传成功。没有重试、捕获后忽略失败或放宽生产限制；最终427/427通过。现有 Vite >500 kB chunk 提示保留，未在此任务改变前端打包策略。
+Task4 曾在并发构建/预览时遇到 >2 MiB 拒绝请求的 `ECONNRESET`，当时随后 OAuth18/18、全量422/422均通过。Task5 首次最终全量在没有额外预览/构建时再次复现：427项中425通过，失败为该请求和父用例，36314.2353ms；异常位于 Miniflare.dispatchFetch→undici 上传，尚未取得413。检查生产限流逻辑及 Miniflare 转发代码后，将超大请求构造移到 test-only workerd fixture，仍调用相同生产 app.fetch/consent 端点，分别断言声明 >2 MiB 的 Content-Length 和无声明长度的64KiB分块流都返回413，并确认流式输入被提前取消。有效的2000画布大表单仍从真实HTTP代理上传成功。没有重试、捕获后忽略失败或放宽生产限制；该阶段修复后427/427通过，最终筛选修复后的432/432结果见上表。现有 Vite >500 kB chunk 提示保留，未在此任务改变前端打包策略。
 
 独立本地配置也已按 [指南](mcp-setup.md#独立本地启动) 实测：七个本地迁移成功，HTTPS issuer 为 `https://localhost:8790`，合成账号登录200、新建画布201；服务随后停止。本地自签名证书请求仅在该冒烟命令使用跳过证书验证，真实四端应在可信HTTPS preview验收。
 
