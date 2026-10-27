@@ -5,6 +5,28 @@ import { membership } from "./auth";
 import { sharedObject } from "../shared/canvas-contract.js";
 import { taskAuthor, withTaskAuthor } from "../shared/task-authors.js";
 import { recoverTaskAuthorsFromReceipts } from "./task-author-recovery.js";
+import { planCanvasCommand, planRestoreBlocks } from "./canvas-commands";
+import { queryCanvas } from "./canvas-queries";
+import type {
+  CanvasCommand,
+  CanvasQuery,
+  DeletionSnapshot,
+  McpPrincipal,
+} from "./mcp/contracts";
+import { requireMcpGrant } from "./mcp/grants";
+import { isWriteTool } from "./mcp/canvas-rpc";
+import { McpBusinessError } from "./mcp/errors";
+import { parseToolInput, type ToolName } from "./mcp/schemas";
+import { limitedBytes } from "./http";
+import {
+  initializeMcpStorage,
+  canonicalJson,
+  recoveryLifetime,
+  parseAuditInput,
+  auditCursor,
+  nextAuditCursor,
+  type McpReceipt,
+} from "./mcp/room-storage";
 
 interface Attachment {
   user: string;
@@ -50,6 +72,7 @@ export class CanvasRoom extends DurableObject<Env> {
         WHERE json_extract(history.value,'$.data.type')='note';
       `);
       recoverTaskAuthorsFromReceipts(ctx.storage.sql);
+      initializeMcpStorage(ctx.storage.sql);
     });
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
@@ -102,6 +125,12 @@ export class CanvasRoom extends DurableObject<Env> {
   }
   async fetch(request: Request): Promise<Response> {
     try {
+      const path = new URL(request.url).pathname;
+      if (path === "/internal/mcp" || path === "/internal/mcp-operations")
+        return await this.internalMcp(
+          request,
+          path === "/internal/mcp-operations",
+        );
       const room = request.headers.get("X-QD-Room")!,
         user = request.headers.get("X-QD-User")!;
       check(validId(room) && validId(user), "无效的内部路由。", 403);
@@ -112,29 +141,7 @@ export class CanvasRoom extends DurableObject<Env> {
         await this.presence();
         return json({ ok: true });
       }
-      if (
-        !this.ctx.storage.sql.exec("SELECT id FROM objects LIMIT 1").toArray()
-          .length
-      ) {
-        const now = new Date().toISOString();
-        const data: CanvasData = {
-          id: `${room}-root`,
-          type: "collection",
-          boardId: room,
-          parentId: null,
-          x: 32,
-          y: 120,
-          width: 64,
-          height: 64,
-          zIndex: 0,
-          locked: false,
-          createdAt: now,
-          updatedAt: now,
-          title: "收纳框",
-          collapsed: false,
-        };
-        this.save({ id: data.id, revision: 1, deleted: false, data });
-      }
+      this.ensureRoom(room);
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
         return json({ rows: this.rows() });
       check(
@@ -160,7 +167,42 @@ export class CanvasRoom extends DurableObject<Env> {
       await this.presence();
       return new Response(null, { status: 101, webSocket: pair[0] });
     } catch (error) {
+      if (error instanceof McpBusinessError)
+        return json(
+          {
+            code: error.code,
+            message: error.message,
+            retryable: error.retryable,
+            details: error.details,
+          },
+          400,
+        );
       return failure(error);
+    }
+  }
+  ensureRoom(room: string) {
+    if (
+      !this.ctx.storage.sql.exec("SELECT id FROM objects LIMIT 1").toArray()
+        .length
+    ) {
+      const now = new Date().toISOString();
+      const data: CanvasData = {
+        id: `${room}-root`,
+        type: "collection",
+        boardId: room,
+        parentId: null,
+        x: 32,
+        y: 120,
+        width: 64,
+        height: 64,
+        zIndex: 0,
+        locked: false,
+        createdAt: now,
+        updatedAt: now,
+        title: "收纳框",
+        collapsed: false,
+      };
+      this.save({ id: data.id, revision: 1, deleted: false, data });
     }
   }
   save(row: Row) {
@@ -169,6 +211,363 @@ export class CanvasRoom extends DurableObject<Env> {
       row.id,
       JSON.stringify(row),
     );
+  }
+  sequence() {
+    return this.ctx.storage.sql
+      .exec<{ sequence: number }>(
+        "SELECT sequence FROM room_metadata WHERE id=1",
+      )
+      .toArray()[0].sequence;
+  }
+  // Synchronous, called only inside storage.transactionSync. The caller owns
+  // its immutable receipt; every transport shares revisions, authors and tree checks.
+  commitChanges(
+    changes: Change[],
+    member: Pick<Attachment, "user" | "name" | "room">,
+  ): Row[] {
+    check(changes.length <= 200, "操作结构无效。");
+    const current = new Map(this.rows().map((row) => [row.id, row]));
+    const ids = new Set<string>();
+    for (const change of changes) {
+      check(
+        validId(change.id) &&
+          !ids.has(change.id) &&
+          Number.isSafeInteger(change.expectedRevision) &&
+          change.expectedRevision >= 0,
+        "对象版本或编号无效。",
+      );
+      ids.add(change.id);
+      check(
+        (current.get(change.id)?.revision || 0) === change.expectedRevision,
+        "版本冲突",
+        409,
+      );
+      this.rememberAuthors(current.get(change.id)?.data || null);
+      if (change.data) {
+        check(
+          change.data.id === change.id && change.data.boardId === member.room,
+          "对象不属于此画布。",
+        );
+        try {
+          change.data = sharedObject(change.data) as CanvasData;
+        } catch {
+          throw new HttpError(400, "画布对象结构无效。");
+        }
+        change.data = this.attributeAuthors(change.data, member);
+      }
+    }
+    const nextRows = changes.map((change) => ({
+      id: change.id,
+      revision: change.expectedRevision + 1,
+      deleted: change.data === null,
+      data: change.data,
+    }));
+    for (const row of nextRows) current.set(row.id, row);
+    this.validateTree(current, member.room);
+    for (const row of nextRows) this.save(row);
+    if (nextRows.length)
+      this.ctx.storage.sql.exec(
+        "UPDATE room_metadata SET sequence=sequence+1 WHERE id=1",
+      );
+    return nextRows;
+  }
+  async safeBroadcast(rows: Row[], except?: WebSocket) {
+    if (!rows.length) return;
+    try {
+      await this.broadcast({ type: "changes", rows }, except);
+    } catch (error) {
+      console.error("Committed canvas broadcast failed", error);
+    }
+  }
+  async internalMcp(request: Request, browser: boolean): Promise<Response> {
+    check(request.method === "POST", "方法不支持。", 405);
+    let input;
+    try {
+      input = JSON.parse(
+        new TextDecoder().decode(await limitedBytes(request, 1024 * 1024)),
+      );
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new McpBusinessError(
+        "VALIDATION_ERROR",
+        "Invalid internal request.",
+      );
+    }
+    check(input && validId(input.canvasId), "无效的内部路由。", 403);
+    const room = input.canvasId as string;
+    if (browser)
+      return this.browserOperations(room, input.identity, input.input);
+    check(
+      typeof input.name === "string" && input.name !== "list_canvases",
+      "Invalid command.",
+    );
+    const name = input.name as Exclude<ToolName, "list_canvases">;
+    const parsed = parseToolInput(name, input.input);
+    check(parsed.canvas_id === room, "Canvas mismatch.", 403);
+    const principal = input.principal as McpPrincipal;
+    // Last asynchronous authorization read immediately precedes the synchronous
+    // transaction. A revocation completed before this check always wins.
+    const actor = await requireMcpGrant(
+      this.env,
+      principal,
+      room,
+      isWriteTool(name),
+    );
+    this.ensureRoom(room);
+    if (!isWriteTool(name))
+      return json(
+        queryCanvas(this.rows(), { name, input: parsed } as CanvasQuery, {
+          canvasId: room,
+          canvasName: actor.canvasName!,
+          sequence: this.sequence(),
+        }),
+      );
+    const command = { name, input: parsed } as CanvasCommand;
+    const payload = canonicalJson({
+      accountId: principal.accountId,
+      clientId: principal.clientId,
+      grantId: principal.grantId,
+      resource: principal.resource,
+      command,
+    });
+    let value: Record<string, unknown> = {},
+      rows: Row[] = [];
+    this.ctx.storage.transactionSync(() => {
+      const receipt = this.ctx.storage.sql
+        .exec<McpReceipt>(
+          "SELECT * FROM mcp_receipts WHERE grant_id=? AND request_id=?",
+          principal.grantId,
+          command.input.request_id,
+        )
+        .toArray()[0];
+      if (receipt) {
+        if (
+          receipt.payload !== payload ||
+          receipt.account_id !== actor.accountId ||
+          receipt.client_id !== principal.clientId
+        )
+          throw new McpBusinessError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "Request ID was already used for another command.",
+          );
+        value = JSON.parse(receipt.value);
+        rows = JSON.parse(receipt.rows);
+        return;
+      }
+      const now = Date.now(),
+        operationId = crypto.randomUUID();
+      const plan = planCanvasCommand(this.rows(), command, {
+        canvasId: room,
+        accountId: actor.accountId,
+        accountName: actor.accountName,
+        now: new Date(now).toISOString(),
+        makeId: (prefix) => `${prefix}-${crypto.randomUUID()}`,
+      });
+      rows = this.commitChanges(plan.changes, {
+        room,
+        user: actor.accountId,
+        name: actor.accountName,
+      });
+      const expires = plan.deletionSnapshots.length
+        ? now + recoveryLifetime
+        : null;
+      value = {
+        ...plan.result,
+        operation_id: operationId,
+        sequence: this.sequence(),
+        ...(expires
+          ? { restorable_until: new Date(expires).toISOString() }
+          : {}),
+      };
+      this.ctx.storage.sql.exec(
+        "INSERT INTO mcp_receipts(grant_id,request_id,operation_id,account_id,client_id,payload,command,created_at,value,rows,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        principal.grantId,
+        command.input.request_id,
+        operationId,
+        actor.accountId,
+        principal.clientId,
+        payload,
+        name,
+        now,
+        JSON.stringify(value),
+        JSON.stringify(rows),
+        expires,
+      );
+      for (const snapshot of plan.deletionSnapshots)
+        this.ctx.storage.sql.exec(
+          "INSERT INTO mcp_deleted_blocks(operation_id,task_id,snapshot,expires_at) VALUES(?,?,?,?)",
+          operationId,
+          snapshot.taskId,
+          JSON.stringify(snapshot),
+          expires!,
+        );
+    });
+    await this.afterMcpCommit(rows);
+    return json(value);
+  }
+  async afterMcpCommit(rows: Row[]) {
+    // Neither broadcast nor housekeeping can turn durable success into failure.
+    await this.safeBroadcast(rows);
+    try {
+      const first = this.ctx.storage.sql
+        .exec<{ expires_at: number | null }>(
+          "SELECT MIN(expires_at) AS expires_at FROM mcp_deleted_blocks",
+        )
+        .toArray()[0];
+      if (first.expires_at !== null)
+        await this.ctx.storage.setAlarm(first.expires_at);
+    } catch (error) {
+      console.error("MCP recovery alarm scheduling failed", error);
+    }
+  }
+  auditSummary(saved: string) {
+    const value = JSON.parse(saved) as Record<string, unknown>;
+    return {
+      canvas_id: value.canvas_id,
+      note_id: value.note_id,
+      revision: value.revision,
+      changed: value.changed,
+      task_count: Array.isArray(value.task_ids) ? value.task_ids.length : 0,
+    };
+  }
+  async browserOperations(
+    room: string,
+    identity: { accountId: string; sessionHash: string },
+    raw: unknown,
+  ): Promise<Response> {
+    check(
+      identity &&
+        validId(identity.accountId) &&
+        typeof identity.sessionHash === "string",
+      "Invalid browser identity.",
+      401,
+    );
+    const action = parseAuditInput(raw);
+    const session = await this.env.DB.prepare(
+      "SELECT a.name FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.account_id=? AND s.expires_at>?",
+    )
+      .bind(identity.sessionHash, identity.accountId, Date.now())
+      .first<{ name: string }>();
+    check(session, "登录已失效，请重新登录。", 401);
+    await membership(this.env, room, identity.accountId);
+    if (action.action === "list") {
+      const after = auditCursor(action.cursor, room, identity.accountId);
+      const receipts = this.ctx.storage.sql
+        .exec<McpReceipt>(
+          `SELECT * FROM mcp_receipts WHERE account_id=? AND (created_at>? OR (created_at=? AND operation_id>?)) ORDER BY created_at,operation_id LIMIT ?`,
+          identity.accountId,
+          after.time,
+          after.time,
+          after.id,
+          action.limit + 1,
+        )
+        .toArray();
+      const page = receipts.slice(0, action.limit);
+      return json({
+        items: page.map((r) => ({
+          operation_id: r.operation_id,
+          tool: r.command,
+          client_id: r.client_id,
+          created_at: new Date(r.created_at).toISOString(),
+          result: this.auditSummary(r.value),
+          restorable_until: r.expires_at
+            ? new Date(r.expires_at).toISOString()
+            : null,
+          restored:
+            this.ctx.storage.sql
+              .exec(
+                "SELECT operation_id FROM mcp_restore_receipts WHERE operation_id=?",
+                r.operation_id,
+              )
+              .toArray().length > 0,
+        })),
+        next_cursor:
+          receipts.length > action.limit
+            ? nextAuditCursor(room, identity.accountId, page.at(-1)!)
+            : null,
+      });
+    }
+    let value: Record<string, unknown> = {},
+      rows: Row[] = [];
+    this.ctx.storage.transactionSync(() => {
+      const original = this.ctx.storage.sql
+        .exec<McpReceipt>(
+          "SELECT * FROM mcp_receipts WHERE operation_id=? AND account_id=?",
+          action.operation_id,
+          identity.accountId,
+        )
+        .toArray()[0];
+      if (!original)
+        throw new McpBusinessError("ACCESS_DENIED", "Operation access denied.");
+      const restored = this.ctx.storage.sql
+        .exec<{ account_id: string; value: string; rows: string }>(
+          "SELECT account_id,value,rows FROM mcp_restore_receipts WHERE operation_id=?",
+          action.operation_id,
+        )
+        .toArray()[0];
+      if (restored) {
+        value = JSON.parse(restored.value);
+        rows = JSON.parse(restored.rows);
+        return;
+      }
+      const now = Date.now();
+      if (!original.expires_at || original.expires_at <= now)
+        throw new McpBusinessError(
+          "NOT_FOUND",
+          "Recovery window has expired or this operation has no deletions.",
+        );
+      const snapshots = this.ctx.storage.sql
+        .exec<{ snapshot: string }>(
+          "SELECT snapshot FROM mcp_deleted_blocks WHERE operation_id=? AND expires_at>? ORDER BY rowid",
+          action.operation_id,
+          now,
+        )
+        .toArray()
+        .map((r) => JSON.parse(r.snapshot) as DeletionSnapshot);
+      if (!snapshots.length)
+        throw new McpBusinessError(
+          "NOT_FOUND",
+          "Recovery snapshot is unavailable.",
+        );
+      const plan = planRestoreBlocks(this.rows(), snapshots, {
+        canvasId: room,
+        accountId: identity.accountId,
+        accountName: session.name,
+        now: new Date(now).toISOString(),
+        makeId: (prefix) => `${prefix}-${crypto.randomUUID()}`,
+      });
+      rows = this.commitChanges(plan.changes, {
+        room,
+        user: identity.accountId,
+        name: session.name,
+      });
+      value = {
+        ...plan.result,
+        operation_id: action.operation_id,
+        sequence: this.sequence(),
+      };
+      this.ctx.storage.sql.exec(
+        "INSERT INTO mcp_restore_receipts(operation_id,account_id,value,rows) VALUES(?,?,?,?)",
+        action.operation_id,
+        identity.accountId,
+        JSON.stringify(value),
+        JSON.stringify(rows),
+      );
+    });
+    await this.afterMcpCommit(rows);
+    return json(value);
+  }
+  async alarm() {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM mcp_deleted_blocks WHERE expires_at<=?",
+      Date.now(),
+    );
+    const next = this.ctx.storage.sql
+      .exec<{ expires_at: number | null }>(
+        "SELECT MIN(expires_at) AS expires_at FROM mcp_deleted_blocks",
+      )
+      .toArray()[0].expires_at;
+    if (next !== null) await this.ctx.storage.setAlarm(next);
   }
   rememberAuthors(data: CanvasData | null) {
     if (data?.type !== "note") return;
@@ -180,7 +579,10 @@ export class CanvasRoom extends DurableObject<Env> {
         JSON.stringify(taskAuthor(block)),
       );
   }
-  attributeAuthors(data: CanvasData, member: Attachment): CanvasData {
+  attributeAuthors(
+    data: CanvasData,
+    member: Pick<Attachment, "user" | "name">,
+  ): CanvasData {
     if (data.type !== "note") return data;
     const blocks = (data.blocks as { id: string }[]).map((block) => {
       const recorded = this.ctx.storage.sql
@@ -431,28 +833,7 @@ export class CanvasRoom extends DurableObject<Env> {
           result = JSON.parse(again.value);
           return;
         }
-        const current = new Map(this.rows().map((row) => [row.id, row]));
-        for (const change of changes)
-          check(
-            (current.get(change.id)?.revision || 0) === change.expectedRevision,
-            "版本冲突",
-            409,
-          );
-        for (const change of changes) {
-          // Keep the registry in the same transaction as revisions and receipts.
-          this.rememberAuthors(current.get(change.id)?.data || null);
-          if (change.data)
-            change.data = this.attributeAuthors(change.data, member);
-        }
-        const nextRows = changes.map((change) => ({
-          id: change.id,
-          revision: change.expectedRevision + 1,
-          deleted: change.data === null,
-          data: change.data,
-        }));
-        for (const row of nextRows) current.set(row.id, row);
-        this.validateTree(current, member.room);
-        for (const row of nextRows) this.save(row);
+        const nextRows = this.commitChanges(changes, member);
         result = { type: "ack", opId: input.opId, rows: nextRows };
         this.ctx.storage.sql.exec(
           "INSERT INTO receipts(id,user_id,payload,value) VALUES(?,?,?,?)",
@@ -463,7 +844,7 @@ export class CanvasRoom extends DurableObject<Env> {
         );
       });
       this.send(socket, result!);
-      await this.broadcast({ type: "changes", rows: result!.rows }, socket);
+      await this.safeBroadcast(result!.rows, socket);
     } catch (error) {
       if (
         error instanceof HttpError &&

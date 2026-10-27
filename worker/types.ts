@@ -8,6 +8,7 @@ export interface Env {
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   EMAIL_CODE_SECRET?: string;
+  PUBLIC_ORIGIN?: string;
 }
 export interface Session {
   id: string;

@@ -14,6 +14,7 @@ import { hashPassword, verifyPassword } from "./passwords.js";
 import { limit } from "./auth-limits";
 import { verifyRegistration, claimRegistration } from "./registration";
 import { invalidCode } from "./email-verification";
+import { revokeAllMcpGrantsStatement } from "./mcp/grants";
 
 interface Account {
   id: string;
@@ -107,6 +108,7 @@ export async function accountEndpoint(
         "INSERT INTO account_sessions(token_hash,account_id,expires_at) SELECT ?,id,? FROM accounts WHERE id=? AND password_hash=?",
       ).bind(hash, expires, account.id, nextHash),
     );
+    statements.push(revokeAllMcpGrantsStatement(env, account.id));
     const result = await env.DB.batch(statements);
     check(
       result[0].meta.changes === 1,

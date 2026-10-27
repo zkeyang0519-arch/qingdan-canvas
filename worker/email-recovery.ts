@@ -1,3 +1,4 @@
+import { revokeAllMcpGrantsStatement } from "./mcp/grants";
 import type { Env, Session } from "./types";
 import { body, check, HttpError, json } from "./http";
 import { limit } from "./auth-limits";
@@ -274,6 +275,7 @@ export async function passwordResetEndpoint(
       AND EXISTS(SELECT 1 FROM email_challenges WHERE id=? AND consumed_by=?)`,
     ).bind(challenge.account_id, challenge.id, claim),
     invalidateOtherChallenges(env, challenge.account_id, challenge.id, claim),
+    revokeAllMcpGrantsStatement(env, challenge.account_id),
   ]);
   check(
     results[0].meta.changes === 1 && results[1].meta.changes === 1,
