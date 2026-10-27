@@ -772,6 +772,127 @@ if (domain) {
     );
   });
 
+  test("search matches the current one-level reference display in tasks and notes", () => {
+    const rows = [
+      row(
+        note("source", [
+          block("ref", "", {
+            runs: [
+              { type: "ref", targetId: "target", label: "saved old label" },
+            ],
+          }),
+        ]),
+      ),
+      row(
+        note("target", [
+          block("title", "Renamed Target"),
+          block("later", "not the visible reference label"),
+        ]),
+      ),
+    ];
+    const tasks = query("search_content", { query: "RENAMED" }, rows);
+    assert.deepEqual(
+      tasks.items.map((item) => item.note_id),
+      ["source", "target"],
+    );
+    assert.equal(tasks.items[0].snippet, "[[Renamed Target]]");
+    const notes = query(
+      "search_content",
+      { query: "renamed", kind: "note" },
+      rows,
+    );
+    assert.deepEqual(
+      notes.items.map((item) => item.note_id),
+      ["source", "target"],
+    );
+    assert.equal(
+      query("get_content", { note_id: "source", task_id: "ref" }, rows).items[0]
+        .runs[0].display_text,
+      "Renamed Target",
+    );
+    assert.deepEqual(
+      query("search_content", { query: "not the visible" }, rows).items.map(
+        (item) => item.note_id,
+      ),
+      ["target"],
+    );
+    rows[1].data.blocks[0].runs = [{ type: "text", text: "" }];
+    assert.deepEqual(
+      query("search_content", { query: "saved old" }, rows).items.map(
+        (item) => item.note_id,
+      ),
+      ["source"],
+    );
+  });
+
+  test("reference search keeps archive and canvas boundaries and never recursively resolves targets", () => {
+    const ref = (id, targetId, label) =>
+      block(id, "", { runs: [{ type: "ref", targetId, label }] });
+    const rows = [
+      row({ ...frame("archive"), type: "collection" }),
+      row(
+        note("source", [
+          ref("archived-ref", "archived", "archive fallback"),
+          ref("foreign-ref", "foreign", "foreign fallback"),
+          ref("deleted-ref", "deleted", "deleted fallback"),
+          ref("missing-ref", "missing", "missing fallback"),
+          ref("nested-ref", "middle", "middle fallback"),
+        ]),
+      ),
+      row(
+        note("archived", [block("private", "archived needle")], {
+          parentId: "archive",
+        }),
+      ),
+      row(
+        note("foreign", [block("secret", "foreign needle")], {
+          boardId: "other",
+        }),
+      ),
+      {
+        ...row(note("deleted", [block("deleted-secret", "deleted needle")])),
+        deleted: true,
+      },
+      row(note("middle", [ref("nested", "deep", "nested saved label")])),
+      row(note("deep", [block("deep-text", "deep needle")])),
+    ];
+    for (const needle of [
+      "archived needle",
+      "foreign needle",
+      "deleted needle",
+    ])
+      assert.deepEqual(
+        query("search_content", { query: needle }, rows).items,
+        [],
+      );
+    assert.deepEqual(
+      query("search_content", { query: "fallback" }, rows).items.map(
+        (item) => item.task_id,
+      ),
+      ["archived-ref", "deleted-ref", "foreign-ref", "missing-ref"],
+    );
+    assert.deepEqual(
+      query(
+        "search_content",
+        { query: "archived needle", include_archived: true },
+        rows,
+      ).items.map((item) => item.task_id),
+      ["private", "archived-ref"],
+    );
+    assert.deepEqual(
+      query("search_content", { query: "deep needle" }, rows).items.map(
+        (item) => item.task_id,
+      ),
+      ["deep-text", "nested"],
+    );
+    assert.deepEqual(
+      query("search_content", { query: "nested saved" }, rows).items.map(
+        (item) => item.task_id,
+      ),
+      ["nested-ref"],
+    );
+  });
+
   test("stable pagination binds cursors to canvas, normalized filters and sequence", () => {
     const rows = [
       row(note("z", [block("z"), block("a")])),

@@ -1,4 +1,5 @@
 import type { CanvasData, Row } from "./types";
+import { referenceLabel } from "../src/canvas/referenceText.js";
 import type {
   CanvasQuery,
   NoteData,
@@ -9,17 +10,50 @@ import { McpBusinessError } from "./mcp/errors";
 import { parseToolInput } from "./mcp/schemas";
 import {
   ancestry,
-  blockText,
   canvasRows,
   flags,
   noteRow,
   objectRow,
-  objectText,
   sectionId,
 } from "./mcp/domain";
 import { boundedPage, filterDigest, serializedBytes } from "./mcp/cursor";
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+function readableRuns(
+  live: Map<string, Row>,
+  block: TaskBlock,
+  includeArchived: boolean,
+) {
+  return block.runs.map((run) => {
+    if (run.type === "text") return { type: "text" as const, text: run.text };
+    const target = run.targetId ? live.get(run.targetId)?.data : undefined;
+    const available =
+      !!target &&
+      (includeArchived ||
+        !(target.type === "collection" || flags(live, target).archived));
+    // Use the browser's first-block label and stored-label fallback, but only
+    // provide an authorized same-canvas target. The resolver never recurses.
+    const readable = new Map<string, CanvasData>(
+      available ? [[target.id, target]] : [],
+    );
+    return {
+      type: "ref" as const,
+      target_id: run.targetId,
+      label: run.label,
+      display_text: referenceLabel(run, readable),
+      unavailable: !available,
+    };
+  });
+}
+function readableBlockText(
+  live: Map<string, Row>,
+  block: TaskBlock,
+  includeArchived: boolean,
+): string {
+  return readableRuns(live, block, includeArchived)
+    .map((run) => (run.type === "text" ? run.text : `[[${run.display_text}]]`))
+    .join("");
+}
 function metadata(live: Map<string, Row>, row: Row & { data: NoteData }) {
   return {
     canvas_id: row.data.boardId,
@@ -36,12 +70,13 @@ function taskSummary(
   live: Map<string, Row>,
   row: Row & { data: NoteData },
   block: TaskBlock,
+  includeArchived: boolean,
 ) {
   return {
     ...metadata(live, row),
     task_id: block.id,
     snippet:
-      `${blockText(block)}${block.remark ? `\n${block.remark.text}` : ""}`.slice(
+      `${readableBlockText(live, block, includeArchived)}${block.remark ? `\n${block.remark.text}` : ""}`.slice(
         0,
         240,
       ),
@@ -60,23 +95,9 @@ function taskDetail(
   block: TaskBlock,
   includeArchived: boolean,
 ) {
-  const runs = block.runs.map((run) => {
-    if (run.type === "text") return { type: "text", text: run.text };
-    const target = run.targetId ? live.get(run.targetId)?.data : undefined;
-    const available =
-      !!target &&
-      (includeArchived ||
-        !(target.type === "collection" || flags(live, target).archived));
-    return {
-      type: "ref",
-      target_id: run.targetId,
-      label: run.label,
-      display_text: available ? objectText(target).slice(0, 240) : run.label,
-      unavailable: !available,
-    };
-  });
+  const runs = readableRuns(live, block, includeArchived);
   return {
-    ...taskSummary(live, row, block),
+    ...taskSummary(live, row, block, includeArchived),
     runs,
     remark: block.remark
       ? { text: block.remark.text, updated_at: block.remark.updatedAt }
@@ -162,7 +183,10 @@ export function queryCanvas(
       for (const row of candidates) {
         if (input.kind === "note") {
           const text = row.data.blocks
-            .map((b) => `${blockText(b)}\n${b.remark?.text ?? ""}`)
+            .map(
+              (b) =>
+                `${readableBlockText(live, b, input.include_archived)}\n${b.remark?.text ?? ""}`,
+            )
             .join("\n");
           if (text.toLowerCase().includes(input.query))
             items.push({
@@ -174,7 +198,7 @@ export function queryCanvas(
         } else
           for (const block of row.data.blocks) {
             const searchable =
-              `${blockText(block)}\n${block.remark?.text ?? ""}`.toLowerCase();
+              `${readableBlockText(live, block, input.include_archived)}\n${block.remark?.text ?? ""}`.toLowerCase();
             if (
               !searchable.includes(input.query) ||
               (input.done !== undefined && block.done !== input.done) ||
@@ -186,7 +210,7 @@ export function queryCanvas(
                 (!block.dueAt || block.dueAt >= input.due_to))
             )
               continue;
-            items.push(taskSummary(live, row, block));
+            items.push(taskSummary(live, row, block, input.include_archived));
           }
       }
       items.sort(
