@@ -9,7 +9,7 @@ import {
 import { todoPages } from "./todoPages.js";
 import { ancestors, effectivelyLocked, normalizeLayout } from "./layout.js";
 import { deleteTask } from "./taskRecords.js";
-import { validDeadline } from "../../shared/deadline.js";
+import { validDeadline, validDeadlineRange } from "../../shared/deadline.js";
 
 function changeView(state, boardId, change) {
   const views = state.preferences.views;
@@ -215,15 +215,19 @@ export function setPageDeadline(
   blockId,
   dueAt,
   expectedDueAt = null,
+  { dueStartAt = null, expectedDueStartAt = null } = {},
 ) {
   if (dueAt !== null && !validDeadline(dueAt)) return state;
+  if (!validDeadlineRange(dueStartAt, dueAt)) return state;
   const task = pageTask(state, boardId, pageId, noteId, blockId);
-  if (!task || (task.block.dueAt ?? null) === dueAt) return state;
+  if (!task) return state;
+  if ((task.block.dueAt ?? null) === dueAt && (task.block.dueStartAt ?? null) === dueStartAt) return state;
   if ((task.block.dueAt ?? null) !== (expectedDueAt ?? null)) return state;
+  if ((task.block.dueStartAt ?? null) !== expectedDueStartAt) return state;
   return patchObjects(state, {
     [noteId]: {
       blocks: task.note.blocks.map((block) =>
-        block.id === blockId ? { ...block, dueAt } : block,
+        block.id === blockId ? { ...block, dueAt, dueStartAt } : block,
       ),
     },
   });

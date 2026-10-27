@@ -113,6 +113,7 @@ export default function Canvas({
   toolsHidden = false,
   temporaryVisible,
   dockedCollectionId,
+  hideCollection = false,
 }) {
   const { state, update, begin, end } = workspace;
   const arranged = view.mode === "arranged";
@@ -2489,7 +2490,7 @@ export default function Canvas({
           </svg>
         )}
       </div>
-      {dockedCollection && (
+      {dockedCollection && !hideCollection && (
         <div
           className={`collection-dock object-collection ${dropTarget === dockedCollection.id || arrangedCollection.receiving === dockedCollection.id || activeFlights.some((f) => f.target.id === dockedCollection.id) ? "receiving" : ""} ${activeFlights.some((f) => f.kind === "crumple" && f.target.id === dockedCollection.id) ? "is-paper-collecting" : ""}`}
           data-object-id={dockedCollection.id}

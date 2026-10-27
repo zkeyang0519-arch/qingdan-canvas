@@ -39,11 +39,25 @@ export function mergeData(base, local, remote, path = "", resolution) {
   }
   if (record(base) && record(local) && record(remote)) {
     const result = {};
+    // A deadline's two endpoints are one edit: never combine competing ranges.
+    const deadline = (value) => [value.dueStartAt ?? null, value.dueAt ?? null];
+    const rangeConflict =
+      Array.isArray(base.runs) &&
+      !equal(deadline(local), deadline(base)) &&
+      !equal(deadline(remote), deadline(base)) &&
+      !equal(deadline(local), deadline(remote));
+    if (rangeConflict && !resolution)
+      throw new ConflictError(`${path}.deadline`);
     for (const key of new Set([
       ...Object.keys(base),
       ...Object.keys(local),
       ...Object.keys(remote),
     ])) {
+      if (rangeConflict && ["dueAt", "dueStartAt"].includes(key)) {
+        const chosen = resolution === "local" ? local : remote;
+        if (chosen[key] !== undefined) result[key] = chosen[key];
+        continue;
+      }
       const value = mergeData(
         base[key],
         local[key],

@@ -85,7 +85,7 @@ after(async () => {
   await rm(output, { recursive: true, force: true });
 });
 
-async function mount(t) {
+async function mount(t, { accountId } = {}) {
   const original = createWorkspace(),
     boardId = original.boards[0].id;
   const note = {
@@ -115,6 +115,7 @@ async function mount(t) {
     const [state, setState] = useState(original),
       [readOnly, setReadOnly] = useState(false),
       [editing, setEditing] = useState(null);
+    const [libraryKey, setAccount] = useState(accountId);
     const current = useRef(state),
       apiRef = useRef(null);
     current.current = state;
@@ -136,6 +137,7 @@ async function mount(t) {
     Object.assign(controls, {
       update,
       setReadOnly,
+      setAccount,
       state: () => current.current,
     });
     return React.createElement(
@@ -144,6 +146,7 @@ async function mount(t) {
       React.createElement(ArrangedWorkspace, {
         workspace,
         boardId,
+        libraryKey,
         apiRef,
         editing,
         onEdit: (noteId, blockId) => setEditing({ noteId, blockId }),
@@ -170,6 +173,208 @@ async function click(element) {
   assert.ok(element);
   await act(async () => element.click());
 }
+
+test("常用清单从账号读取，每次一键添加生成独立新待办且保留模板", async (t) => {
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    requests.push({ url, options });
+    return Response.json({
+      items: [
+        {
+          id: "lunch",
+          text: "中午12点吃饭",
+          createdAt: "2020-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+  const { host, controls } = await mount(t, { accountId: "account-lunch" });
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  await click(
+    document.querySelector('[aria-label="添加常用待办：中午12点吃饭"]'),
+  );
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  await click(
+    document.querySelector('[aria-label="添加常用待办：中午12点吃饭"]'),
+  );
+  const lunches = controls
+    .state()
+    .objects.flatMap((o) => o.blocks || [])
+    .filter((b) => b.runs?.[0]?.text === "中午12点吃饭");
+  assert.equal(lunches.length, 2);
+  assert.notEqual(lunches[0].id, lunches[1].id);
+  assert.notEqual(lunches[0].createdAt, "2020-01-01T00:00:00.000Z");
+  assert.ok(
+    requests.every(
+      (r) => r.options.headers["X-QD-Account"] === "account-lunch",
+    ),
+  );
+});
+
+test("常用清单保存失败保留输入并显示错误，重试成功后再清空", async (t) => {
+  let fail = true;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    if (options.method === "POST") {
+      if (fail)
+        return Response.json({ error: "暂时无法保存" }, { status: 503 });
+      return Response.json({
+        items: [
+          {
+            id: "water",
+            text: JSON.parse(options.body).text,
+            createdAt: "2026-10-27T00:00:00.000Z",
+          },
+        ],
+      });
+    }
+    return Response.json({ items: [] });
+  });
+  const { host } = await mount(t, { accountId: "account-retry" });
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  const input = document.querySelector('[aria-label="常用待办内容"]');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    ).set.call(input, "喝水");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click(document.querySelector(".quick-task-save"));
+  assert.equal(input.value, "喝水");
+  assert.match(
+    document.querySelector(".quick-task-library").textContent,
+    /暂时无法保存/,
+  );
+  fail = false;
+  await click(document.querySelector(".quick-task-save"));
+  assert.equal(input.value, "");
+  assert.ok(!!document.querySelector('[aria-label="添加常用待办：喝水"]'));
+});
+
+test("只迁入当前账号的本地模板，云端删除后重开不会再次导入", async (t) => {
+  const legacy = {
+    id: "legacy-one",
+    text: "旧账号模板",
+    createdAt: "2026-10-20T00:00:00.000Z",
+  };
+  localStorage.setItem(
+    "qingdan.quick-tasks:account-migrate",
+    JSON.stringify([legacy]),
+  );
+  localStorage.setItem(
+    "qingdan.quick-tasks:other-account",
+    JSON.stringify([{ ...legacy, id: "private", text: "其他账号的模板" }]),
+  );
+  let items = [],
+    imports = 0;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    if (options.method === "POST") {
+      items.push(JSON.parse(options.body));
+      imports++;
+    }
+    if (options.method === "DELETE") items = [];
+    return Response.json({ items });
+  });
+  const { host } = await mount(t, { accountId: "account-migrate" });
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  assert.equal(imports, 1);
+  assert.deepEqual(items, [legacy]);
+  await click(
+    document.querySelector('[aria-label="删除常用待办：旧账号模板"]'),
+  );
+  await click(document.querySelector('[aria-label="关闭弹窗"]'));
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  assert.equal(imports, 1);
+  assert.equal(document.querySelectorAll(".quick-task-item").length, 0);
+});
+
+test("切换账号后旧清单请求迟到，不会显示或导入到新账号", async (t) => {
+  let finishOld;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    if (options.headers["X-QD-Account"] === "account-slow")
+      return new Promise((resolve) => {
+        finishOld = resolve;
+      });
+    return Response.json({
+      items: [
+        { id: "b", text: "新账号模板", createdAt: "2026-10-27T00:00:00.000Z" },
+      ],
+    });
+  });
+  const { host, controls } = await mount(t, { accountId: "account-slow" });
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  await act(async () => controls.setAccount("account-fast"));
+  await act(async () =>
+    finishOld(
+      Response.json({
+        items: [
+          {
+            id: "a",
+            text: "旧账号私有模板",
+            createdAt: "2026-10-27T00:00:00.000Z",
+          },
+        ],
+      }),
+    ),
+  );
+  assert.ok(
+    !!document.querySelector('[aria-label="添加常用待办：新账号模板"]'),
+  );
+  assert.equal(
+    document.querySelectorAll('[aria-label="添加常用待办：旧账号私有模板"]')
+      .length,
+    0,
+  );
+  assert.doesNotMatch(
+    localStorage.getItem("qingdan.quick-tasks:account-fast"),
+    /旧账号/,
+  );
+});
+
+test("账号库满时保留待迁入的本地模板，删除一项后可以重试迁入", async (t) => {
+  const legacy = {
+    id: "pending",
+    text: "待迁入模板",
+    createdAt: "2026-10-20T00:00:00.000Z",
+  };
+  localStorage.setItem(
+    "qingdan.quick-tasks:account-full",
+    JSON.stringify([legacy]),
+  );
+  let items = Array.from({ length: 100 }, (_, i) => ({
+    ...legacy,
+    id: `saved-${i}`,
+    text: `已保存${i}`,
+  }));
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    if (options.method === "POST") {
+      if (items.length === 100)
+        return Response.json(
+          { error: "常用清单最多保存 100 条" },
+          { status: 409 },
+        );
+      items.push(JSON.parse(options.body));
+    }
+    if (options.method === "DELETE")
+      items = items.filter((item) => !url.endsWith(`/${item.id}`));
+    return Response.json({ items });
+  });
+  const { host } = await mount(t, { accountId: "account-full" });
+  await click(host.querySelector('[aria-label="打开常用清单"]'));
+  const remove = document.querySelector('[aria-label="删除常用待办：已保存0"]');
+  assert.ok(!!remove, "迁入失败仍可管理账号里的已有模板");
+  assert.equal(remove.disabled, false);
+  await click(remove);
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem("qingdan.quick-tasks:account-full")),
+    [legacy],
+  );
+  await click(document.querySelector(".quick-task-error button"));
+  assert.ok(
+    !!document.querySelector('[aria-label="添加常用待办：待迁入模板"]'),
+  );
+  assert.equal(items.length, 100);
+});
 async function drag(host, source, target, after = false) {
   const previous = document.elementFromPoint;
   // JSDOM has no layout or hit testing. Only the target lookup is supplied;
@@ -267,9 +472,7 @@ test("排列模式每条待办的删除按钮只移除当前待办", async (t) =
 
 test("清空已完成先确认数量，取消确认不会删除待办", async (t) => {
   const { host, controls } = await mount(t);
-  const clearButton = host.querySelector(
-    '[aria-label="清空已完成待办"]',
-  );
+  const clearButton = host.querySelector('[aria-label="清空已完成待办"]');
   assert.ok(clearButton);
   const originalConfirm = window.confirm;
   let message = "";
@@ -302,7 +505,16 @@ test("只读待办的紧凑右键菜单仍拦截浏览器菜单并禁止删除",
 
 test("常用清单库可以保存模板并一键添加到当前清单", async (t) => {
   window.localStorage.clear();
-  const { host, controls } = await mount(t);
+  let items = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    if (options.method === "POST")
+      items.push({
+        ...JSON.parse(options.body),
+        createdAt: "2026-10-27T00:00:00.000Z",
+      });
+    return Response.json({ items });
+  });
+  const { host, controls } = await mount(t, { accountId: "account-save" });
   await click(host.querySelector('[aria-label="打开常用清单"]'));
   const dialog = document.querySelector('[role="dialog"]');
   assert.ok(dialog?.classList.contains("quick-task-library"));

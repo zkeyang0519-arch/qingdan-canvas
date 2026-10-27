@@ -7,6 +7,14 @@ export function localDayKey(value) {
   return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+export function deadlineEventOnDay(event, day) {
+  return (
+    !!day &&
+    localDayKey(event.start) <= day &&
+    localDayKey(event.end || event.start) >= day
+  );
+}
+
 export function deadlineEvents(
   page,
   { showCompleted = false, now = Date.now() } = {},
@@ -19,7 +27,8 @@ export function deadlineEvents(
     .map(({ note, block, key }) => ({
       id: JSON.stringify([note.id, key]),
       title: blockText(block) || "空白待办",
-      start: block.dueAt,
+      start: block.dueStartAt || block.dueAt,
+      ...(block.dueStartAt ? { end: block.dueAt } : {}),
       allDay: false,
       extendedProps: {
         noteId: note.id,

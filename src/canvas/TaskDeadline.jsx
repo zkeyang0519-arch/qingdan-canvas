@@ -43,6 +43,10 @@ const dateFormat = new Intl.DateTimeFormat("zh-CN", {
 });
 export const formatDeadline = (value) =>
   validDeadline(value) ? dateFormat.format(new Date(value)) : "";
+export const formatDeadlineRange = (dueAt, dueStartAt) =>
+  validDeadline(dueStartAt)
+    ? `${formatDeadline(dueStartAt)} – ${formatDeadline(dueAt)}`
+    : formatDeadline(dueAt);
 
 export function useDeadlineClock(objects) {
   const deadlines = useMemo(
@@ -56,6 +60,10 @@ export function useDeadlineClock(objects) {
       ),
     [objects],
   );
+  return useDeadlineTimer(deadlines);
+}
+
+export function useDeadlineTimer(deadlines) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     let timer;
@@ -78,13 +86,40 @@ export function useDeadlineClock(objects) {
   return now;
 }
 
+export function DeadlineIndicator({ info }) {
+  if (info.status === "none") return <CalendarClock size={17} />;
+  return (
+    <>
+      <svg
+        className="todo-deadline-ring"
+        viewBox="0 0 40 40"
+        aria-hidden="true"
+      >
+        <circle className="todo-deadline-track" cx="20" cy="20" r="17" />
+        <circle
+          className="todo-deadline-arc"
+          cx="20"
+          cy="20"
+          r="17"
+          pathLength="100"
+          strokeDasharray="100"
+          strokeDashoffset={info.status === "late" ? 0 : 100 * (1 - info.ratio)}
+        />
+      </svg>
+      <span className="todo-deadline-value">
+        {info.status === "done" ? <Check size={15} /> : info.compact}
+      </span>
+    </>
+  );
+}
+
 export const TaskDeadlineButton = React.forwardRef(function TaskDeadlineButton(
-  { info, dueAt, text, disabled, ...props },
+  { info, dueAt, dueStartAt, text, disabled, ...props },
   ref,
 ) {
   const hasDeadline = info.status !== "none";
   const description = hasDeadline
-    ? `${info.relative}，截止 ${formatDeadline(dueAt)}`
+    ? `${info.relative}，${dueStartAt ? "日期区间" : "截止"} ${formatDeadlineRange(dueAt, dueStartAt)}`
     : "设置截止时间";
   return (
     <button
@@ -96,33 +131,7 @@ export const TaskDeadlineButton = React.forwardRef(function TaskDeadlineButton(
       disabled={disabled}
       {...props}
     >
-      {hasDeadline ? (
-        <>
-          <svg
-            className="todo-deadline-ring"
-            viewBox="0 0 40 40"
-            aria-hidden="true"
-          >
-            <circle className="todo-deadline-track" cx="20" cy="20" r="17" />
-            <circle
-              className="todo-deadline-arc"
-              cx="20"
-              cy="20"
-              r="17"
-              pathLength="100"
-              strokeDasharray="100"
-              strokeDashoffset={
-                info.status === "late" ? 0 : 100 * (1 - info.ratio)
-              }
-            />
-          </svg>
-          <span className="todo-deadline-value">
-            {info.status === "done" ? <Check size={15} /> : info.compact}
-          </span>
-        </>
-      ) : (
-        <CalendarClock size={17} />
-      )}
+      <DeadlineIndicator info={info} />
     </button>
   );
 });
@@ -266,12 +275,23 @@ function TimeWheel({ field, value, disabled, onChange, onMovingChange }) {
   );
 }
 
-function DeadlinePicker({ task, disabled, onClose, onSave }) {
+function DeadlinePicker({
+  task,
+  disabled,
+  onClose,
+  onSave,
+  showHint,
+  disabledMessage,
+}) {
   const [parts, setParts] = useState(() => deadlineSelection(task.dueAt));
   const [month, setMonth] = useState(() => deadlineCalendarDate(parts));
   const [dateRange, setDateRange] = useState(() => ({
-    from: deadlineCalendarDate(parts),
-    to: undefined,
+    from: validDeadline(task.dueStartAt)
+      ? deadlineCalendarDate(deadlineSelection(task.dueStartAt))
+      : deadlineCalendarDate(parts),
+    to: validDeadline(task.dueStartAt)
+      ? deadlineCalendarDate(parts)
+      : undefined,
     interacted: false,
   }));
   const [error, setError] = useState("");
@@ -279,9 +299,9 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
   const settling = moving.hour || moving.minute;
   const date = deadlineCalendarDate(parts);
   const currentYear = new Date().getFullYear();
-  const save = (dueAt) => {
+  const save = (dueAt, dueStartAt = null) => {
     if (disabled) return;
-    const message = onSave(dueAt);
+    const message = onSave(dueAt, dueStartAt);
     if (message) setError(message);
   };
   const selectDate = (selected) => {
@@ -304,9 +324,22 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          event.stopPropagation();
           if (settling) return;
           try {
-            save(parseDeadlineInput(deadlineSelectionValue(parts)));
+            const startParts = dateRange.to
+              ? {
+                  ...selectDeadlineDate(parts, dateRange.from),
+                  hour: 0,
+                  minute: 0,
+                }
+              : null;
+            save(
+              parseDeadlineInput(deadlineSelectionValue(parts)),
+              startParts
+                ? parseDeadlineInput(deadlineSelectionValue(startParts))
+                : null,
+            );
           } catch (err) {
             setError(err.message);
           }
@@ -373,15 +406,16 @@ function DeadlinePicker({ task, disabled, onClose, onSave }) {
         <div className="task-deadline-summary" aria-live="polite">
           <CalendarClock size={14} aria-hidden="true" />
           <span>
-            {selectedDateSummary} ·{" "}
-            {String(parts.hour).padStart(2, "0")}:
+            {selectedDateSummary} · {String(parts.hour).padStart(2, "0")}:
             {String(parts.minute).padStart(2, "0")}
           </span>
         </div>
-        <p className="task-deadline-hint">本地时间 · 提前 24 小时提醒</p>
+        {showHint && (
+          <p className="task-deadline-hint">本地时间 · 提前 24 小时提醒</p>
+        )}
         {disabled && (
           <p role="status" className="task-deadline-error">
-            这条待办当前无法编辑，可能已被锁定、收纳或删除。
+            {disabledMessage}
           </p>
         )}
         {error && (
@@ -430,6 +464,8 @@ export function TaskDeadlinePopover({
   onClose,
   onSave,
   children,
+  showHint = true,
+  disabledMessage = "这条待办当前无法编辑，可能已被锁定、收纳或删除。",
 }) {
   const panel = useRef(null);
   const [panelElement, setPanelElement] = useState(null);
@@ -540,6 +576,8 @@ export function TaskDeadlinePopover({
             disabled={disabled}
             onClose={onClose}
             onSave={onSave}
+            showHint={showHint}
+            disabledMessage={disabledMessage}
           />
         </PopoverContent>
       )}

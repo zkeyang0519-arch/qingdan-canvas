@@ -7,6 +7,13 @@ export function validDeadline(value) {
   );
 }
 
+export function validDeadlineRange(dueStartAt, dueAt) {
+  return (
+    dueStartAt == null ||
+    (validDeadline(dueStartAt) && validDeadline(dueAt) && dueStartAt < dueAt)
+  );
+}
+
 const minute = 60000,
   hour = 60 * minute,
   day = 24 * hour;

@@ -64,12 +64,7 @@ import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
 import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 import { formatCreatedAt } from "./dateFormat.js";
 import QuickTaskLibrary from "./QuickTaskLibrary.jsx";
-import {
-  addQuickTask,
-  loadQuickTasks,
-  removeQuickTask,
-  saveQuickTasks,
-} from "./quickTasks.js";
+import { useQuickTasks } from "./useQuickTasks.js";
 import { Modal } from "./Panels.jsx";
 import ImageContent from "./ImageContent.jsx";
 import { parseClipboard } from "./paste.js";
@@ -568,6 +563,7 @@ function ChecklistPane({
             <TaskDeadlineButton
               info={deadline}
               dueAt={task.block.dueAt}
+              dueStartAt={task.block.dueStartAt}
               text={text}
               disabled={frozen || task.locked || workspace.readOnly}
             />
@@ -891,6 +887,7 @@ export default function ArrangedWorkspace({
   apiRef,
   blocked,
   dockedCollectionId,
+  hideCollection = false,
   libraryKey,
 }) {
   const { state, update } = workspace;
@@ -925,15 +922,9 @@ export default function ArrangedWorkspace({
   const [dialog, setDialog] = useState(null),
     [title, setTitle] = useState(""),
     [importing, setImporting] = useState(0);
-  const quickTaskScope = libraryKey || boardId;
-  const [quickTasks, setQuickTasks] = useState(() =>
-    loadQuickTasks(quickTaskScope),
-  );
   const [quickTaskLibraryOpen, setQuickTaskLibraryOpen] = useState(false);
+  const quickTaskLibrary = useQuickTasks(libraryKey, quickTaskLibraryOpen);
   const modalDialog = dialog && dialog.type !== "deadline";
-  useEffect(() => {
-    setQuickTasks(loadQuickTasks(quickTaskScope));
-  }, [quickTaskScope]);
   const objectMap = useMemo(
     () => new Map(state.objects.map((o) => [o.id, o])),
     [state.objects],
@@ -1011,6 +1002,7 @@ export default function ArrangedWorkspace({
             noteId: task.note.id,
             blockId: task.key,
             dueAt: task.block.dueAt ?? null,
+            dueStartAt: task.block.dueStartAt ?? null,
             title: blockText(task.block),
           }),
         );
@@ -1018,7 +1010,7 @@ export default function ArrangedWorkspace({
     setDialog((current) =>
       current?.type === "deadline" && current === editor ? null : current,
     );
-  const saveDeadline = (dueAt) => {
+  const saveDeadline = (dueAt, dueStartAt = null) => {
     if (dialog?.type !== "deadline") return "截止时间选择已关闭。";
     if (blocked || workspace.readOnly) return "这条待办当前无法编辑。";
     update((s) =>
@@ -1030,6 +1022,7 @@ export default function ArrangedWorkspace({
         dialog.blockId,
         dueAt,
         dialog.dueAt,
+        { dueStartAt, expectedDueStartAt: dialog.dueStartAt },
       ),
     );
     const latest = writablePage(
@@ -1043,7 +1036,7 @@ export default function ArrangedWorkspace({
         !task.locked,
     );
     if (!latest) return "这条待办已被锁定、收纳或删除，请关闭后重试。";
-    if ((latest.block.dueAt ?? null) !== dueAt)
+    if ((latest.block.dueAt ?? null) !== dueAt || (latest.block.dueStartAt ?? null) !== dueStartAt)
       return "截止时间已被协作者修改，请关闭后重新设置。";
     setDialog(null);
     return "";
@@ -1062,13 +1055,6 @@ export default function ArrangedWorkspace({
     const live = panePages(workspace.current.current, boardId);
     return live[live.active];
   };
-  const saveQuickTask = (text) => {
-    const next = addQuickTask(quickTasks, text);
-    if (next === quickTasks) return false;
-    setQuickTasks(next);
-    saveQuickTasks(quickTaskScope, next);
-    return true;
-  };
   const useQuickTask = (item) => {
     const page = currentPage();
     if (blocked || workspace.readOnly || !page) return;
@@ -1086,12 +1072,6 @@ export default function ArrangedWorkspace({
         onToast(`已添加常用待办：${item.text}`);
       else onToast("当前清单暂时无法添加常用待办。");
     });
-  };
-  const deleteQuickTask = (itemId) => {
-    const next = removeQuickTask(quickTasks, itemId);
-    if (next === quickTasks) return;
-    setQuickTasks(next);
-    saveQuickTasks(quickTaskScope, next);
   };
   const collect = (pageId, ids) => {
     if (blocked || workspace.readOnly) return;
@@ -1536,7 +1516,7 @@ export default function ArrangedWorkspace({
           >
             <Redo2 size={16} />
           </button>
-          <button
+          {!hideCollection && <button
             ref={collectionAnchorRef}
             className="arranged-collection"
             aria-label="打开排列收纳框"
@@ -1565,7 +1545,7 @@ export default function ArrangedWorkspace({
                   .length
               }
             </span>
-          </button>
+          </button>}
         </div>
       </div>
       {resolved.view === "calendar" ? (
@@ -1679,12 +1659,16 @@ export default function ArrangedWorkspace({
       ))}
       {quickTaskLibraryOpen && (
         <QuickTaskLibrary
-          items={quickTasks}
+          items={quickTaskLibrary.items}
+          busy={quickTaskLibrary.busy}
+          ready={quickTaskLibrary.ready}
+          error={quickTaskLibrary.error}
+          onRetry={quickTaskLibrary.refresh}
           existingTasks={resolved.page?.tasks || []}
           onClose={() => setQuickTaskLibraryOpen(false)}
           onUse={useQuickTask}
-          onCreate={saveQuickTask}
-          onRemove={deleteQuickTask}
+          onCreate={quickTaskLibrary.add}
+          onRemove={quickTaskLibrary.remove}
         />
       )}
       <input

@@ -8,6 +8,9 @@ import {
   deleteProduct,
   deleteServer,
   groupDeploymentsByRole,
+  parseOpsState,
+  serializeOpsState,
+  updateServer,
 } from "../src/ops/model.js";
 
 test("operations catalog keeps products, servers, and role-grouped deployments", () => {
@@ -58,4 +61,35 @@ test("deleting a product or server cascades linked deployments and ops tasks", (
   assert.equal(afterServer.servers.length, 0);
   assert.equal(afterServer.deployments.length, 0);
   assert.deepEqual(afterServer.tasks.map((task) => task.id), ["task-product"]);
+});
+
+test("服务器 DDL 单日和区间在保存、重新读取和修改资料后保留", () => {
+  let state = addServer(createInitialOpsState(), {
+    name: "prod-api-01",
+    dueAt: "2028-02-29T04:30:00.000Z",
+    dueStartAt: "2028-02-27T16:00:00.000Z",
+  });
+  state = parseOpsState(serializeOpsState(state));
+  assert.equal(state.servers[0].dueAt, "2028-02-29T04:30:00.000Z");
+  assert.equal(state.servers[0].dueStartAt, "2028-02-27T16:00:00.000Z");
+  state = updateServer(state, state.servers[0].id, { name: "renamed" });
+  assert.equal(state.servers[0].dueAt, "2028-02-29T04:30:00.000Z");
+  state = updateServer(state, state.servers[0].id, { dueStartAt: null });
+  assert.equal(state.servers[0].dueStartAt, null);
+  assert.equal(state.servers[0].dueAt, "2028-02-29T04:30:00.000Z");
+  state = updateServer(state, state.servers[0].id, { dueAt: null, dueStartAt: null });
+  assert.equal(parseOpsState(serializeOpsState(state)).servers[0].dueAt, null);
+});
+
+test("服务器拒绝无效 DDL、反向区间及没有结束日期的区间", () => {
+  for (const dates of [
+    { dueAt: "2028-02-30T00:00:00.000Z" },
+    { dueAt: "2028-02-29" },
+    { dueAt: null, dueStartAt: "2028-02-28T00:00:00.000Z" },
+    { dueAt: "2028-02-28T00:00:00.000Z", dueStartAt: "2028-02-29T00:00:00.000Z" },
+  ]) assert.throws(() => addServer(createInitialOpsState(), { name: "server", ...dates }), /截止|日期|区间/);
+  const legacy = addServer(createInitialOpsState(), { name: "旧服务器" });
+  delete legacy.servers[0].dueAt;
+  delete legacy.servers[0].dueStartAt;
+  assert.equal(parseOpsState(serializeOpsState(legacy)).servers[0].name, "旧服务器");
 });

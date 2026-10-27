@@ -1,5 +1,5 @@
 import { parseBackup as parseLegacy } from "../store.js";
-import { validDeadline } from "../../shared/deadline.js";
+import { validDeadline, validDeadlineRange } from "../../shared/deadline.js";
 import { validTaskAuthor } from "../../shared/task-authors.js";
 import { defaultView, bounds } from "./geometry.js";
 import { validateImageData } from "./images.js";
@@ -366,6 +366,7 @@ export function validateWorkspace(value) {
           b.dueAt === undefined || b.dueAt === null || validDeadline(b.dueAt),
           "待办截止时间无效。",
         );
+        requireValue(validDeadlineRange(b.dueStartAt, b.dueAt), "待办日期区间无效。");
         requireValue(
           b.arrangedOrder === undefined ||
             (Number.isSafeInteger(b.arrangedOrder) && b.arrangedOrder >= 0),

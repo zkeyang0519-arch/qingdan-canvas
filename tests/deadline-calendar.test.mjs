@@ -16,6 +16,16 @@ const task = (id, dueAt, done = false) => ({
   locked: false,
 });
 
+test("区间待办在月历覆盖整个日期区间，中间日期也能打开同一待办", () => {
+  const item = task("range", "2026-10-29T15:59:00.000Z");
+  item.block.dueStartAt = "2026-10-26T16:00:00.000Z";
+  const [event] = calendar.deadlineEvents({ tasks: [item] });
+  assert.equal(event.start, "2026-10-26T16:00:00.000Z");
+  assert.equal(event.end, "2026-10-29T15:59:00.000Z");
+  assert.equal(calendar.deadlineEventOnDay(event, "2026-10-28"), true);
+  assert.equal(calendar.deadlineEventOnDay(event, "2026-10-30"), false);
+});
+
 test("仅将当前灵感板的有效未完成 DDL 映射为独立任务，时间相同仍保留", () => {
   const due = "2026-10-28T10:00:00.000Z";
   const page = {

@@ -6,6 +6,11 @@ import path from "node:path";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
+import {
+  createObject,
+  createInspirationBoard,
+  makeBlock,
+} from "../src/canvas/model.js";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://localhost/",
@@ -30,6 +35,7 @@ for (const name of [
 ])
   globalThis[name] = dom.window[name];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+dom.window.HTMLElement.prototype.scrollIntoView = function () {};
 globalThis.innerWidth = 1280;
 globalThis.innerHeight = 800;
 globalThis.ResizeObserver = class {
@@ -196,6 +202,98 @@ async function fill(host, value) {
   });
 }
 const openRename = (host) => click(button(host, "修改项目名称：原项目"));
+
+test("从画布或排列进入运维时隐藏收纳入口，关闭后恢复同一个收纳箱", async (t) => {
+  apiFixture(t);
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  const dock = createObject(original.id, "collection");
+  await act(async () =>
+    sockets
+      .at(-1)
+      .onmessage({
+        data: JSON.stringify({
+          type: "snapshot",
+          rows: [{ id: dock.id, revision: 1, data: dock, deleted: false }],
+        }),
+      }),
+  );
+  const originalDock = host.querySelector(".collection-dock");
+  assert.ok(!!originalDock);
+  const dockId = originalDock.dataset.objectId;
+  await click(button(host, "运维资产"));
+  assert.equal(host.querySelectorAll(".object-collection").length, 0);
+  await click(button(host, "关闭运维资产"));
+  assert.equal(
+    host.querySelector(".collection-dock")?.dataset.objectId,
+    dockId,
+  );
+  await click(button(host, "排列"));
+  assert.equal(
+    host.querySelectorAll(".arranged-collection").length,
+    0,
+    "收纳箱入口只在画布模式显示",
+  );
+  await click(button(host, "运维资产"));
+  assert.equal(host.querySelectorAll(".arranged-collection").length, 0);
+});
+
+test("灵感板、清单、便签显示创建时间，排列每行显示条目创建时间而非DDL", async (t) => {
+  apiFixture(t);
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  const createdAt = "2026-10-01T01:02:00.000Z";
+  const board = { ...createInspirationBoard(original.id), createdAt };
+  const checklist = {
+    ...createObject(original.id, "note"),
+    parentId: board.id,
+    noteKind: "checklist",
+    createdAt,
+    blocks: [
+      {
+        ...makeBlock("核对创建时间"),
+        createdAt: "2026-10-02T03:04:00.000Z",
+        dueAt: "2027-01-01T12:00:00.000Z",
+      },
+    ],
+  };
+  const sticky = {
+    ...createObject(original.id, "note"),
+    noteKind: "text",
+    createdAt,
+  };
+  await act(async () =>
+    sockets
+      .at(-1)
+      .onmessage({
+        data: JSON.stringify({
+          type: "snapshot",
+          rows: [board, checklist, sticky].map((data) => ({
+            id: data.id,
+            revision: 1,
+            data,
+            deleted: false,
+          })),
+        }),
+      }),
+  );
+  assert.equal(
+    host.querySelector(".frame-created-at").getAttribute("datetime"),
+    createdAt,
+  );
+  assert.equal(host.querySelectorAll(".board-add").length, 0);
+  assert.equal(host.querySelectorAll(".note-created-at").length, 2);
+  await click(button(host, "排列"));
+  const time = host.querySelector(
+    `[data-task-id="${checklist.blocks[0].id}"] .todo-created-meta time`,
+  );
+  assert.equal(time?.getAttribute("datetime"), "2026-10-02T03:04:00.000Z");
+  assert.ok(
+    [...host.querySelectorAll(".checklist-created-at")].some(
+      (el) => el.getAttribute("datetime") === createdAt,
+    ),
+  );
+});
 
 test("首页重命名入口只对创建者显示，保存后卡片与再次进入的标题更新", async (t) => {
   const requests = apiFixture(t);

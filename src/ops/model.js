@@ -1,3 +1,5 @@
+import { validDeadline, validDeadlineRange } from "../../shared/deadline.js";
+
 export const OPS_STORAGE_KEY = "qingdan-ops-v1";
 export const OPS_VERSION = 1;
 
@@ -87,6 +89,10 @@ function productFields(input) {
 
 function serverFields(input) {
   if (!isRecord(input)) fail("服务器记录格式无效。");
+  const dueAt = input.dueAt ?? null;
+  const dueStartAt = input.dueStartAt ?? null;
+  if (dueAt !== null && !validDeadline(dueAt)) fail("截止日期无效。");
+  if (!validDeadlineRange(dueStartAt, dueAt)) fail("日期区间无效。");
   return {
     name: requiredText(input.name, MAX.name, "服务器名称"),
     provider: optionalText(input.provider, MAX.provider, "提供商"),
@@ -95,6 +101,8 @@ function serverFields(input) {
     system: optionalText(input.system, MAX.system, "系统"),
     environment: environmentValue(input.environment, false),
     status: statusValue(input.status, "服务器状态"),
+    dueAt,
+    dueStartAt,
   };
 }
 
@@ -364,4 +372,11 @@ export function groupDeploymentsByRole(state, productId) {
       return left.localeCompare(right, "zh-CN");
     })
     .map(([role, items]) => ({ role, items }));
+}
+
+export function productServers(state, productId) {
+  const ids = new Set(state.deployments
+    .filter(item => item.productId === productId)
+    .map(item => item.serverId));
+  return state.servers.filter(server => ids.has(server.id));
 }

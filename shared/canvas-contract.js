@@ -1,5 +1,5 @@
 import { validateImageData } from "../src/canvas/images.js";
-import { validDeadline } from "./deadline.js";
+import { validDeadline, validDeadlineRange } from "./deadline.js";
 import { validTaskAuthor } from "./task-authors.js";
 const fields = new Set(
   "id type boardId parentId x y width height zIndex locked createdAt updatedAt title collapsed fixedBounds noteKind color blocks blockOrder fixedHeight assetId alt naturalWidth naturalHeight crop rotation flipX annotations cloudAssetId assetMetadata".split(
@@ -80,6 +80,7 @@ export function sharedObject(value) {
           block.dueAt === null ||
           validDeadline(block.dueAt),
       );
+      valid(validDeadlineRange(block.dueStartAt, block.dueAt));
       valid(
         block.arrangedOrder === undefined ||
           (Number.isSafeInteger(block.arrangedOrder) &&
@@ -91,6 +92,7 @@ export function sharedObject(value) {
         "createdAt",
         "completedAt",
         "dueAt",
+        "dueStartAt",
         "arrangedOrder",
         "createdByUserId",
         "createdByName",
