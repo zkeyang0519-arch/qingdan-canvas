@@ -457,7 +457,7 @@ export class CanvasRoom extends DurableObject<Env> {
       const after = auditCursor(action.cursor, room, identity.accountId);
       const receipts = this.ctx.storage.sql
         .exec<McpReceipt>(
-          `SELECT * FROM mcp_receipts WHERE account_id=? AND (created_at>? OR (created_at=? AND operation_id>?)) ORDER BY created_at,operation_id LIMIT ?`,
+          `SELECT operation_id,command,client_id,created_at,value,expires_at FROM mcp_receipts WHERE account_id=? AND (created_at>? OR (created_at=? AND operation_id>?)) ORDER BY created_at,operation_id LIMIT ?`,
           identity.accountId,
           after.time,
           after.time,

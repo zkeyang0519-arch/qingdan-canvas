@@ -1,4 +1,12 @@
 import app from "../../worker/index";
+import { oauthApi } from "../../worker/mcp/auth";
+import { captureDiagnostics } from "./diagnostics";
+const diagnostics = captureDiagnostics([
+  /^OAuth error response: /,
+  /^Request failed Injected display cleanup failure$/,
+  /^responseMode: 'json' drops mid-call notifications\./,
+  /^CIMD fetch failed for https:\/\/cimd\.example\.test\/(mismatch|oversized)\.json: /,
+]);
 import type { Env } from "../../worker/types";
 export { CanvasRoom } from "../../worker/room";
 let displayCleanupFailure = false;
@@ -10,6 +18,66 @@ const sqlByStatement = new WeakMap<object, string>();
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url);
+    if (url.pathname === "/fixture/diagnostics")
+      return Response.json(diagnostics());
+    if (url.pathname === "/fixture/oversized-consent") {
+      // Construct the real oversized request in workerd. Sending it through
+      // Miniflare's Node HTTP proxy races early 413/cancel against undici upload
+      // and can reset the socket before Node receives the application response.
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({ csrf: "x".repeat(2 * 1048576) }),
+      );
+      const headers = new Headers({
+        Cookie: request.headers.get("Cookie") || "",
+        Origin: "https://app.test",
+        "Content-Type": "application/json",
+      });
+      const known = url.searchParams.get("mode") === "known";
+      if (known) headers.set("Content-Length", String(bytes.byteLength));
+      let delivered = 0,
+        cancelled = false;
+      const body = known
+        ? bytes
+        : new ReadableStream({
+            pull(controller) {
+              if (delivered === bytes.byteLength) {
+                controller.close();
+                return;
+              }
+              const end = Math.min(delivered + 65536, bytes.byteLength);
+              controller.enqueue(bytes.slice(delivered, end));
+              delivered = end;
+            },
+            cancel() {
+              cancelled = true;
+            },
+          });
+      const response = await app.fetch(
+        new Request(
+          "https://app.test/api/mcp/consent/" + url.searchParams.get("handle"),
+          { method: "POST", headers, body },
+        ),
+        env,
+        ctx,
+      );
+      response.headers.set("X-Fixture-Body-Bytes", String(bytes.byteLength));
+      response.headers.set(
+        "X-Fixture-Declared-Length",
+        headers.get("Content-Length") || "absent",
+      );
+      response.headers.set("X-Fixture-Stream-Cancelled", String(cancelled));
+      response.headers.set("X-Fixture-Delivered-Bytes", String(delivered));
+      return response;
+    }
+    if (url.pathname === "/fixture/client") {
+      try {
+        return Response.json(
+          await oauthApi(env).lookupClient(url.searchParams.get("id")!),
+        );
+      } catch (error) {
+        return Response.json({ error: String(error) }, { status: 502 });
+      }
+    }
     if (url.pathname === "/fixture/token-query-failure") {
       failedTokenQuery = url.searchParams.get("query");
       return Response.json({ ok: true });

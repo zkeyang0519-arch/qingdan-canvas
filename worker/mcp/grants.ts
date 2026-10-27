@@ -124,6 +124,36 @@ export async function requireMcpGrant(
 }
 const bindingSchema = selectionSchema.omit({ canvasIds: true });
 const submittedSchema = selectionSchema.pick({ scopes: true, canvasIds: true });
+// Opportunistic, bounded lifecycle cleanup. Successful grants/receipts and the
+// global request-routing ledger are deliberately never garbage-collected.
+export async function cleanupExpiredMcpConsents(env: Env, now: number) {
+  const eligible = `c.state IN ('open','selected','pending') AND c.expires_at<=?
+    AND NOT EXISTS(SELECT 1 FROM mcp_grants g WHERE g.consent_handle=c.handle AND
+      (g.state<>'pending' OR EXISTS(SELECT 1 FROM mcp_request_bindings b WHERE b.grant_id=g.id)))`;
+  const { results } = await env.DB.prepare(
+    `SELECT c.handle FROM mcp_consent_selections c WHERE ${eligible} ORDER BY c.expires_at,c.handle LIMIT 100`,
+  )
+    .bind(now)
+    .all<{ handle: string }>();
+  if (!results.length) return;
+  const handles = JSON.stringify(results.map((r) => r.handle));
+  // Recheck inside each DELETE: activation may have won after the candidate
+  // SELECT. D1 batch is atomic, so room links cannot be removed from an active grant.
+  const pending = `SELECT g.id FROM mcp_grants g JOIN mcp_consent_selections c ON c.handle=g.consent_handle
+    WHERE g.state='pending' AND c.handle IN (SELECT value FROM json_each(?)) AND ${eligible}`;
+  await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM mcp_grant_rooms WHERE grant_id IN (${pending})`,
+    ).bind(handles, now),
+    env.DB.prepare(`DELETE FROM mcp_grants WHERE id IN (${pending})`).bind(
+      handles,
+      now,
+    ),
+    env.DB.prepare(
+      `DELETE FROM mcp_consent_selections WHERE handle IN (SELECT c.handle FROM mcp_consent_selections c WHERE c.handle IN (SELECT value FROM json_each(?)) AND ${eligible} AND NOT EXISTS(SELECT 1 FROM mcp_grants g WHERE g.consent_handle=c.handle))`,
+    ).bind(handles, now),
+  ]);
+}
 // Bind at authenticated consent GET, before presenting selectable rooms. Safe
 // GET retries reuse an open binding without extending its original expiry.
 export async function bindMcpConsent(
@@ -135,6 +165,7 @@ export async function bindMcpConsent(
   check(data.resource === mcpResource(env), "Invalid MCP resource.", 403);
   const now = Date.now(),
     expires = now + consentLifetime;
+  await cleanupExpiredMcpConsents(env, now);
   const result = await env.DB.prepare(
     `INSERT OR IGNORE INTO mcp_consent_selections(handle,account_id,session_hash,client_id,resource,scopes,canvas_ids,state,created_at,expires_at) SELECT ?,?,?,?,?,?,'[]','open',?,? WHERE EXISTS(SELECT 1 FROM account_sessions WHERE token_hash=? AND account_id=? AND expires_at>?)`,
   )
@@ -376,14 +407,12 @@ export async function listMcpGrants(
   )
     .bind(accountId, before, before, after, limit + 1)
     .all<GrantRow>();
-  const items = results
-    .slice(0, limit)
-    .map((r) => ({
-      ...r,
-      scopes: JSON.parse(r.scopes) as (
-        "qingdan:read" | "qingdan:write" | "offline_access"
-      )[],
-    }));
+  const items = results.slice(0, limit).map((r) => ({
+    ...r,
+    scopes: JSON.parse(r.scopes) as (
+      "qingdan:read" | "qingdan:write" | "offline_access"
+    )[],
+  }));
   const last = items.at(-1);
   return {
     items,

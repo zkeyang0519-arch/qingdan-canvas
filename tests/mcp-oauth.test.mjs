@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import path from "node:path";
 import { build } from "esbuild";
 const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = createRequire(
@@ -12,6 +12,7 @@ const origin = "https://app.test",
   raw = "a".repeat(64),
   sha = (s) => createHash("sha256").update(s).digest("hex");
 let mf, db, out;
+const metadataRequests = [];
 const req = (p, options = {}) =>
   mf.dispatchFetch(origin + p, { redirect: "manual", ...options });
 const cookies = (r) =>
@@ -61,13 +62,18 @@ async function start(client, extra = {}) {
   });
   return req("/oauth/authorize?" + q);
 }
-async function approve(client, scopes = ["qingdan:read", "offline_access"]) {
+async function approve(
+  client,
+  scopes = ["qingdan:read", "offline_access"],
+  who = raw,
+  canvasIds = ["canvas"],
+) {
   const a = await start(client);
   assert.equal(a.status, 302, await a.clone().text());
   const h = new URL(a.headers.get("location"), origin).searchParams.get(
     "handle",
   );
-  const cookie = cookies(a) + "; qd_session=" + raw;
+  const cookie = cookies(a) + "; qd_session=" + who;
   const g = await req("/api/mcp/consent/" + h, { headers: { Cookie: cookie } });
   assert.equal(g.status, 200, await g.clone().text());
   const display = await g.json();
@@ -81,7 +87,7 @@ async function approve(client, scopes = ["qingdan:read", "offline_access"]) {
     body: JSON.stringify({
       decision: "approve",
       scopes,
-      canvas_ids: ["canvas"],
+      canvas_ids: canvasIds,
       csrf: display.csrf,
     }),
   });
@@ -171,8 +177,40 @@ test(
       log: new Log(LogLevel.ERROR),
       d1Databases: ["DB"],
       kvNamespaces: ["OAUTH_KV"],
+      outboundService: async (request) => {
+        const url = new URL(request.url);
+        assert.equal(
+          url.origin,
+          "https://cimd.example.test",
+          "fixture must never reach a real external provider",
+        );
+        metadataRequests.push(url.pathname);
+        assert.equal(request.headers.get("accept"), "application/json");
+        const doc = {
+          client_id: request.url,
+          client_name: "Synthetic CIMD",
+          redirect_uris: ["http://127.0.0.1:54321/callback"],
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        };
+        if (url.pathname === "/mismatch.json")
+          doc.client_id = "https://cimd.example.test/different.json";
+        if (url.pathname === "/oversized.json")
+          doc.client_name = "x".repeat(6000);
+        return Response.json(doc, {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        });
+      },
       durableObjects: { ROOMS: { className: "CanvasRoom", useSQLite: true } },
-      bindings: { APP_ENV: "test", PUBLIC_ORIGIN: origin, MCP_ENABLED: "true" },
+      bindings: {
+        APP_ENV: "test",
+        PUBLIC_ORIGIN: origin,
+        MCP_ENABLED: "true",
+        EMAIL_CODE_SECRET: "test-only-email-signing-secret-over-32-characters",
+        RESEND_API_KEY: "synthetic-no-mail",
+        EMAIL_FROM: "test@example.test",
+      },
     });
     options.resourcePersistencePath = path.join(out, "state");
     options.unsafeEnableSharedStorage = true;
@@ -215,7 +253,7 @@ test(
         "INSERT INTO rooms VALUES('canvas','Canvas','alice','invite','2026-01-01'),('other','Other','alice','invite2','2026-01-01')",
       ),
       db.prepare(
-        "INSERT INTO members VALUES('canvas','alice','owner','2026-01-01'),('other','alice','owner','2026-01-01')",
+        "INSERT INTO members VALUES('canvas','alice','owner','2026-01-01'),('other','alice','owner','2026-01-01'),('other','bob','editor','2026-01-01')",
       ),
     ]);
     await t.test(
@@ -244,6 +282,45 @@ test(
           ).status,
           403,
         );
+      },
+    );
+    await t.test(
+      "official CIMD fetch validates metadata, bounds response size and reuses its local cache",
+      async () => {
+        const lookup = (id) =>
+          req("/fixture/client?id=" + encodeURIComponent(id));
+        const id = "https://cimd.example.test/client.json";
+        const first = await lookup(id);
+        assert.equal(first.status, 200, await first.clone().text());
+        assert.equal((await first.json()).clientName, "Synthetic CIMD");
+        const before = metadataRequests.length;
+        assert.equal((await lookup(id)).status, 200);
+        assert.equal(
+          metadataRequests.length,
+          before,
+          "provider cache should avoid the second outbound metadata fetch",
+        );
+        for (const path of ["mismatch", "oversized"])
+          assert.equal(
+            (await lookup("https://cimd.example.test/" + path + ".json"))
+              .status,
+            502,
+          );
+        const noFetch = metadataRequests.length;
+        assert.equal(
+          await (await lookup("http://cimd.example.test/client.json")).json(),
+          null,
+        );
+        assert.equal(
+          await (await lookup("https://cimd.example.test")).json(),
+          null,
+        );
+        assert.equal(metadataRequests.length, noFetch);
+        assert.deepEqual(metadataRequests, [
+          "/client.json",
+          "/mismatch.json",
+          "/oversized.json",
+        ]);
       },
     );
     const client = await register();
@@ -892,8 +969,36 @@ test(
             "open",
           );
         }
-        const oversized = await post({ csrf: "x".repeat(2 * 1048576) });
-        assert.equal(oversized.status, 413);
+        for (const mode of ["known", "stream"]) {
+          const oversized = await req(
+            `/fixture/oversized-consent?handle=${handle}&mode=${mode}`,
+            { headers: { Cookie: cookie } },
+          );
+          assert.equal(oversized.status, 413, mode);
+          assert.ok(
+            Number(oversized.headers.get("X-Fixture-Body-Bytes")) > 2 * 1048576,
+          );
+          if (mode === "known")
+            assert.equal(
+              oversized.headers.get("X-Fixture-Declared-Length"),
+              oversized.headers.get("X-Fixture-Body-Bytes"),
+            );
+          else {
+            assert.equal(
+              oversized.headers.get("X-Fixture-Declared-Length"),
+              "absent",
+            );
+            assert.equal(
+              oversized.headers.get("X-Fixture-Stream-Cancelled"),
+              "true",
+            );
+            assert.ok(
+              Number(oversized.headers.get("X-Fixture-Delivered-Bytes")) <
+                2 * 1048576,
+            );
+          }
+          assert.match((await oversized.json()).error, /超过大小限制/);
+        }
         const deny = await post({
           decision: "deny",
           scopes: [],
@@ -999,6 +1104,463 @@ test(
       },
     );
     await t.test(
+      "OAuth to all nine tools, WebSocket observation, concurrent note revisions, replay and recovery after revoke",
+      async () => {
+        const full = ["qingdan:read", "qingdan:write", "offline_access"];
+        const approval = await approve(client, full);
+        assert.equal(approval.p.status, 200);
+        const access = await (
+          await exchange(
+            client,
+            new URL((await approval.p.json()).redirect_to).searchParams.get(
+              "code",
+            ),
+          )
+        ).json();
+        const initialized = await protocolJson(
+          await rpc(access.access_token, "initialize", {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "acceptance-fixture", version: "1" },
+          }),
+        );
+        assert.equal(initialized.result.protocolVersion, "2025-03-26");
+        const invoked = new Set();
+        const call = async (name, args = {}, version = "2026-07-28") => {
+          const response = await rpc(
+            access.access_token,
+            "tools/call",
+            { name, arguments: args },
+            version,
+          );
+          assert.equal(response.status, 200, await response.clone().text());
+          const value = (await protocolJson(response)).result;
+          invoked.add(name);
+          return value;
+        };
+        assert.deepEqual(
+          (await call("list_canvases")).structuredContent.items.map(
+            (x) => x.canvas_id,
+          ),
+          ["canvas"],
+        );
+        const canvas = (await call("get_canvas", { canvas_id: "canvas" }))
+          .structuredContent;
+        assert.equal(canvas.canvas_id, "canvas");
+        // Authenticated real browser socket observes the same DO as the remote tools.
+        const upgraded = await req("/api/rooms/canvas/socket?authors=1", {
+          headers: { Cookie: "qd_session=" + raw, Upgrade: "websocket" },
+        });
+        assert.equal(upgraded.status, 101);
+        const socket = upgraded.webSocket,
+          messages = [];
+        socket.addEventListener("message", (event) =>
+          messages.push(JSON.parse(event.data)),
+        );
+        socket.accept();
+        const take = async (predicate) => {
+          for (let i = 0; i < 200; i++) {
+            const at = messages.findIndex(predicate);
+            if (at >= 0) return messages.splice(at, 1)[0];
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          assert.fail("expected WebSocket event was not observed");
+        };
+        try {
+          await take((m) => m.type === "snapshot");
+          const base = {
+            canvas_id: "canvas",
+            target: { section_id: "ungrouped" },
+            blocks: [{ text: "acceptance anchor" }],
+            request_id: "accept-note",
+          };
+          const note = (await call("create_note", base)).structuredContent;
+          assert.ok(note.note_id);
+          const observed = await take(
+            (m) =>
+              m.type === "changes" && m.rows.some((r) => r.id === note.note_id),
+          );
+          assert.equal(
+            observed.rows.find((r) => r.id === note.note_id).revision,
+            note.revision,
+          );
+          const append = {
+            canvas_id: "canvas",
+            request_id: "accept-tasks",
+            target: { note_id: note.note_id },
+            expected_revision: note.revision,
+            items: [
+              {
+                runs: [
+                  { type: "text", text: "acceptance " },
+                  { type: "ref", target_id: note.note_id, label: "anchor" },
+                ],
+                remark: "preserved remark",
+                due_start_at: "2026-11-01T08:00:00+08:00",
+                due_at: "2026-11-02T08:00:00+08:00",
+              },
+            ],
+          };
+          const tasks = (await call("create_tasks", append)).structuredContent;
+          assert.deepEqual(
+            (await call("create_tasks", append)).structuredContent,
+            tasks,
+          );
+          assert.equal(
+            (
+              await call("create_tasks", {
+                ...append,
+                items: [{ text: "different" }],
+              })
+            ).structuredContent.code,
+            "IDEMPOTENCY_KEY_REUSED",
+          );
+          const detail = (
+            await call("get_content", {
+              canvas_id: "canvas",
+              note_id: note.note_id,
+            })
+          ).structuredContent;
+          const task = detail.items.find(
+            (i) => i.task_id === tasks.task_ids[0],
+          );
+          assert.equal(task.created_by, "alice");
+          assert.equal(task.due_start_at, "2026-11-01T00:00:00.000Z");
+          assert.equal(task.due_at, "2026-11-02T00:00:00.000Z");
+          assert.equal(task.remark.text, "preserved remark");
+          assert.ok(
+            task.runs.some(
+              (r) => r.type === "ref" && r.target_id === note.note_id,
+            ),
+          );
+          const page = (
+            await call("search_content", {
+              canvas_id: "canvas",
+              query: "acceptance",
+              limit: 1,
+            })
+          ).structuredContent;
+          assert.equal(page.items.length, 1);
+          assert.ok(page.next_cursor);
+          // Both clients read the same note revision, then alter different blocks.
+          const [one, two] = await Promise.all([
+            call("update_task", {
+              canvas_id: "canvas",
+              note_id: note.note_id,
+              task_id: tasks.task_ids[0],
+              expected_revision: tasks.revision,
+              request_id: "accept-concurrent-a",
+              patch: { done: true },
+            }),
+            call("update_note", {
+              canvas_id: "canvas",
+              note_id: note.note_id,
+              expected_revision: tasks.revision,
+              request_id: "accept-concurrent-b",
+              edits: [
+                {
+                  task_id: note.task_ids[0],
+                  patch: { text: "acceptance changed" },
+                },
+              ],
+            }),
+          ]);
+          assert.equal([one, two].filter((v) => v.isError).length, 1);
+          assert.equal(
+            [one, two].find((v) => v.isError).structuredContent.code,
+            "REVISION_CONFLICT",
+          );
+          assert.equal(
+            (
+              await call("search_content", {
+                canvas_id: "canvas",
+                query: "acceptance",
+                limit: 1,
+                cursor: page.next_cursor,
+              })
+            ).structuredContent.code,
+            "STALE_CURSOR",
+          );
+          const latest = (
+            await call("get_content", {
+              canvas_id: "canvas",
+              note_id: note.note_id,
+            })
+          ).structuredContent;
+          const taskUpdate = await call("update_task", {
+            canvas_id: "canvas",
+            note_id: note.note_id,
+            task_id: tasks.task_ids[0],
+            expected_revision: latest.items[0].revision,
+            request_id: "accept-final-task",
+            patch: { done: true },
+          });
+          assert.equal(taskUpdate.isError, undefined);
+          const noteUpdate = await call("update_note", {
+            canvas_id: "canvas",
+            note_id: note.note_id,
+            expected_revision: taskUpdate.structuredContent.revision,
+            request_id: "accept-final-note",
+            color: "sage",
+          });
+          assert.equal(noteUpdate.isError, undefined);
+          const removed = (
+            await call("delete_task", {
+              canvas_id: "canvas",
+              note_id: note.note_id,
+              task_id: tasks.task_ids[0],
+              expected_revision: noteUpdate.structuredContent.revision,
+              request_id: "accept-delete",
+            })
+          ).structuredContent;
+          assert.ok(removed.operation_id);
+          const commit = async (opId, changes) => {
+            socket.send(JSON.stringify({ type: "commit", opId, changes }));
+            const response = await take((m) => m.opId === opId);
+            assert.equal(response.type, "ack", JSON.stringify(response));
+            return response.rows;
+          };
+          const now = new Date().toISOString();
+          let parent = {
+            id: "accept-parent",
+            type: "frame",
+            boardId: "canvas",
+            parentId: null,
+            x: 0,
+            y: 0,
+            width: 500,
+            height: 500,
+            zIndex: 1,
+            locked: false,
+            createdAt: now,
+            updatedAt: now,
+            title: "boundary",
+            collapsed: false,
+          };
+          await commit("accept-parent-create", [
+            { id: parent.id, expectedRevision: 0, data: parent },
+          ]);
+          const nested = (
+            await call("create_note", {
+              canvas_id: "canvas",
+              request_id: "accept-nested",
+              target: { section_id: parent.id },
+              blocks: [{ text: "boundary" }],
+            })
+          ).structuredContent;
+          parent = { ...parent, locked: true };
+          await commit("accept-parent-lock", [
+            { id: parent.id, expectedRevision: 1, data: parent },
+          ]);
+          assert.equal(
+            (
+              await call("update_task", {
+                canvas_id: "canvas",
+                request_id: "accept-locked",
+                note_id: nested.note_id,
+                task_id: nested.task_ids[0],
+                expected_revision: 1,
+                patch: { done: true },
+              })
+            ).structuredContent.code,
+            "LOCKED",
+          );
+          parent = { ...parent, locked: false, parentId: "canvas-root" };
+          await commit("accept-parent-archive", [
+            { id: parent.id, expectedRevision: 2, data: parent },
+          ]);
+          assert.equal(
+            (
+              await call("get_content", {
+                canvas_id: "canvas",
+                note_id: nested.note_id,
+              })
+            ).structuredContent.code,
+            "ARCHIVED",
+          );
+          assert.equal(
+            (
+              await call("update_note", {
+                canvas_id: "canvas",
+                request_id: "accept-archived",
+                note_id: nested.note_id,
+                expected_revision: 1,
+                color: "rose",
+              })
+            ).structuredContent.code,
+            "ARCHIVED",
+          );
+          const archived = (
+            await call("get_content", {
+              canvas_id: "canvas",
+              note_id: nested.note_id,
+              include_archived: true,
+            })
+          ).structuredContent;
+          assert.equal(archived.archived, true);
+          const hidden = (
+            await call("search_content", {
+              canvas_id: "canvas",
+              query: "boundary",
+            })
+          ).structuredContent;
+          assert.deepEqual(hidden.items, []);
+          const large = (
+            await call("create_note", {
+              canvas_id: "canvas",
+              request_id: "accept-large",
+              target: { section_id: "ungrouped" },
+              blocks: Array.from({ length: 3 }, () => ({
+                text: "界".repeat(30000),
+              })),
+            })
+          ).structuredContent;
+          const bounded = (
+            await call("get_content", {
+              canvas_id: "canvas",
+              note_id: large.note_id,
+              limit: 100,
+            })
+          ).structuredContent;
+          assert.equal(bounded.items.length, 2);
+          assert.ok(bounded.next_cursor);
+          assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= 256000);
+          const remaining = (
+            await call("get_content", {
+              canvas_id: "canvas",
+              note_id: large.note_id,
+              limit: 100,
+              cursor: bounded.next_cursor,
+            })
+          ).structuredContent;
+          assert.equal(remaining.items.length, 1);
+          assert.equal(remaining.items[0].runs[0].text.length, 30000);
+          // A later ordinary web edit remains intact after recovering this deletion.
+          const snapshot = await (
+            await req("/api/rooms/canvas/snapshot?authors=1", {
+              headers: { Cookie: "qd_session=" + raw },
+            })
+          ).json();
+          const row = snapshot.rows.find((r) => r.id === note.note_id),
+            data = structuredClone(row.data);
+          data.color = "blue";
+          socket.send(
+            JSON.stringify({
+              type: "commit",
+              opId: "accept-web-edit",
+              changes: [{ id: row.id, expectedRevision: row.revision, data }],
+            }),
+          );
+          assert.equal(
+            (await take((m) => m.opId === "accept-web-edit")).type,
+            "ack",
+          );
+          const grants = await (
+            await req("/api/profile/mcp-grants", {
+              headers: { Cookie: "qd_session=" + raw },
+            })
+          ).json();
+          const active = grants.items.find((g) => g.state === "active");
+          assert.equal(
+            (
+              await req("/api/profile/mcp-grants/" + active.id, {
+                method: "DELETE",
+                headers: { Cookie: "qd_session=" + raw },
+              })
+            ).status,
+            200,
+          );
+          assert.equal(
+            (await rpc(access.access_token, "tools/list")).status,
+            401,
+          );
+          const restore = async (id) =>
+            req(
+              "/api/rooms/canvas/mcp-operations/" +
+                removed.operation_id +
+                "/restore",
+              {
+                method: "POST",
+                headers: {
+                  Cookie: "qd_session=" + raw,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ request_id: id }),
+              },
+            );
+          const restored = await restore("accept-restore");
+          assert.equal(restored.status, 200);
+          const value = await restored.json();
+          assert.ok(value.task_ids.includes(tasks.task_ids[0]));
+          assert.deepEqual(
+            await (await restore("accept-retry-other-id")).json(),
+            value,
+          );
+          const after = await (
+            await req("/api/rooms/canvas/snapshot?authors=1", {
+              headers: { Cookie: "qd_session=" + raw },
+            })
+          ).json();
+          const recovered = after.rows.find((r) => r.id === note.note_id);
+          assert.equal(recovered.data.color, "blue");
+          const block = recovered.data.blocks.find(
+            (b) => b.id === tasks.task_ids[0],
+          );
+          assert.equal(block.remark.text, "preserved remark");
+          assert.equal(block.createdByUserId, "alice");
+          assert.deepEqual(
+            [...invoked].sort(),
+            [
+              "list_canvases",
+              "get_canvas",
+              "search_content",
+              "get_content",
+              "create_tasks",
+              "update_task",
+              "delete_task",
+              "create_note",
+              "update_note",
+            ].sort(),
+          );
+        } finally {
+          socket.close();
+        }
+        const bob = await approve(client, ["qingdan:read"], "b".repeat(64), [
+          "other",
+        ]);
+        assert.equal(bob.p.status, 200);
+        const bobToken = await (
+          await exchange(
+            client,
+            new URL((await bob.p.json()).redirect_to).searchParams.get("code"),
+          )
+        ).json();
+        const bobList = (
+          await protocolJson(
+            await rpc(bobToken.access_token, "tools/call", {
+              name: "list_canvases",
+              arguments: {},
+            }),
+          )
+        ).result.structuredContent;
+        assert.deepEqual(
+          bobList.items.map((x) => x.canvas_id),
+          ["other"],
+        );
+        assert.equal(
+          (
+            await protocolJson(
+              await rpc(bobToken.access_token, "tools/call", {
+                name: "get_canvas",
+                arguments: { canvas_id: "canvas" },
+              }),
+            )
+          ).result.structuredContent.code,
+          "ACCESS_DENIED",
+        );
+      },
+    );
+    await t.test(
       "ordinary logout preserves grant, password change revokes provider and read-only consent omits refresh",
       async () => {
         const { hashPassword } = await import("../worker/passwords.js");
@@ -1056,5 +1618,112 @@ test(
         );
       },
     );
+    await t.test(
+      "password reset revokes a real provider token and refresh grant",
+      async () => {
+        await db
+          .prepare("INSERT INTO account_sessions VALUES(?,?,?)")
+          .bind(sha(raw), "alice", Date.now() + 86400000)
+          .run();
+        const approval = await approve(client);
+        assert.equal(approval.p.status, 200);
+        const token = await (
+          await exchange(
+            client,
+            new URL((await approval.p.json()).redirect_to).searchParams.get(
+              "code",
+            ),
+          )
+        ).json();
+        const passwordHash = (
+          await db
+            .prepare("SELECT password_hash FROM accounts WHERE id='alice'")
+            .first()
+        ).password_hash;
+        await db
+          .prepare(
+            "UPDATE accounts SET email='alice@example.test',email_verified_at=? WHERE id='alice'",
+          )
+          .bind(Date.now())
+          .run();
+        const challengeId = "d".repeat(64),
+          codeHash = createHmac(
+            "sha256",
+            "test-only-email-signing-secret-over-32-characters",
+          )
+            .update(
+              JSON.stringify([
+                challengeId,
+                "alice",
+                "reset",
+                "alice@example.test",
+                "123456",
+              ]),
+            )
+            .digest("hex");
+        await db
+          .prepare(
+            "INSERT INTO email_challenges(id,account_id,purpose,email,code_hash,credential_hash,prior_email,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+          )
+          .bind(
+            challengeId,
+            "alice",
+            "reset",
+            "alice@example.test",
+            codeHash,
+            passwordHash,
+            "alice@example.test",
+            Date.now() + 600000,
+          )
+          .run();
+        const reset = await req("/api/auth/password-reset/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: "alice",
+            email: "alice@example.test",
+            challengeId,
+            code: "123456",
+            password: "Reset-password-789",
+          }),
+        });
+        assert.equal(reset.status, 200, await reset.clone().text());
+        assert.equal((await rpc(token.access_token, "tools/list")).status, 401);
+        const refresh = await req("/oauth/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            client_id: client.client_id,
+            refresh_token: token.refresh_token,
+            resource: origin + "/mcp",
+          }),
+        });
+        assert.equal(refresh.status, 400);
+        assert.equal(
+          (
+            await (
+              await mf.getKVNamespace("OAUTH_KV")
+            ).list({ prefix: "grant:alice:" })
+          ).keys.length,
+          0,
+        );
+      },
+    );
+    const diagnostics = await (await req("/fixture/diagnostics")).json();
+    const counts = {};
+    for (const message of diagnostics)
+      counts[message] = (counts[message] || 0) + 1;
+    assert.deepEqual(counts, {
+      'CIMD fetch failed for https://cimd.example.test/mismatch.json: client_id "https://cimd.example.test/different.json" does not match metadata URL "https://cimd.example.test/mismatch.json"': 1,
+      "CIMD fetch failed for https://cimd.example.test/oversized.json: Response exceeded size limit of 5120 bytes": 1,
+      "OAuth error response: 400 invalid_grant - Invalid PKCE code_verifier": 1,
+      "responseMode: 'json' drops mid-call notifications. subscriptions/listen streams are always served over SSE regardless; other notifications emitted before a result are dropped.": 40,
+      "OAuth error response: 401 invalid_token - Invalid access token": 4,
+      "OAuth error response: 400 invalid_grant - Grant not found": 2,
+      "OAuth error response: 400 invalid_grant - Authorization is no longer active.": 1,
+      "OAuth error response: 400 invalid_grant - Grant not found or authorization code expired": 1,
+      "OAuth error response: 503 temporarily_unavailable - Authorization could not be checked. Retry later.": 2,
+    });
   },
 );

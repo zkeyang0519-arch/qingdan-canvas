@@ -4,6 +4,18 @@
 
 已有 D1、R2 和 Worker，无需重复创建。以下第 1–5 节是首次建站参考；本次账号版本请先按下面的升级步骤操作。实际进度见 [部署记录](deployment-status.md)。
 
+## 轻单 MCP 升级与发布
+
+本地实现、自动验收和四端接入说明见 [MCP 接入](mcp-setup.md)、[MCP 配置](mcp-configuration.md)、[验收记录](mcp-acceptance.md)。本次没有创建云端 namespace、迁移远程 D1、部署 preview/production 或登录四个真实客户端。以下均为维护者后续手动执行步骤。
+
+1. 先为 **production 和 preview 分别**准备专用 OAuth KV。需要新建时手动运行 `npx wrangler kv namespace create qingdan-oauth-production`、`npx wrangler kv namespace create qingdan-oauth-preview`，不要接受会把预览资源混进顶层的自动配置修改；把各自 ID 按 [配置示例](mcp-configuration.md) 放入顶层/`previews.kv_namespaces`。已有正确资源时复用，不重复创建。
+2. 为各环境设置固定 HTTPS `PUBLIC_ORIGIN`，resource 自动为该 origin 加 `/mcp`；设置 `MCP_ENABLED`，按需配置精确浏览器 `MCP_ALLOWED_ORIGINS`。保持两个兼容标志和 worker-first 路径。不要添加 `env.preview`：本项目采用 Wrangler **`previews`** 配置和 `wrangler preview`。
+3. 先在独立 preview 执行 `npm run db:preview`，确认目标是预览 D1，应用追加迁移 `0006_mcp_grants.sql`（以及尚未执行的旧迁移），成功后才发布新代码。保留原有两个 `0005_*` 文件，不重命名已部署迁移。手动构建后使用 `npx wrangler preview`；配置必须使用该 preview 的 D1/R2/自动隔离 DO 与专用 KV，不可引用生产数据。
+4. 在 preview 启用 MCP，使用测试账号/画布按 [四端流程](mcp-setup.md#四端共用验收步骤) 检查 OAuth、读写/只读、网页同步、重连和撤销，再补充 [验收表](mcp-acceptance.md#四端与发布待验收)。`deploy:check` 不会验证云端绑定、HTTPS、权限、KV 一致性或真实客户端。
+5. 验收通过后，生产仍由维护者先执行 `npm run db:remote`，确认生产库并应用追加迁移，随后 `npm run deploy`；生产 `APP_ENV` 必须为 `production`。最后在生产做专用测试画布的受控冒烟验证。不要仅部署代码而遗漏 D1。
+
+紧急停用：将目标环境的 `MCP_ENABLED` 改成 `false` 后发布配置，协议与授权入口返回 404，正常网页继续工作，账号设置仍能撤销连接和恢复删除。撤销相关 D1 grants 后再排查 provider 清理；D1 已撤销的授权不能因 KV 清理失败继续访问。回滚使用已知兼容代码，保留新增 D1 表、现有画布及成功回执；不要删除迁移、恢复快照或请求绑定作为回滚手段。重新启用后用户须重新授权已撤销连接。
+
 ## 已有网站升级到账号版本
 
 1. 旧访客先等待“已同步”，需要时导出备份。保留原浏览器 Cookie，升级后用它认领旧画布。

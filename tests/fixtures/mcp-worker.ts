@@ -1,4 +1,10 @@
 import app from "../../worker/index";
+import { captureDiagnostics } from "./diagnostics";
+const diagnostics = captureDiagnostics([
+  /^Request failed Injected tree validation failure$/,
+  /^Request failed Injected snapshot failure: SQLITE_CONSTRAINT \(extended: SQLITE_CONSTRAINT_TRIGGER\)$/,
+  /^Committed canvas broadcast failed Error: Injected broadcast failure$/,
+]);
 import { passwordResetEndpoint } from "../../worker/email-recovery";
 import { accountEndpoint } from "../../worker/accounts";
 import { requireSession } from "../../worker/auth";
@@ -45,6 +51,7 @@ export class CanvasRoom extends RealCanvasRoom {
       if (input.failBroadcast !== undefined)
         this.failBroadcast = input.failBroadcast;
       if (input.alarm) await this.alarm();
+      if (input.diagnostics) return Response.json(diagnostics());
       if (input.revokeAfterReservation)
         this.reservationControl.revokeGrant = input.revokeAfterReservation;
       return Response.json(
@@ -132,6 +139,13 @@ export default {
       if (p === "/password") return accountEndpoint(request, env, "password");
       const input = request.method === "POST" ? await request.json() : {};
       const session = await requireSession(request, env);
+      if (p === "/cleanup") {
+        await grants.cleanupExpiredMcpConsents(
+          gatedEnv(env, url.searchParams.get("gate")),
+          input.now,
+        );
+        return Response.json({ ok: true });
+      }
       if (p === "/bind")
         return Response.json(await grants.bindMcpConsent(env, session, input));
       if (p === "/submit")

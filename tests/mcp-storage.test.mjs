@@ -956,6 +956,11 @@ test(
           expected_revision: 1,
         });
         assert.equal(success.status, 200);
+        assert.deepEqual(await fixture({ diagnostics: true }), [
+          "Request failed Injected tree validation failure",
+          "Request failed Injected tree validation failure",
+          "Request failed Injected snapshot failure: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)",
+        ]);
       },
     );
     await t.test(
@@ -975,6 +980,12 @@ test(
           expected_revision: 1,
         });
         const before = (await mcp(p, "get_canvas", {})).sequence;
+        assert.deepEqual(
+          await fixture({ diagnostics: true }),
+          Array(2).fill(
+            "Committed canvas broadcast failed Error: Injected broadcast failure",
+          ),
+        );
         await mf.dispose();
         mf = new Miniflare(options);
         db = await mf.getD1Database("DB");
@@ -1620,6 +1631,198 @@ test(
             .status,
           401,
         );
+      },
+    );
+    await t.test(
+      "consent binding cleans at most 100 expired temporary lifecycles while preserving history and request bindings",
+      async () => {
+        const preserved = await grant();
+        const saved = await create(preserved, "cleanup-success");
+        const pending = await consent();
+        const held = await consent();
+        await db
+          .prepare("INSERT INTO mcp_request_bindings VALUES(?,?,?,?,?,?,?,?,?)")
+          .bind(
+            held.grantId,
+            "held",
+            "alice",
+            "client",
+            resource,
+            "canvas",
+            "create_note",
+            "digest",
+            Date.now(),
+          )
+          .run();
+        const live = await consent();
+        const expired = 1;
+        await db
+          .prepare(
+            "UPDATE mcp_consent_selections SET expires_at=? WHERE grant_id IN (?,?,?)",
+          )
+          .bind(expired, preserved.grantId, pending.grantId, held.grantId)
+          .run();
+        await request("/revoke", { grantId: preserved.grantId });
+        // More than one pass, interleaved open/selected lifecycles and one pending grant.
+        await db.batch(
+          Array.from({ length: 104 }, (_, i) =>
+            db
+              .prepare(
+                "INSERT INTO mcp_consent_selections VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+              )
+              .bind(
+                "cleanup-" + i,
+                "alice",
+                sha(raw),
+                "client",
+                resource,
+                '["qingdan:read"]',
+                "[]",
+                i % 2 ? "open" : "selected",
+                null,
+                expired - 10000 + i,
+                expired,
+              ),
+          ),
+        );
+        const trigger = () =>
+          request("/bind", {
+            handle: crypto.randomUUID(),
+            clientId: "client",
+            resource,
+            scopes: ["qingdan:read"],
+          });
+        assert.equal((await trigger()).status, 200);
+        const count = () =>
+          db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM mcp_consent_selections WHERE handle LIKE 'cleanup-%' OR grant_id=?",
+            )
+            .bind(pending.grantId)
+            .first();
+        assert.equal(
+          (await count()).n,
+          5,
+          "one pass must remove exactly 100 eligible lifecycles",
+        );
+        assert.equal((await trigger()).status, 200);
+        assert.equal((await count()).n, 0);
+        assert.equal(
+          await db
+            .prepare("SELECT id FROM mcp_grants WHERE id=?")
+            .bind(pending.grantId)
+            .first(),
+          null,
+        );
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_grant_rooms WHERE grant_id=?",
+              )
+              .bind(pending.grantId)
+              .first()
+          ).n,
+          0,
+        );
+        for (const id of [preserved.grantId, held.grantId, live.grantId])
+          assert.ok(
+            await db
+              .prepare("SELECT id FROM mcp_grants WHERE id=?")
+              .bind(id)
+              .first(),
+          );
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_request_bindings WHERE grant_id IN (?,?)",
+              )
+              .bind(preserved.grantId, held.grantId)
+              .first()
+          ).n,
+          2,
+        );
+        assert.equal(
+          (
+            await fixture({
+              sql: "SELECT operation_id FROM mcp_receipts WHERE operation_id=?",
+              bindings: [saved.operation_id],
+            })
+          ).length,
+          1,
+        );
+        assert.equal(
+          (
+            await request("/activate", {
+              grantId: held.grantId,
+              providerGrantId: "expired-held",
+            })
+          ).status,
+          403,
+        );
+      },
+    );
+    await t.test(
+      "cleanup rechecks pending state inside its transaction after candidate selection",
+      async () => {
+        const pending = await consent();
+        await db
+          .prepare(
+            "UPDATE mcp_consent_selections SET expires_at=1 WHERE grant_id=?",
+          )
+          .bind(pending.grantId)
+          .run();
+        const cleanup = request("/cleanup?gate=cleanup", { now: Date.now() });
+        while (
+          !(
+            await (
+              await mf.dispatchFetch(
+                "https://app.test/gate/status?gate=cleanup",
+              )
+            ).json()
+          ).entered
+        )
+          await new Promise((r) => setTimeout(r, 5));
+        // A live activation wins between candidate selection and the deletion batch.
+        await db
+          .prepare(
+            "UPDATE mcp_consent_selections SET expires_at=? WHERE grant_id=?",
+          )
+          .bind(Date.now() + 60000, pending.grantId)
+          .run();
+        assert.equal(
+          (
+            await request("/activate", {
+              grantId: pending.grantId,
+              providerGrantId: "cleanup-race",
+            })
+          ).status,
+          200,
+        );
+        await request("/gate/release?gate=cleanup", {});
+        assert.equal((await cleanup).status, 200);
+        assert.equal(
+          (
+            await db
+              .prepare("SELECT state FROM mcp_grants WHERE id=?")
+              .bind(pending.grantId)
+              .first()
+          ).state,
+          "active",
+        );
+        assert.equal(
+          (
+            await db
+              .prepare(
+                "SELECT COUNT(*) AS n FROM mcp_grant_rooms WHERE grant_id=?",
+              )
+              .bind(pending.grantId)
+              .first()
+          ).n,
+          1,
+        );
+        assert.equal((await fixture({ diagnostics: true })).length, 0);
       },
     );
   },
