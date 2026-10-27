@@ -126,7 +126,7 @@ MCP handler 本身不保留业务会话状态。业务内容、操作结果和�
 | `/api/profile/mcp-grants` 及子路径                 | 列出、撤销本人连接         | 现有账号 Cookie、同源检查                   |
 | `/api/rooms/:id/mcp-operations` 及恢复子路径       | 查看本人操作、恢复删除     | 账号 Cookie、当前成员权限、操作归属         |
 
-`/oauth/authorize` 使用 provider 保存请求后转至 `/?oauth_request=<opaque-handle>`。`src/App.jsx` 在登录完成后优先处理此参数，结束后清理它，再恢复正常首页逻辑；不把 OAuth 参数当作邀请或画布跳转。
+`/oauth/authorize` 使用 provider 保存请求后转至 `/mcp/consent?handle=<opaque-handle>`。`src/App.jsx` 在登录完成后优先处理此授权页，结束后清理它，再恢复正常首页逻辑；不把 OAuth 参数当作邀请或画布跳转。实施时采用这个专用页面路径，以保证请求先进入 Worker，最终 SPA 文档也能设置防嵌入、无 Referer 和禁止缓存的响应头。只有这一精确页面路由先于 provider 的 `/mcp` 前缀处理；敏感授权 API 仍须 Cookie、原始账号会话绑定和 CSRF 校验，MCP 协议入口仍只接受 Bearer。
 
 `wrangler.jsonc` 的 Worker 优先路由覆盖 `/api/*`、`/mcp`、`/mcp/*`、`/oauth/*`、`/.well-known/*`，生产和 preview 一致。OAuth/MCP 路由在原 `sameOrigin()` 与 Cookie 分支之前分发；现有网页 API 保留原同源要求。MCP 接受无 Origin 的原生客户端；有 Origin 时按明确配置的允许来源处理，预检不放宽 Cookie API。
 
