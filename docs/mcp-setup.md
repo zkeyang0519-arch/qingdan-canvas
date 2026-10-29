@@ -12,11 +12,11 @@
 
 ## Codex
 
-本机检查版本为 `codex-cli 0.165.0-alpha.1.2`。本地条目已经加入并由 `codex mcp list` 验证；OAuth 登录仍需在客户端完成。Wrangler 的临时自签名证书会被 Codex CLI 拒绝，若要完成本地登录，需要改用受信任的本地证书或 HTTPS preview。
+本机检查版本为 `codex-cli 0.165.0-alpha.1.2`。本地条目已加入，OAuth 已完成，`codex exec` 也实际调用 `list_canvases` 成功。Codex 的 CIMD 地址在本地网络下返回 403，因此本次登录显式使用 DCR；Wrangler 临时自签名证书已加入当前用户信任库。其他机器需要信任对应本地证书，或改用受信任的 HTTPS preview。
 
 ```powershell
 codex mcp add qingdan-local --url "https://localhost:8790/mcp" --oauth-resource "https://localhost:8790/mcp"
-codex mcp login qingdan-local --scopes "qingdan:read,offline_access"
+codex mcp login qingdan-local --scopes "qingdan:read,offline_access" --oauth-client-registration dcr
 codex mcp list
 ```
 
