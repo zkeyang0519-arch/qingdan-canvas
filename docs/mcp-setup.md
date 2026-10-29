@@ -1,6 +1,6 @@
 # 轻单 MCP 接入指南
 
-统一连接地址为 `https://<你的域名>/mcp`，使用 Streamable HTTP 与 OAuth。请先由站点维护者按 [环境配置](mcp-configuration.md) 和 [Cloudflare 发布说明](cloudflare-setup.md#轻单-mcp-升级与发布) 部署独立 preview。下面是供用户手动执行的说明，本次没有修改任何客户端配置、登录真实账号或部署云端。
+统一连接地址为 `https://<你的域名>/mcp`，使用 Streamable HTTP 与 OAuth；本地隔离运行时使用 `https://localhost:8790/mcp`。本次已启动本地 Worker，并创建项目级 `.mcp.json`、`.vscode/mcp.json`、`.cursor/mcp.json`，同时注册了 Codex 的 `qingdan-local` 条目；没有部署云端或写入生产数据。
 
 ## 授权与权限
 
@@ -12,37 +12,47 @@
 
 ## Codex
 
-本机检查版本为 `codex-cli 0.164.0-alpha.11.1`。下列命令由本机 `codex mcp add --help`、`codex mcp login --help` 及 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) 核对；未执行添加或登录。
+本机检查版本为 `codex-cli 0.165.0-alpha.1.2`。本地条目已经加入并由 `codex mcp list` 验证；OAuth 登录仍需在客户端完成。Wrangler 的临时自签名证书会被 Codex CLI 拒绝，若要完成本地登录，需要改用受信任的本地证书或 HTTPS preview。
 
 ```powershell
-codex mcp add qingdan-preview --url "https://<PREVIEW_HOST>/mcp" --oauth-resource "https://<PREVIEW_HOST>/mcp"
-codex mcp login qingdan-preview --scopes "qingdan:read,offline_access"
+codex mcp add qingdan-local --url "https://localhost:8790/mcp" --oauth-resource "https://localhost:8790/mcp"
+codex mcp login qingdan-local --scopes "qingdan:read,offline_access"
 codex mcp list
 ```
 
-需要读写时将登录 scopes 改成 `qingdan:read,qingdan:write,offline_access`，仍需在轻单页面确认。默认注册方式为 auto；排查注册互通时，可在本次 login 增加 `--oauth-client-registration dcr` 或 `--oauth-client-registration cimd` 分别记录结果。该选项只影响本次登录，不能据本地模拟结果断言实际 Codex CIMD 已接通。TUI 用 `/mcp` 检查工具；重连时重新运行 login。删除本机条目用 `codex mcp remove qingdan-preview`；服务端撤权请在轻单网页操作。
+需要读写时将登录 scopes 改成 `qingdan:read,qingdan:write,offline_access`，仍需在轻单页面确认。默认注册方式为 auto；排查注册互通时，可在本次 login 增加 `--oauth-client-registration dcr` 或 `--oauth-client-registration cimd` 分别记录结果。该选项只影响本次登录，不能据本地模拟结果断言实际 Codex CIMD 已接通。TUI 用 `/mcp` 检查工具；重连时重新运行 login。删除本机条目用 `codex mcp remove qingdan-local`；服务端撤权请在轻单网页操作。
 
 ## Claude Code
 
-本机 PATH 未发现 Claude CLI；本段依据 [Claude Code 官方文档](https://code.claude.com/docs/en/mcp)，需要先安装并登录 Claude Code。
+本机 PATH 未发现 Claude CLI；项目根目录的 `.mcp.json` 已按 Claude Code project scope 格式写入本地地址。安装 Claude Code 后，在本项目运行 `/mcp` 或执行下列命令完成 OAuth。
 
 ```powershell
-claude mcp add --transport http --scope user qingdan-preview "https://<PREVIEW_HOST>/mcp"
+claude mcp add --transport http --scope project qingdan-local "https://localhost:8790/mcp"
 claude mcp list
 ```
 
-打开 Claude Code，运行 `/mcp`，选择轻单完成浏览器 OAuth，并检查九工具。`--scope user` 保存为个人跨项目配置；团队项目配置请另行选择 project scope。连接异常时在 `/mcp` 菜单选择 Reconnect；切换账号或重新授权前可选 Clear authentication，再启动授权。移除个人条目可运行 `claude mcp remove --scope user qingdan-preview`。客户端清理凭据后仍应到轻单网页核实授权已撤销。
+打开 Claude Code，运行 `/mcp`，选择轻单完成浏览器 OAuth，并检查九工具。`--scope user` 保存为个人跨项目配置；团队项目配置请另行选择 project scope。连接异常时在 `/mcp` 菜单选择 Reconnect；切换账号或重新授权前可选 Clear authentication，再启动授权。移除项目条目可运行 `claude mcp remove --scope project qingdan-local`。客户端清理凭据后仍应到轻单网页核实授权已撤销。
 
 ## VS Code 的 GitHub Copilot
 
-本机 VS Code 为 `1.143.1`（x64）；未验证 Copilot 扩展、账号和连接。按 [VS Code 官方接入流程](https://code.visualstudio.com/docs/agent-customization/mcp-servers)：打开命令面板 → **MCP: Add Server** → **HTTP**，输入完整 `/mcp` 地址，命名 `qingdan-preview`；个人配置选择 **Global → Copilot Global**。若没有该选项，先确认使用的是原生 Copilot harness 及其账号环境。
+本机 VS Code 为 `1.143.1`（x64），未安装 GitHub Copilot 扩展，因此只完成配置文件和端点验证。Copilot harness 使用项目根目录 `.mcp.json`；VS Code Local harness 兼容配置保留在 `.vscode/mcp.json`。打开 Copilot Agent 后，在 MCP 服务器管理中启用 `qingdan-local` 并完成 OAuth。
 
 项目内的原生 VS Code 配置示例为 `.vscode/mcp.json`：
 
 ```json
 {
   "servers": {
-    "qingdan-preview": { "type": "http", "url": "https://<PREVIEW_HOST>/mcp" }
+    "qingdan-local": { "type": "http", "url": "https://localhost:8790/mcp" }
+  }
+}
+```
+
+Copilot harness 使用的项目根配置 `.mcp.json` 为：
+
+```json
+{
+  "mcpServers": {
+    "qingdan-local": { "type": "http", "url": "https://localhost:8790/mcp" }
   }
 }
 ```
@@ -51,12 +61,12 @@ claude mcp list
 
 ## Cursor
 
-本机 Cursor 为 `3.18.9`（x64），未连接。按 [Cursor 官方 MCP 文档](https://cursor.com/docs/mcp)，在项目 `.cursor/mcp.json` 或个人 `~/.cursor/mcp.json`（Windows 为 `%USERPROFILE%\.cursor\mcp.json`）合并以下条目，保留其他服务器：
+本机 Cursor 为 `3.18.9`（x64）。项目 `.cursor/mcp.json` 已写入本地地址；在 Cursor 的 MCP 面板启用 `qingdan-local`，再完成 OAuth。
 
 ```json
 {
   "mcpServers": {
-    "qingdan-preview": { "url": "https://<PREVIEW_HOST>/mcp" }
+    "qingdan-local": { "url": "https://localhost:8790/mcp" }
   }
 }
 ```
@@ -73,7 +83,7 @@ claude mcp list
 4. 关闭再打开客户端，验证重新连接/刷新；在网页账号设置 → **Agent 连接** 撤销，验证旧连接下一次调用失败，重新授权后才恢复。修改/重设密码后也应失败。
 5. agent 删除一段，网页做后续编辑并撤销 grant，在同一面板的操作记录中恢复删除，确认后续编辑保留。恢复只允许原操作用户、当前成员，窗口为 30 天，与 grant 是否仍有效无关。
 
-所有四端实际结果目前均为 **未运行：需要已部署 preview 与用户登录**。
+本次本地验证结果：发现端点、保护资源描述和 `/mcp` 未授权 401 均通过；Codex 条目和三个项目配置文件已检查。四端的真实 OAuth 登录/工具调用仍需客户端信任本地证书并登录本地账号后完成。
 
 ## 独立本地启动
 
