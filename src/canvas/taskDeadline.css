@@ -236,6 +236,7 @@
 .qingdan-calendar {
   --rdp-accent-color: #6d825b;
   --rdp-accent-background-color: #edf1e5;
+  --rdp-range_middle-background-color: #dfe8d5;
   --rdp-day-width: 40px;
   --rdp-day-height: 34px;
   --rdp-day_button-width: 32px;
@@ -276,10 +277,6 @@
   font-weight: 600;
   box-shadow: 0 2px 4px #52644717;
 }
-.qingdan-calendar .rdp-range_start,
-.qingdan-calendar .rdp-range_end {
-  background: transparent;
-}
 .qingdan-calendar .rdp-range_start .rdp-day_button,
 .qingdan-calendar .rdp-range_end .rdp-day_button,
 .qingdan-calendar .rdp-range_start .rdp-day_button:hover,
@@ -290,7 +287,7 @@
   box-shadow: 0 2px 4px #52644717;
 }
 .qingdan-calendar .rdp-range_middle {
-  background: #dfe8d5;
+  background: var(--rdp-range_middle-background-color);
   color: #536b47;
 }
 .qingdan-calendar .rdp-range_middle .rdp-day_button,

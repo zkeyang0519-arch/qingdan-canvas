@@ -7,7 +7,13 @@ export function announceAccountChange() {
 }
 export async function api(
   path,
-  { body, rawBody, accountId = activeAccount, ...options } = {},
+  {
+    body,
+    rawBody,
+    accountId = activeAccount,
+    isCurrentSession,
+    ...options
+  } = {},
 ) {
   const requestAccount = accountId;
   const response = await fetch(path, {
@@ -28,6 +34,7 @@ export async function api(
   if (
     response.status === 401 &&
     requestAccount === activeAccount &&
+    (!isCurrentSession || isCurrentSession()) &&
     !path.startsWith("/api/auth/")
   )
     window.dispatchEvent(new Event("qingdan-session-expired"));

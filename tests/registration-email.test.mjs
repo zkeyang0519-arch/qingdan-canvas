@@ -24,12 +24,24 @@ await build({
     {
       name: "workerd-base",
       setup(build) {
+        build.onResolve(
+          { filter: /^@cloudflare\/workers-oauth-provider$/ },
+          () => ({
+            path: fileURLToPath(
+              new URL(
+                "../node_modules/@cloudflare/workers-oauth-provider/dist/oauth-provider.js",
+                import.meta.url,
+              ),
+            ),
+          }),
+        );
         build.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
           path: "base",
           namespace: "workerd-base",
         }));
         build.onLoad({ filter: /.*/, namespace: "workerd-base" }, () => ({
-          contents: "export class DurableObject {}",
+          contents:
+            "export class DurableObject {} export class WorkerEntrypoint {}",
           loader: "js",
         }));
       },

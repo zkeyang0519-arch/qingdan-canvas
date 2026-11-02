@@ -4,12 +4,20 @@
   "account_id": "d6997d4bf6dea6be5f3a1ddfe225cab0",
   "main": "worker/index.ts",
   "compatibility_date": "2026-10-19",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*"],
+    "run_worker_first": [
+      "/api/*",
+      "/mcp",
+      "/mcp/*",
+      "/oauth/*",
+      "/.well-known/*",
+    ],
   },
+  // Configure a dedicated OAUTH_KV namespace before enabling MCP; see docs/mcp-configuration.md.
   "durable_objects": {
     "bindings": [
       {
@@ -40,12 +48,13 @@
   ],
   "vars": {
     "APP_ENV": "production",
+    "MCP_ENABLED": "false",
   },
   "observability": {
     "enabled": true,
   },
   "previews": {
-    "vars": { "APP_ENV": "preview" },
+    "vars": { "APP_ENV": "preview", "MCP_ENABLED": "false" },
     "durable_objects": {
       "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
     },

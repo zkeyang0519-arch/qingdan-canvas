@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "qingdan-local": {
+      "url": "https://localhost:8790/mcp"
+    }
+  }
+}

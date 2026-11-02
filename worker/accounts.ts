@@ -1,3 +1,4 @@
+import { cleanupProviderGrants } from "./mcp/provider-cleanup";
 import type { Env } from "./types";
 import { body, check, HttpError, json } from "./http";
 import {
@@ -14,6 +15,7 @@ import { hashPassword, verifyPassword } from "./passwords.js";
 import { limit } from "./auth-limits";
 import { verifyRegistration, claimRegistration } from "./registration";
 import { invalidCode } from "./email-verification";
+import { revokeAllMcpGrantsStatement } from "./mcp/grants";
 
 interface Account {
   id: string;
@@ -107,11 +109,22 @@ export async function accountEndpoint(
         "INSERT INTO account_sessions(token_hash,account_id,expires_at) SELECT ?,id,? FROM accounts WHERE id=? AND password_hash=?",
       ).bind(hash, expires, account.id, nextHash),
     );
+    statements.push(
+      revokeAllMcpGrantsStatement(env, account.id, {
+        kind: "password",
+        passwordHash: nextHash,
+      }),
+    );
     const result = await env.DB.batch(statements);
     check(
       result[0].meta.changes === 1,
       "密码已经更新，请重新登录后再试。",
       409,
+    );
+    await cleanupProviderGrants(
+      env,
+      account.id,
+      result[3].results as { provider_grant_id: string | null }[],
     );
     return json({ user: publicUser(account) }, 200, {
       "Set-Cookie": sessionCookie(request, raw),

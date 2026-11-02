@@ -1,0 +1,43 @@
+// LOCAL ONLY. Always pass --local and a fresh --persist-to .tmp/... directory.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "qingdan-mcp-local",
+  "main": "../worker/index.ts",
+  "compatibility_date": "2026-10-19",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "../dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/mcp",
+      "/mcp/*",
+      "/oauth/*",
+      "/.well-known/*",
+    ],
+  },
+  "vars": {
+    "APP_ENV": "local",
+    "MCP_ENABLED": "true",
+    "PUBLIC_ORIGIN": "https://localhost:8790",
+  },
+  "kv_namespaces": [
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "qingdan-mcp-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../migrations",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "qingdan-mcp-local-files" },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CanvasRoom"] }],
+}

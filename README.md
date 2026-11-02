@@ -51,6 +51,12 @@ npm run dev
 - 当前项目和模式保存在当前浏览器标签页的视图偏好中；旧的双项目偏好自动沿用上次操作的项目。协作者可以使用不同视图；新增、编辑、勾选等内容仍实时同步。切换视图不改变画布已有位置、尺寸和缩放。
 - 排列新增内容会放到对应灵感板中，并在必要时扩展板的边界。无需增加 Cloudflare 资源或数据库迁移。
 
+## Agent / MCP 接入
+
+远程 MCP 提供九个读取搜索、待办和便签工具，使用轻单账号 OAuth、逐画布授权、只读/读写权限与服务端删除恢复；改动共用网页版本和实时同步机制。默认关闭，启用须配置专用 OAuth KV 和固定 HTTPS origin。
+
+按 [四客户端接入指南](docs/mcp-setup.md) 配置 Codex、Claude Code、VS Code GitHub Copilot 或 Cursor；维护者阅读 [环境配置](docs/mcp-configuration.md) 与 [Cloudflare MCP 发布步骤](docs/cloudflare-setup.md#轻单-mcp-升级与发布)。[验收记录](docs/mcp-acceptance.md) 区分本地自动验证、界面检查以及尚未运行的四端/云端验收。当前分支仅完成本地构建与验证，没有部署或真实客户端登录。
+
 ## Cloudflare 产品分工
 
 | 产品            | 保存或处理什么                                                    | 绑定     |

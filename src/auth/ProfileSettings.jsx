@@ -4,8 +4,15 @@ import { api, announceAccountChange } from "../api.js";
 import UserAvatar from "../UserAvatar.jsx";
 import EmailSettings from "./EmailSettings.jsx";
 import AvatarCropper from "./AvatarCropper.jsx";
+import McpConnections from "./McpConnections.jsx";
 
-export default function ProfileSettings({ user, onUpdate, onLogout }) {
+export default function ProfileSettings({
+  user,
+  onUpdate,
+  onLogout,
+  sessionEpoch,
+  isCurrentSession = () => true,
+}) {
   const [name, setName] = useState(user.name);
   const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
@@ -14,6 +21,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [avatarFile, setAvatarFile] = useState(null);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
   const fileInput = useRef(null);
   const avatarToken = useRef(0);
   const mounted = useRef(false);
@@ -174,6 +182,18 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
         </button>
       </form>
       <EmailSettings user={user} />
+      <details
+        onToggle={(event) => setConnectionsOpen(event.currentTarget.open)}
+      >
+        <summary>Agent 连接</summary>
+        {connectionsOpen && (
+          <McpConnections
+            user={user}
+            sessionEpoch={sessionEpoch}
+            isCurrentSession={isCurrentSession}
+          />
+        )}
+      </details>
       <details>
         <summary>修改密码</summary>
         <form
@@ -185,7 +205,7 @@ export default function ProfileSettings({ user, onUpdate, onLogout }) {
                 method: "POST",
                 body: { currentPassword, password },
               });
-              onUpdate(result);
+              onUpdate(result, { sessionChanged: true });
               announceAccountChange();
               setCurrentPassword("");
               setPassword("");

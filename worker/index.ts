@@ -1,3 +1,4 @@
+import { mcpRoute } from "./mcp/router";
 import type { Env, Room } from "./types";
 import { body, check, failure, json, sameOrigin, validId } from "./http";
 import {
@@ -23,6 +24,8 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const mcp = await mcpRoute(request, env, ctx);
+      if (mcp) return mcp;
       const url = new URL(request.url),
         path = url.pathname;
       if (!path.startsWith("/api/")) return env.ASSETS.fetch(request);
@@ -59,8 +62,11 @@ export default {
       );
       if (path === "/api/profile/avatar")
         return await updateAvatar(request, env, user, ctx);
-      const quickTasks = path.match(/^\/api\/profile\/quick-tasks(?:\/([a-zA-Z0-9_-]{1,100}))?$/);
-      if (quickTasks) return await quickTasksEndpoint(request, env, user.id, quickTasks[1]);
+      const quickTasks = path.match(
+        /^\/api\/profile\/quick-tasks(?:\/([a-zA-Z0-9_-]{1,100}))?$/,
+      );
+      if (quickTasks)
+        return await quickTasksEndpoint(request, env, user.id, quickTasks[1]);
       if (
         path === "/api/profile/email" ||
         path.startsWith("/api/profile/email/")
