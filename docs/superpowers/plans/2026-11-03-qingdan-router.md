@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 React 19、Workers、SQLite Durable Objects、D1、R2；agents 0.30.1；MCP client/server 2.3.1；Zod 4；Node.js 24；Codex app-server 固定版本。
 
-**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。2026-11-03 已按用户要求完成 Task 1；其余步骤仍未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md)。
+**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。2026-11-03 已按用户要求完成 Task 1、Task 2；其余步骤仍未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md) 与 [本机 Codex 验收](../../agent-codex-compatibility.md)。
 
 ## Global Constraints
 
@@ -96,16 +96,20 @@ assert.throws(() => sortPlan([A_depends_on_B, B_depends_on_A]), { code: 'DEPENDE
 
 **Files:** 新增 runner/package.json、runner/tsconfig.json、runner/codex-client.ts、codex-adapter.ts、store.ts、supervisor.ts；scripts/build-runner.mjs、scripts/agent-codex-smoke.mjs；tests/runner-codex.test.mjs、tests/fixtures/fake-codex.mjs、docs/agent-codex-compatibility.md。修改根 package.json 增加 runner 构建脚本。
 
+实际补充文件：runner/types.ts、errors.ts、workspace.ts、prompt.ts、process-cleanup.ts、index.ts、protocol-version.json、package-lock.json 与 protocol/ 生成声明；scripts/generate-codex-protocol.mjs；docs/agent-codex-smoke-2026-11-03.json。Node 类型依赖单独安装在 runner 中，未升级根项目依赖。
+
 **Interfaces:** CodexAdapter.startFreshRun(snapshot: ExecutionSnapshot): Promise<LaunchResult>；continueRun(input: ContinueRunInput): Promise<CommandReceipt>；cancelRun(runId): Promise<CommandReceipt>；reconcileRun(runId): Promise<ReconcileResult>；events(): AsyncIterable<RunnerEvent>。LaunchResult 是 started(threadId,turnId) 或 reconciliation_required，不能用一个泛化超时错误驱动自动重试。
 
-- [ ] 建立可控 fake-codex：可在 thread/start 响应前、turn/start 接收后、turn/completed 发送后退出，支持分页历史和重复事件。
-- [ ] 写测试：summary、任务 A、任务 B 调用 startFreshRun 得到不同 threadId、同 cwd；同任务 continue 保留原 threadId；先保存 threadId 再发送 turn；无已知 turn 映射的 completed 不推进状态。
-- [ ] 运行 `node --test tests/runner-codex.test.mjs` 验证失败。
-- [ ] 实现 stdio JSONL、initialize 握手、固定 CLI 类型生成、响应关联、输入/审批请求、保存 launchIntent、分页对账。Runner SQLite 用 Node 24 的 node:sqlite，写命令映射采用事务；schema_version 迁移不删旧记录。
-- [ ] 实现受管进程收尾：中断后查询确认，超时保留待核实；只终止自己拥有的进程树。
-- [ ] 测试通过后运行构建；执行只读协议能力检查并记录版本。
-- [ ] 在明确选定的测试目录运行 `node scripts/agent-codex-smoke.mjs --workspace <测试目录> --mode new-threads`：总结 + 两个简单合成任务，保存三个不同 threadId、cwd、turn 终态、桌面可见性和实际验证证据。该步骤会调用真实 Codex，执行时遵循当时的授权与登录流程。
-- [ ] 更新兼容性记录并提交本任务文件。真实接口不支持时保持执行开关关闭，报告具体缺口，不能用 fake 结果替代。
+- [x] 建立可控 fake-codex：可在 thread/start 响应前、turn/start 接收后、turn/completed 发送后退出，支持分页历史和重复事件。
+- [x] 写测试：summary、任务 A、任务 B 调用 startFreshRun 得到不同 threadId、同 cwd；同任务 continue 保留原 threadId；先保存 threadId 再发送 turn；无已知 turn 映射的 completed 不推进状态。
+- [x] 运行 `node --test tests/runner-codex.test.mjs` 验证失败。
+- [x] 实现 stdio JSONL、initialize 握手、固定 CLI 类型生成、响应关联、输入/审批请求、保存 launchIntent、分页对账。Runner SQLite 用 Node 24 的 node:sqlite，写命令映射采用事务；数据库版本使用 PRAGMA user_version，升级不删旧记录。
+- [x] 实现受管进程收尾：中断后查询确认，超时保留待核实；只终止自己拥有的进程树。
+- [x] 测试通过后运行构建；执行只读协议能力检查并记录版本。
+- [x] 在明确选定的测试目录运行 `node scripts/agent-codex-smoke.mjs --workspace <测试目录> --mode new-threads`：总结 + 两个简单合成任务，保存三个不同 threadId、cwd、turn 终态、桌面可见性和实际验证证据。该步骤会调用真实 Codex，执行时遵循当时的授权与登录流程。
+- [x] 更新兼容性记录并提交本任务文件。真实接口不支持时保持执行开关关闭，报告具体缺口，不能用 fake 结果替代。
+
+验收：本地 Runner 25 项测试、完整回归 503/503、根项目与 Runner 类型检查、Runner 构建及部署 dry run 通过。真实三会话与两个文件内容验证通过；桌面历史中可查到三个会话。最终构建重放同一批次后 runId/threadId/turnId 均不变，没有额外执行。独立审查发现的终态竞争、取消意图、恢复回执、订阅恢复及收尾问题均已增加回归测试并修复。Task 3 未启动，未部署。
 
 ## Task 3: 设备配对、工作目录与可靠连接
 

@@ -57,6 +57,8 @@ npm run dev
 
 Router 第 1 步已实现共享任务规则：执行要求、验收条件、依赖校验、稳定排序、手工顺序校验与时区转换。运行 `npm run test:agent` 验证，详细字段、接口和范围见 [任务规则说明](docs/agent-task-rules.md)。本步骤尚未接入真实清单或网页操作入口，后续按 [实施计划](docs/superpowers/plans/2026-11-03-qingdan-router.md) 继续。
 
+第 2 步已接通本机 Codex：独立总结/任务会话、流式结果、原会话续聊、审批、取消和历史恢复。真实三会话与文件交接验证通过。Runner 需要 Node.js 24，先执行 `npm ci --prefix runner`，再运行 `npm run runner:build` 和 `npm run test:runner`；环境、复验命令和证据见 [本机 Codex 兼容性记录](docs/agent-codex-compatibility.md)。设备配对与网页入口按后续步骤接入。
+
 远程 MCP 提供九个读取搜索、待办和便签工具，使用轻单账号 OAuth、逐画布授权、只读/读写权限与服务端删除恢复；改动共用网页版本和实时同步机制。默认关闭，启用须配置专用 OAuth KV 和固定 HTTPS origin。
 
 按 [四客户端接入指南](docs/mcp-setup.md) 配置 Codex、Claude Code、VS Code GitHub Copilot 或 Cursor；维护者阅读 [环境配置](docs/mcp-configuration.md) 与 [Cloudflare MCP 发布步骤](docs/cloudflare-setup.md#轻单-mcp-升级与发布)。[验收记录](docs/mcp-acceptance.md) 区分本地自动验证、界面检查以及尚未运行的四端/云端验收。当前分支仅完成本地构建与验证，没有部署或真实客户端登录。
