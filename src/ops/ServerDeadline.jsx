@@ -52,11 +52,21 @@ export function DeadlineDate({ dueAt, dueStartAt }) {
   );
 }
 
-export default function ServerDeadline({ server, now, readOnly, onSave }) {
+export default function ServerDeadline({
+  server,
+  now,
+  readOnly,
+  onSave,
+  upcoming = false,
+}) {
   const [open, setOpen] = useState(false);
   const info = deadlineInfo(server, now);
   return (
-    <div className="ops-server-deadline" data-deadline={info.status}>
+    <div
+      className="ops-server-deadline"
+      data-deadline={info.status}
+      data-upcoming={upcoming || undefined}
+    >
       <DeadlineDate {...server} />
       <TaskDeadlinePopover
         open={open}

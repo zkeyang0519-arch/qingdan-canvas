@@ -1,13 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Boxes,
   Check,
   CircleAlert,
-  ClipboardCheck,
-  Package,
   Plus,
-  Search,
   Server,
   Trash2,
   X,
@@ -35,6 +32,7 @@ import ServerDeadline, {
   DeadlineDate,
   DeadlineRing,
 } from "./ServerDeadline.jsx";
+import OperationsDirectory, { isDueSoon } from "./OperationsDirectory.jsx";
 
 const STATUS_LABELS = {
   running: "运行中",
@@ -55,6 +53,12 @@ function selectOptions(entries) {
       {label}
     </option>
   ));
+}
+
+function restoreFocus(target) {
+  if (!target?.isConnected || target.closest?.("[inert]")) return false;
+  target.focus?.({ preventScroll: true });
+  return document.activeElement === target;
 }
 
 function recordTasks(state, targetType, targetId) {
@@ -110,27 +114,6 @@ function FormField({
   );
 }
 
-function EmptyState({ icon: Icon, title, action, disabled }) {
-  return (
-    <div className="ops-empty">
-      <span className="ops-empty-icon">
-        <Icon size={22} />
-      </span>
-      <h2>{title}</h2>
-      {action && (
-        <button
-          className="ops-primary"
-          onClick={action.onClick}
-          disabled={disabled}
-        >
-          <Plus size={14} />
-          {action.label || "新增记录"}
-        </button>
-      )}
-    </div>
-  );
-}
-
 export default function OperationsCatalog({ onClose, readOnly = false }) {
   const [loaded] = useState(() => loadOpsState());
   const [ops, setOps] = useState(loaded.state);
@@ -141,6 +124,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
   const [environment, setEnvironment] = useState("");
+  const [soonOnly, setSoonOnly] = useState(false);
   const [form, setForm] = useState(null);
   const [formError, setFormError] = useState("");
   const [deadlineDraft, setDeadlineDraft] = useState({
@@ -155,6 +139,10 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     [ops.servers],
   );
   const now = useDeadlineTimer(deadlines);
+  const drawerRef = useRef(null);
+  const formLayerRef = useRef(null);
+  const detailOpenerRef = useRef(null);
+  const formOpenerRef = useRef(null);
 
   const commit = (next) => {
     setOps(next);
@@ -204,8 +192,8 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
         keyword,
         status: status || undefined,
         environment: environment || undefined,
-      }),
-    [ops, keyword, status, environment],
+      }).filter((server) => !soonOnly || isDueSoon(server, now)),
+    [ops, keyword, status, environment, soonOnly, now],
   );
   const selectedProduct = ops.products.find(
     (item) => item.id === selectedProductId,
@@ -213,14 +201,95 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const selectedServer = ops.servers.find(
     (item) => item.id === selectedServerId,
   );
+  const hasDetail = Boolean(selectedProduct || selectedServer);
+  const hasForm = Boolean(form);
+  const soonCount = ops.servers.filter((server) =>
+    isDueSoon(server, now),
+  ).length;
+  useEffect(() => {
+    if (hasForm) return;
+    if (hasDetail) {
+      drawerRef.current
+        ?.querySelector('button[aria-label="关闭资产详情"]')
+        ?.focus({ preventScroll: true });
+    } else if (detailOpenerRef.current) {
+      if (!restoreFocus(detailOpenerRef.current))
+        document
+          .querySelector(".ops-main .ops-search input")
+          ?.focus({ preventScroll: true });
+      detailOpenerRef.current = null;
+    }
+  }, [hasDetail, selectedProductId, selectedServerId, hasForm]);
+
+  useEffect(() => {
+    if (hasForm) {
+      const scope = formLayerRef.current;
+      (
+        scope?.querySelector('input:not([type="hidden"]),select,textarea') ||
+        scope?.querySelector("button:not(:disabled)")
+      )?.focus({ preventScroll: true });
+    } else if (formOpenerRef.current) {
+      if (!hasDetail || drawerRef.current?.contains(formOpenerRef.current))
+        restoreFocus(formOpenerRef.current);
+      formOpenerRef.current = null;
+    }
+  }, [hasForm, hasDetail]);
+
+  useEffect(() => {
+    const scope = hasForm
+      ? formLayerRef.current?.querySelector(".ops-modal")
+      : hasDetail
+        ? drawerRef.current
+        : null;
+    if (!scope) return;
+    const selector =
+      'button:not(:disabled),input:not(:disabled):not([type="hidden"]),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]';
+    const trapTab = (event) => {
+      if (
+        event.key !== "Tab" ||
+        event.defaultPrevented ||
+        event.target.closest?.(".task-deadline-popover, .ops-record-menu")
+      )
+        return;
+      const items = [...scope.querySelectorAll(selector)];
+      const first = items[0],
+        last = items.at(-1);
+      if (!scope.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", trapTab);
+    return () => {
+      document.removeEventListener("keydown", trapTab);
+    };
+  }, [hasDetail, hasForm]);
+
+  const closeDetails = () => {
+    setSelectedProductId(null);
+    setSelectedServerId(null);
+  };
+  const openDetails = (type, id, opener = document.activeElement) => {
+    if (!hasDetail) detailOpenerRef.current = opener;
+    setSelectedProductId(type === "product" ? id : null);
+    setSelectedServerId(type === "server" ? id : null);
+  };
 
   const resetFilters = () => {
     setKeyword("");
     setStatus("");
     setEnvironment("");
+    setSoonOnly(false);
   };
-  const openForm = (type, targetId = null) => {
+  const openForm = (type, targetId = null, opener = document.activeElement) => {
     if (readOnly) return;
+    formOpenerRef.current = opener;
     const server =
       type === "server"
         ? ops.servers.find((item) => item.id === targetId)
@@ -243,6 +312,8 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     );
     try {
       let next = ops;
+      if (form.targetId && !hasDetail)
+        detailOpenerRef.current = formOpenerRef.current;
       if (form.type === "product") {
         const input = {
           name: data["product-name"],
@@ -286,13 +357,17 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
 
   const goProducts = () => {
     setView("products");
-    setSelectedServerId(null);
+    closeDetails();
     resetFilters();
   };
   const goServers = () => {
     setView("servers");
-    setSelectedProductId(null);
+    closeDetails();
     resetFilters();
+  };
+  const showSoon = () => {
+    goServers();
+    setSoonOnly(true);
   };
   const toggleTask = (task) => {
     if (readOnly) return;
@@ -307,6 +382,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     <ServerDeadline
       server={server}
       now={now}
+      upcoming={isDueSoon(server, now)}
       readOnly={readOnly}
       onSave={(dueAt, dueStartAt) => {
         if (readOnly) return "这台服务器当前无法编辑。";
@@ -328,12 +404,20 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     }
   };
 
-  const productDates = (product) => (
-    <span className="ops-product-dates">
+  const productDates = (product, compact = false) => (
+    <span className={`ops-product-dates${compact ? " compact" : ""}`}>
       {productServers(ops, product.id).map((server) => (
-        <span className="ops-product-deadline" key={server.id}>
+        <span
+          className="ops-product-deadline"
+          key={server.id}
+          data-upcoming={isDueSoon(server, now) || undefined}
+        >
           <span className="ops-product-deadline-copy">
-            <span className="ops-deadline-server-name">{server.name}</span>
+            <span
+              className={`ops-deadline-server-name${compact ? " sr-only" : ""}`}
+            >
+              {server.name}
+            </span>
             <DeadlineDate {...server} />
           </span>
           <DeadlineRing server={server} now={now} />
@@ -393,7 +477,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
           <button
             className="ops-back"
             aria-label="返回产品目录"
-            onClick={() => setSelectedProductId(null)}
+            onClick={closeDetails}
           >
             <ArrowLeft size={14} />
             产品目录
@@ -432,7 +516,6 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
           <div className="ops-grow">
             <h1>{selectedProduct.name}</h1>
             {selectedProduct.summary && <p>{selectedProduct.summary}</p>}
-            {productDates(selectedProduct)}
           </div>
           <span className={`ops-status ${selectedProduct.status}`}>
             <i />
@@ -473,7 +556,15 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
                   </div>
                   {group.items.map(({ deployment, server }) => (
                     <div className="ops-deployment-row" key={deployment.id}>
-                      <strong>{server?.name || "未知服务器"}</strong>
+                      <button
+                        className="ops-related-link"
+                        onClick={() =>
+                          server && openDetails("server", server.id)
+                        }
+                        disabled={!server}
+                      >
+                        {server?.name || "未知服务器"}
+                      </button>
                       <span>
                         {[server?.provider, server?.region, deployment.version]
                           .filter(Boolean)
@@ -512,7 +603,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
           <button
             className="ops-back"
             aria-label="返回服务器台账"
-            onClick={() => setSelectedServerId(null)}
+            onClick={closeDetails}
           >
             <ArrowLeft size={14} />
             服务器台账
@@ -597,9 +688,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
                   <button
                     key={deployment.id}
                     onClick={() => {
-                      setSelectedServerId(null);
-                      setSelectedProductId(product?.id || null);
-                      setView("products");
+                      if (product) openDetails("product", product.id);
                     }}
                   >
                     <span>{product?.name || "未知产品"}</span>
@@ -618,285 +707,6 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     );
   };
 
-  const renderProductDirectory = () => (
-    <>
-      <div className="ops-page-title">
-        <div>
-          <p className="ops-breadcrumb">运维资产 / 产品目录</p>
-          <h1>产品目录</h1>
-        </div>
-        <button
-          className="ops-primary"
-          aria-label="新增产品"
-          onClick={() => openForm("product")}
-          disabled={readOnly}
-        >
-          <Plus size={14} />
-          新增产品
-        </button>
-      </div>
-      <div className="ops-metrics">
-        <div>
-          <strong>{ops.products.length}</strong>
-          <span>产品</span>
-        </div>
-        <div>
-          <strong>{ops.servers.length}</strong>
-          <span>服务器</span>
-        </div>
-        <div>
-          <strong>{ops.tasks.filter((task) => !task.completed).length}</strong>
-          <span>待处理</span>
-        </div>
-      </div>
-      <div className="ops-toolbar">
-        <label className="ops-search">
-          <Search size={14} />
-          <input
-            aria-label="搜索运维资产"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            placeholder="搜索产品、服务器、域名..."
-          />
-        </label>
-        <label>
-          <span className="sr-only">状态</span>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="">所有状态</option>
-            {selectOptions(STATUS_OPTIONS)}
-          </select>
-        </label>
-        <label>
-          <span className="sr-only">环境</span>
-          <select
-            value={environment}
-            onChange={(event) => setEnvironment(event.target.value)}
-          >
-            <option value="">所有环境</option>
-            {selectOptions(ENVIRONMENT_OPTIONS)}
-          </select>
-        </label>
-      </div>
-      {products.length === 0 ? (
-        <EmptyState
-          icon={Package}
-          title={ops.products.length ? "没有匹配的产品" : "还没有产品记录"}
-          action={
-            ops.products.length
-              ? { label: "清除筛选", onClick: resetFilters }
-              : { label: "新增产品", onClick: () => openForm("product") }
-          }
-          disabled={readOnly}
-        />
-      ) : (
-        <div className="ops-record-list">
-          {products.map((product) => (
-            <div className="ops-record" key={product.id}>
-              <button
-                className="ops-record-open"
-                aria-label={`打开产品：${product.name}`}
-                onClick={() => setSelectedProductId(product.id)}
-              >
-                <span className="ops-record-icon">
-                  {product.name.slice(0, 1)}
-                </span>
-                <span className="ops-record-main">
-                  <span className="ops-product-heading">
-                    <strong>{product.name}</strong>
-                    <span className={`ops-status ${product.status}`}>
-                      <i />
-                      {STATUS_LABELS[product.status]}
-                    </span>
-                  </span>
-                  {product.summary && <small>{product.summary}</small>}
-                  {product.tags.length > 0 && (
-                    <span className="ops-pills">
-                      {product.tags.map((tag) => (
-                        <em key={tag}>{tag}</em>
-                      ))}
-                    </span>
-                  )}
-                  {productDates(product)}
-                </span>
-              </button>
-              <button
-                className="ops-record-delete"
-                aria-label={`删除产品：${product.name}`}
-                onClick={() => confirmDelete("product", product)}
-                disabled={readOnly}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  );
-
-  const renderServerDirectory = () => (
-    <>
-      <div className="ops-page-title">
-        <div>
-          <p className="ops-breadcrumb">运维资产 / 服务器台账</p>
-          <h1>服务器台账</h1>
-        </div>
-        <button
-          className="ops-primary"
-          aria-label="新增服务器"
-          onClick={() => openForm("server")}
-          disabled={readOnly}
-        >
-          <Plus size={14} />
-          新增服务器
-        </button>
-      </div>
-      <div className="ops-metrics">
-        <div>
-          <strong>{ops.servers.length}</strong>
-          <span>服务器</span>
-        </div>
-        <div>
-          <strong>
-            {ops.servers.filter((item) => item.status === "running").length}
-          </strong>
-          <span>运行中</span>
-        </div>
-        <div>
-          <strong>
-            {ops.servers.filter((item) => item.status === "maintenance").length}
-          </strong>
-          <span>维护中</span>
-        </div>
-      </div>
-      <div className="ops-toolbar">
-        <label className="ops-search">
-          <Search size={14} />
-          <input
-            aria-label="搜索服务器"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            placeholder="搜索服务器、IP、产品..."
-          />
-        </label>
-        <label>
-          <span className="sr-only">状态</span>
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="">所有状态</option>
-            {selectOptions(STATUS_OPTIONS)}
-          </select>
-        </label>
-        <label>
-          <span className="sr-only">环境</span>
-          <select
-            value={environment}
-            onChange={(event) => setEnvironment(event.target.value)}
-          >
-            <option value="">所有环境</option>
-            {selectOptions(ENVIRONMENT_OPTIONS)}
-          </select>
-        </label>
-      </div>
-      {servers.length === 0 ? (
-        <EmptyState
-          icon={Server}
-          title={ops.servers.length ? "没有匹配的服务器" : "还没有服务器记录"}
-          action={
-            ops.servers.length
-              ? { label: "清除筛选", onClick: resetFilters }
-              : { label: "新增服务器", onClick: () => openForm("server") }
-          }
-          disabled={readOnly}
-        />
-      ) : (
-        <div className="ops-record-list">
-          {servers.map((server) => {
-            const hostedIds = new Set(
-              ops.deployments
-                .filter((item) => item.serverId === server.id)
-                .map((item) => item.productId),
-            );
-            const hosted = ops.products.filter((product) =>
-              hostedIds.has(product.id),
-            );
-            const metadata = [server.provider, server.region, server.system]
-              .filter(Boolean)
-              .join(" · ");
-            return (
-              <div
-                className="ops-record server"
-                key={server.id}
-                data-status={server.status}
-              >
-                <span className="todo-deadline-glow" aria-hidden="true" />
-                <button
-                  className="ops-record-open"
-                  aria-label={`打开服务器：${server.name}`}
-                  onClick={() => setSelectedServerId(server.id)}
-                >
-                  <span
-                    className={`ops-status ${server.status}`}
-                    aria-label={`服务器状态：${STATUS_LABELS[server.status]}`}
-                  >
-                    <i />
-                    {STATUS_LABELS[server.status]}
-                  </span>
-                  <span className="ops-record-main">
-                    <strong>{server.name}</strong>
-                    {metadata && <small>{metadata}</small>}
-                    <span className="ops-pills">
-                      <em>
-                        {ENVIRONMENT_LABELS[server.environment] || "多环境"}
-                      </em>
-                      {hosted.map((product) => (
-                        <em key={product.id}>{product.name}</em>
-                      ))}
-                    </span>
-                  </span>
-                  <span className="ops-record-count">
-                    {hosted.length} 个产品
-                  </span>
-                </button>
-                {serverDeadline(server)}
-                <div
-                  className="ops-server-status-switch"
-                  role="group"
-                  aria-label={`服务器状态：${server.name}`}
-                >
-                  {STATUS_OPTIONS.map(([value, label]) => (
-                    <button
-                      type="button"
-                      key={value}
-                      aria-pressed={server.status === value}
-                      disabled={readOnly}
-                      onClick={() => changeServerStatus(server, value)}
-                    >
-                      {value === "retired" ? "停用" : label}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  className="ops-record-delete"
-                  aria-label={`删除服务器：${server.name}`}
-                  onClick={() => confirmDelete("server", server)}
-                  disabled={readOnly}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </>
-  );
-
   const renderForm = () => {
     if (!form) return null;
     const editing = form.targetId;
@@ -911,9 +721,15 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
       const targetId = selectedServerId || selectedProductId;
       return (
         <div className="ops-modal-backdrop" role="presentation">
-          <form className="ops-modal" onSubmit={submitForm}>
+          <form
+            className="ops-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ops-form-title"
+            onSubmit={submitForm}
+          >
             <div className="ops-modal-head">
-              <h2>新建待办</h2>
+              <h2 id="ops-form-title">新建待办</h2>
               <button type="button" aria-label="关闭表单" onClick={closeForm}>
                 <X size={16} />
               </button>
@@ -948,9 +764,15 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
       const product = selectedProduct;
       return (
         <div className="ops-modal-backdrop" role="presentation">
-          <form className="ops-modal" onSubmit={submitForm}>
+          <form
+            className="ops-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ops-form-title"
+            onSubmit={submitForm}
+          >
             <div className="ops-modal-head">
-              <h2>新增部署关系</h2>
+              <h2 id="ops-form-title">新增部署关系</h2>
               <button type="button" aria-label="关闭表单" onClick={closeForm}>
                 <X size={16} />
               </button>
@@ -1002,9 +824,15 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     const record = isProduct ? product : server;
     return (
       <div className="ops-modal-backdrop" role="presentation">
-        <form className="ops-modal" onSubmit={submitForm}>
+        <form
+          className="ops-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ops-form-title"
+          onSubmit={submitForm}
+        >
           <div className="ops-modal-head">
-            <h2>
+            <h2 id="ops-form-title">
               {editing ? "编辑" : "新增"}
               {isProduct ? "产品" : "服务器"}
             </h2>
@@ -1124,88 +952,128 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
       role="dialog"
       aria-label="运维资产"
       onKeyDown={(event) => {
-        if (event.key === "Escape") onClose?.();
+        if (
+          event.key !== "Escape" ||
+          event.defaultPrevented ||
+          event.isComposing
+        )
+          return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (form) closeForm();
+        else if (hasDetail) closeDetails();
+        else onClose?.();
       }}
     >
       <div className="ops-app">
-        <header className="ops-header">
-          <div className="ops-brand">
-            <span className="ops-brand-mark">轻</span>
-            <strong>轻单</strong>
-            <span>/ 运维资产</span>
-          </div>
-          <label className="ops-global-search">
-            <Search size={15} />
-            <input
-              aria-label="搜索运维资产"
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索产品、服务器、域名..."
-            />
-          </label>
-          <button
-            className="ops-close"
-            aria-label="关闭运维资产"
-            onClick={onClose}
-          >
-            <X size={17} />
-          </button>
-        </header>
-        <div className="ops-layout">
+        <div className="ops-layout" inert={hasDetail || hasForm || undefined}>
           <aside className="ops-sidebar">
-            <p className="ops-sidebar-label">目录</p>
+            <p className="ops-sidebar-label">资产空间</p>
             <button
               aria-label="产品目录"
-              className={
-                view === "products" && !selectedProductId ? "active" : ""
-              }
+              className={view === "products" ? "active" : ""}
               onClick={goProducts}
             >
-              <Boxes size={14} />
-              产品目录 <span>{ops.products.length}</span>
+              <Boxes size={16} />
+              产品目录<span>{ops.products.length}</span>
             </button>
             <button
               aria-label="服务器台账"
-              className={
-                view === "servers" && !selectedServerId ? "active" : ""
-              }
+              className={view === "servers" && !soonOnly ? "active" : ""}
               onClick={goServers}
             >
-              <Server size={14} />
-              服务器台账 <span>{ops.servers.length}</span>
+              <Server size={16} />
+              服务器台账<span>{ops.servers.length}</span>
             </button>
-            <button disabled>
-              <ClipboardCheck size={14} />
-              维护记录
+            <p className="ops-sidebar-label second">快速查看</p>
+            <button
+              aria-label="7 天内到期"
+              className={soonOnly ? "ops-upcoming active" : "ops-upcoming"}
+              onClick={showSoon}
+            >
+              <i className="ops-mini-dot maintenance" />7 天内到期
+              <span>{soonCount}</span>
             </button>
-            <p className="ops-sidebar-label second">状态</p>
-            {STATUS_OPTIONS.map(([value, label]) => (
-              <span className="ops-sidebar-stat" key={value}>
-                <i className={`ops-mini-dot ${value}`} />
-                {label}
-                <b>
-                  {ops.products.filter((item) => item.status === value).length}
-                </b>
-              </span>
-            ))}
           </aside>
           <main className="ops-main">
+            <button
+              className="ops-close"
+              aria-label="关闭运维资产"
+              title="返回原界面"
+              onClick={onClose}
+            >
+              <X size={17} />
+            </button>
             {loadError && (
-              <div className="ops-banner">
+              <div className="ops-banner" role="alert">
                 <CircleAlert size={14} />
                 {loadError}
               </div>
             )}
-            {selectedProduct
-              ? renderProductDetail()
-              : selectedServer
-                ? renderServerDetail()
-                : view === "products"
-                  ? renderProductDirectory()
-                  : renderServerDirectory()}
+            <OperationsDirectory
+              ops={ops}
+              view={view}
+              records={view === "products" ? products : servers}
+              keyword={keyword}
+              setKeyword={setKeyword}
+              status={status}
+              setStatus={setStatus}
+              environment={environment}
+              setEnvironment={setEnvironment}
+              soonOnly={soonOnly}
+              soonCount={soonCount}
+              showSoon={showSoon}
+              resetFilters={resetFilters}
+              readOnly={readOnly}
+              onOpen={openDetails}
+              openForm={openForm}
+              confirmDelete={confirmDelete}
+              changeServerStatus={changeServerStatus}
+              productDates={productDates}
+              serverDeadline={serverDeadline}
+            />
           </main>
         </div>
-        {renderForm()}
+        {hasDetail && (
+          <div
+            className="ops-detail-backdrop"
+            inert={hasForm || undefined}
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) closeDetails();
+            }}
+          >
+            <section
+              className="ops-detail-drawer"
+              role="dialog"
+              aria-modal="true"
+              aria-label="资产详情"
+              ref={drawerRef}
+            >
+              <header className="ops-drawer-header">
+                <span>
+                  运维资产 / {selectedProduct ? "产品详情" : "服务器详情"}
+                </span>
+                <button
+                  className="ops-icon-button"
+                  aria-label="关闭资产详情"
+                  onClick={closeDetails}
+                >
+                  <X size={17} />
+                </button>
+              </header>
+              <div className="ops-drawer-content">
+                {loadError && (
+                  <div className="ops-banner" role="alert">
+                    <CircleAlert size={14} />
+                    {loadError}
+                  </div>
+                )}
+                {selectedProduct ? renderProductDetail() : renderServerDetail()}
+              </div>
+            </section>
+          </div>
+        )}
+        {form && <div ref={formLayerRef}>{renderForm()}</div>}
       </div>
     </div>
   );

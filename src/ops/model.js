@@ -343,7 +343,8 @@ function serverHasEnvironment(state, serverId, environment) {
 
 export function filterProducts(state, query = {}) {
   return state.products.filter(product => (
-    searchText([product.name, product.summary, product.owner, ...product.tags], query.keyword) &&
+    searchText([product.name, product.summary, product.owner, ...product.tags,
+      ...productServers(state, product.id).flatMap(server => [server.name, server.provider, server.address])], query.keyword) &&
     (!query.status || product.status === query.status) &&
     (!query.tag || product.tags.includes(query.tag)) &&
     (!query.environment || productHasEnvironment(state, product.id, query.environment))
@@ -352,7 +353,9 @@ export function filterProducts(state, query = {}) {
 
 export function filterServers(state, query = {}) {
   return state.servers.filter(server => (
-    searchText([server.name, server.provider, server.region, server.address, server.system], query.keyword) &&
+    searchText([server.name, server.provider, server.region, server.address, server.system,
+      ...state.deployments.filter(item => item.serverId === server.id)
+        .map(item => state.products.find(product => product.id === item.productId)?.name)], query.keyword) &&
     (!query.status || server.status === query.status) &&
     (!query.environment || server.environment === query.environment || serverHasEnvironment(state, server.id, query.environment))
   ));

@@ -209,20 +209,26 @@ test("从画布或排列进入运维时隐藏收纳入口，关闭后恢复同�
   await click(host.querySelector(".room-card"));
   const dock = createObject(original.id, "collection");
   await act(async () =>
-    sockets
-      .at(-1)
-      .onmessage({
-        data: JSON.stringify({
-          type: "snapshot",
-          rows: [{ id: dock.id, revision: 1, data: dock, deleted: false }],
-        }),
+    sockets.at(-1).onmessage({
+      data: JSON.stringify({
+        type: "snapshot",
+        rows: [{ id: dock.id, revision: 1, data: dock, deleted: false }],
       }),
+    }),
   );
   const originalDock = host.querySelector(".collection-dock");
   assert.ok(!!originalDock);
   const dockId = originalDock.dataset.objectId;
   await click(button(host, "运维资产"));
   assert.equal(host.querySelectorAll(".object-collection").length, 0);
+  await click(button(host, "运维资产"));
+  assert.equal(host.querySelectorAll(".operations-overlay").length, 0);
+  assert.equal(button(host, "画布").getAttribute("aria-pressed"), "true");
+  assert.equal(
+    host.querySelector(".collection-dock")?.dataset.objectId,
+    dockId,
+  );
+  await click(button(host, "运维资产"));
   await click(button(host, "关闭运维资产"));
   assert.equal(
     host.querySelector(".collection-dock")?.dataset.objectId,
@@ -236,6 +242,9 @@ test("从画布或排列进入运维时隐藏收纳入口，关闭后恢复同�
   );
   await click(button(host, "运维资产"));
   assert.equal(host.querySelectorAll(".arranged-collection").length, 0);
+  await click(button(host, "运维资产"));
+  assert.equal(host.querySelectorAll(".operations-overlay").length, 0);
+  assert.equal(button(host, "排列").getAttribute("aria-pressed"), "true");
 });
 
 test("灵感板、清单、便签显示创建时间，排列每行显示条目创建时间而非DDL", async (t) => {
@@ -263,19 +272,17 @@ test("灵感板、清单、便签显示创建时间，排列每行显示条目�
     createdAt,
   };
   await act(async () =>
-    sockets
-      .at(-1)
-      .onmessage({
-        data: JSON.stringify({
-          type: "snapshot",
-          rows: [board, checklist, sticky].map((data) => ({
-            id: data.id,
-            revision: 1,
-            data,
-            deleted: false,
-          })),
-        }),
+    sockets.at(-1).onmessage({
+      data: JSON.stringify({
+        type: "snapshot",
+        rows: [board, checklist, sticky].map((data) => ({
+          id: data.id,
+          revision: 1,
+          data,
+          deleted: false,
+        })),
       }),
+    }),
   );
   assert.equal(
     host.querySelector(".frame-created-at").getAttribute("datetime"),

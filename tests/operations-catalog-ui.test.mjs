@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
-import { createRoot } from "react-dom/client";
 import { build } from "esbuild";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
@@ -26,6 +25,26 @@ Object.defineProperty(globalThis, "navigator", {
   value: dom.window.navigator,
   configurable: true,
 });
+for (const name of [
+  "HTMLElement",
+  "HTMLInputElement",
+  "Element",
+  "Node",
+  "NodeFilter",
+  "MutationObserver",
+  "CustomEvent",
+  "getComputedStyle",
+])
+  globalThis[name] = dom.window[name];
+globalThis.ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
+globalThis.requestAnimationFrame = (callback) =>
+  setTimeout(() => callback(performance.now()), 10);
+globalThis.cancelAnimationFrame = clearTimeout;
+const { createRoot } = await import("react-dom/client");
 
 const dir = mkdtempSync(resolve("node_modules/.cache/ops-ui-"));
 await build({
@@ -34,13 +53,26 @@ await build({
   format: "esm",
   platform: "node",
   packages: "external",
-  plugins: [{ name: "omit-css", setup(build) {
-    build.onResolve({ filter: /\.css$/ }, args => ({ path: args.path, namespace: "css" }));
-    build.onLoad({ filter: /.*/, namespace: "css" }, () => ({ contents: "", loader: "js" }));
-  } }],
+  plugins: [
+    {
+      name: "omit-css",
+      setup(build) {
+        build.onResolve({ filter: /\.css$/ }, (args) => ({
+          path: args.path,
+          namespace: "css",
+        }));
+        build.onLoad({ filter: /.*/, namespace: "css" }, () => ({
+          contents: "",
+          loader: "js",
+        }));
+      },
+    },
+  ],
   outfile: resolve(dir, "ui.mjs"),
 });
-const { default: OperationsCatalog } = await import(pathToFileURL(resolve(dir, "ui.mjs")));
+const { default: OperationsCatalog } = await import(
+  pathToFileURL(resolve(dir, "ui.mjs"))
+);
 rmSync(dir, { recursive: true, force: true });
 
 test("operations catalog opens on the product directory", async () => {
@@ -89,17 +121,20 @@ test("服务器表单提供状态开关并在台账中显示服务器状态", as
     assert.ok(status, "服务器表单应提供状态开关");
     assert.equal(status.value, "running");
     assert.deepEqual(
-      [...status.options].map(option => option.value),
+      [...status.options].map((option) => option.value),
       ["running", "maintenance", "retired"],
     );
     await act(async () =>
       document.querySelector('button[aria-label="关闭表单"]')?.click(),
     );
     await act(async () =>
-      document.querySelector('button[aria-label="打开服务器：prod-api-01"]')?.click(),
+      document
+        .querySelector('button[aria-label="打开服务器：prod-api-01"]')
+        ?.click(),
     );
-    const editButton = [...document.querySelectorAll(".ops-detail-actions button")]
-      .find(button => button.textContent.includes("编辑"));
+    const editButton = [
+      ...document.querySelectorAll(".ops-detail-actions button"),
+    ].find((button) => button.textContent.includes("编辑"));
     assert.ok(editButton);
     await act(async () => editButton.click());
     const editStatus = document.querySelector('select[name="status"]');
@@ -136,17 +171,48 @@ test("product and server records expose delete actions and product cards show se
   try {
     const previousConfirm = window.confirm;
     window.confirm = () => true;
+    assert.equal(
+      document.querySelector('button[aria-label="删除产品：轻单"]'),
+      null,
+      "删除收在更多操作中",
+    );
+    await act(async () =>
+      document.querySelector('button[aria-label="更多操作：轻单"]')?.click(),
+    );
     assert.ok(document.querySelector('button[aria-label="删除产品：轻单"]'));
-    assert.equal(document.querySelector('button[aria-label="删除服务器：prod-api-01"]'), null);
+    assert.equal(
+      document.querySelector('button[aria-label="删除服务器：prod-api-01"]'),
+      null,
+    );
     assert.match(document.body.textContent, /prod-api-01/);
     assert.doesNotMatch(document.body.textContent, /1 台服务器/);
-    await act(async () => document.querySelector('button[aria-label="服务器台账"]')?.click());
-    assert.ok(document.querySelector('button[aria-label="删除服务器：prod-api-01"]'));
-    await act(async () => document.querySelector('button[aria-label="删除服务器：prod-api-01"]')?.click());
+    await act(async () =>
+      document.querySelector('button[aria-label="服务器台账"]')?.click(),
+    );
+    await act(async () =>
+      document
+        .querySelector('button[aria-label="更多操作：prod-api-01"]')
+        ?.click(),
+    );
+    assert.ok(
+      document.querySelector('button[aria-label="删除服务器：prod-api-01"]'),
+    );
+    await act(async () =>
+      document
+        .querySelector('button[aria-label="删除服务器：prod-api-01"]')
+        ?.click(),
+    );
     assert.match(document.body.textContent, /还没有服务器记录/);
-    await act(async () => document.querySelector('button[aria-label="产品目录"]')?.click());
+    await act(async () =>
+      document.querySelector('button[aria-label="产品目录"]')?.click(),
+    );
+    await act(async () =>
+      document.querySelector('button[aria-label="更多操作：轻单"]')?.click(),
+    );
     assert.ok(document.querySelector('button[aria-label="删除产品：轻单"]'));
-    await act(async () => document.querySelector('button[aria-label="删除产品：轻单"]')?.click());
+    await act(async () =>
+      document.querySelector('button[aria-label="删除产品：轻单"]')?.click(),
+    );
     assert.match(document.body.textContent, /还没有产品记录/);
     window.confirm = previousConfirm;
   } finally {

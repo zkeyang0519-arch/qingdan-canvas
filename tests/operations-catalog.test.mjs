@@ -7,11 +7,25 @@ import {
   createInitialOpsState,
   deleteProduct,
   deleteServer,
+  filterProducts,
+  filterServers,
   groupDeploymentsByRole,
   parseOpsState,
   serializeOpsState,
   updateServer,
 } from "../src/ops/model.js";
+
+test("资产搜索匹配关联服务器和承载产品，并与环境筛选组合", () => {
+  let state = addProduct(createInitialOpsState(), { name: "轻单" });
+  state = addServer(state, { name: "prod-api-01", address: "api.example.test" });
+  state = addServer(state, { name: "unlinked" });
+  state = addDeployment(state, { productId: state.products[0].id, serverId: state.servers[0].id, environment: "production" });
+  assert.deepEqual(filterProducts(state, { keyword: " PROD-API " }).map(item => item.name), ["轻单"]);
+  assert.equal(filterProducts(state, { keyword: "api.example.test", environment: "production" }).length, 1);
+  assert.equal(filterProducts(state, { keyword: "api.example.test", environment: "staging" }).length, 0);
+  assert.deepEqual(filterServers(state, { keyword: "轻单" }).map(item => item.name), ["prod-api-01"]);
+  assert.equal(filterServers(state, { keyword: "轻单", status: "retired" }).length, 0);
+});
 
 test("operations catalog keeps products, servers, and role-grouped deployments", () => {
   let state = createInitialOpsState();
