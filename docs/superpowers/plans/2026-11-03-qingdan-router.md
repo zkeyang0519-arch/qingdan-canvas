@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 React 19、Workers、SQLite Durable Objects、D1、R2；agents 0.30.1；MCP client/server 2.3.1；Zod 4；Node.js 24；Codex app-server 固定版本。
 
-**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。当前交付为方案，复选框均表示未来开发工作，未执行。
+**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。2026-11-03 已按用户要求完成 Task 1；其余步骤仍未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md)。
 
 ## Global Constraints
 
@@ -73,15 +73,17 @@ Task 1 补全设计第 7 节记录为唯一类型定义，并定义 ArtifactPred
 
 ## Task 1: 契约、状态和排序算法
 
-**Files:** 新增 shared/agent/contracts.ts、schemas.ts、sort-plan.ts、tests/agent-contracts.test.mjs、tests/agent-sort.test.mjs、tests/fixtures/agent-fixtures.mjs。
+**Files:** 新增 shared/agent/contracts.ts、schemas.ts、sort-plan.ts、errors.ts、deadlines.ts、tests/agent-contracts.test.mjs、tests/agent-sort.test.mjs、tests/fixtures/agent-fixtures.mjs、docs/agent-task-rules.md；修改 tsconfig.json 纳入共享类型检查，package.json 增加 test:agent，README.md 链接规则说明。
 
 **Interfaces:** 输入为 unknown 或 readonly PlanTask[]。输出 parseAgentCommand(value): AgentCommand、parseRunnerEvent(value): RunnerEvent、parseRunOutcome(value): RunOutcome、sortPlan(tasks, explicitOrder?): string[]、validateManualOrder(tasks, order): void。RunStatus、BatchStatus、AgentActor、ExecutionSnapshot、CommandEnvelope、EventEnvelope、PlanSnapshot、MemoryRecord 在 contracts.ts 定义。
 
-- [ ] 写契约测试：拒绝第 51 条、重复 taskId、未知依赖、伪造 actor/cwd；协议版本只接受 1；相同任务标题不等于相同任务 ID。
-- [ ] 写排序测试：输入 A 依赖 B，即使 A 优先级更高，输出也先 B；同优先级和日期维持原序；手工合法顺序保持；环返回涉及的 IDs；Asia/Shanghai 相对日期与 UTC 存储换算一致。
-- [ ] 运行 `node --test tests/agent-contracts.test.mjs tests/agent-sort.test.mjs`，记录缺失实现导致的失败。
-- [ ] 实现严格 schemas、错误码和稳定拓扑排序；错误码统一含 DEPENDENCY_CYCLE、DEPENDENCY_MISSING、REVISION_CONFLICT、IDEMPOTENCY_KEY_REUSED、ACCESS_DENIED、RECONCILIATION_REQUIRED。
-- [ ] 重跑上述测试并运行 `npm run check`，要求退出码 0；提交仅本任务文件。
+- [x] 写契约测试：拒绝第 51 条、重复 taskId、未知依赖、伪造 actor/cwd；协议版本只接受 1；相同任务标题不等于相同任务 ID。
+- [x] 写排序测试：输入 A 依赖 B，即使 A 优先级更高，输出也先 B；同优先级和日期维持原序；手工合法顺序保持；环返回涉及的 IDs；Asia/Shanghai 相对日期与 UTC 存储换算一致。
+- [x] 运行 `node --test tests/agent-contracts.test.mjs tests/agent-sort.test.mjs`，记录缺失实现导致的失败。
+- [x] 实现严格 schemas、错误码和稳定拓扑排序；错误码统一含 DEPENDENCY_CYCLE、DEPENDENCY_MISSING、REVISION_CONFLICT、IDEMPOTENCY_KEY_REUSED、ACCESS_DENIED、RECONCILIATION_REQUIRED。
+- [x] 重跑上述测试并运行 `npm run check`，要求退出码 0；提交仅本任务文件。
+
+验收：专项 26/26、完整回归 478/478、TypeScript 检查、部署 dry run 均通过；独立代码审查通过。受限环境使用项目 `.tmp/wrangler-logs`，解决旧集成测试因 Wrangler 全局日志写入被拒而解析 JSON 失败的问题。未启动 Task 2，未部署。
 
 排序核心断言：
 

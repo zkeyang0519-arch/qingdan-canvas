@@ -55,6 +55,8 @@ npm run dev
 
 ## Agent / MCP 接入
 
+Router 第 1 步已实现共享任务规则：执行要求、验收条件、依赖校验、稳定排序、手工顺序校验与时区转换。运行 `npm run test:agent` 验证，详细字段、接口和范围见 [任务规则说明](docs/agent-task-rules.md)。本步骤尚未接入真实清单或网页操作入口，后续按 [实施计划](docs/superpowers/plans/2026-11-03-qingdan-router.md) 继续。
+
 远程 MCP 提供九个读取搜索、待办和便签工具，使用轻单账号 OAuth、逐画布授权、只读/读写权限与服务端删除恢复；改动共用网页版本和实时同步机制。默认关闭，启用须配置专用 OAuth KV 和固定 HTTPS origin。
 
 按 [四客户端接入指南](docs/mcp-setup.md) 配置 Codex、Claude Code、VS Code GitHub Copilot 或 Cursor；维护者阅读 [环境配置](docs/mcp-configuration.md) 与 [Cloudflare MCP 发布步骤](docs/cloudflare-setup.md#轻单-mcp-升级与发布)。[验收记录](docs/mcp-acceptance.md) 区分本地自动验证、界面检查以及尚未运行的四端/云端验收。当前分支仅完成本地构建与验证，没有部署或真实客户端登录。
