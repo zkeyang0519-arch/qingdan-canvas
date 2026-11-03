@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile, readdir, rename } from "node:fs/promises";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify, parseArgs } from "node:util";
 import { randomUUID, createHash } from "node:crypto";
@@ -58,8 +58,18 @@ const sha = (value) =>
     .update(typeof value === "string" ? value : JSON.stringify(value))
     .digest("hex");
 const exec = promisify(execFile);
-const saveReport = () => writeFile(reportPath, JSON.stringify(report, null, 2));
+const saveReport = async () => {
+  await writeFile(`${reportPath}.tmp`, JSON.stringify(report, null, 2));
+  await rename(`${reportPath}.tmp`, reportPath);
+};
 let ledger;
+let interrupted = false;
+const interrupt = () => {
+  interrupted = true;
+  void adapter.close();
+};
+process.once("SIGINT", interrupt);
+process.once("SIGTERM", interrupt);
 try {
   ledger = JSON.parse(await readFile(ledgerPath, "utf8"));
 } catch (error) {
@@ -195,6 +205,7 @@ try {
       ]);
     }
     for (const key of ["summary", "a", "b"]) {
+      if (interrupted) throw Error("本机测试已中断，请核对原会话后恢复。");
       const value = await snapshot(key);
       const launch = await adapter.startFreshRun(value);
       if (launch.status === "reconciliation_required") {
@@ -213,6 +224,7 @@ try {
       const deadline = Date.now() + timeoutMs;
       let run;
       while (Date.now() < deadline) {
+        if (interrupted) throw Error("本机测试已中断，请核对原会话后恢复。");
         run = adapter.getRun(value.runId);
         if (run.terminal) break;
         if (run.status === "reconciliation_required")
@@ -274,6 +286,8 @@ try {
   report.error = error instanceof Error ? error.message : String(error);
   process.exitCode = 1;
 } finally {
+  process.removeListener("SIGINT", interrupt);
+  process.removeListener("SIGTERM", interrupt);
   await adapter.close();
   store.close();
   report.finishedAt = new Date().toISOString();

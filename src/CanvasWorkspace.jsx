@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   StickyNote,
@@ -26,6 +33,7 @@ import {
   Columns2,
   Pencil,
   Server,
+  Bot,
 } from "lucide-react";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
@@ -73,6 +81,8 @@ import { exportArchive, downloadBlob } from "./canvas/backup.js";
 import { useRoomWorkspace } from "./sync/useRoomWorkspace.js";
 import { api, inviteLink } from "./api.js";
 import OperationsCatalog from "./ops/OperationsCatalog.jsx";
+import { todoPages } from "./canvas/todoPages.js";
+const AgentExperience = lazy(() => import("./agent/AgentExperience.jsx"));
 
 const contextIcons = {
   "new-note": StickyNote,
@@ -650,6 +660,21 @@ export default function CanvasWorkspace({
               </button>
             </div>
             <div className="nav-end">
+              <button
+                className="agent-nav-entry"
+                aria-label="Agent 验证"
+                aria-haspopup="dialog"
+                onClick={() => {
+                  exitEdit();
+                  setOperationsOpen(false);
+                  setContext(null);
+                  setCollection(null);
+                  setPanel("agent");
+                }}
+              >
+                <Bot size={17} />
+                <span>Agent 验证</span>
+              </button>
               <AuthorAvatarToggle />
               <div
                 className="presence"
@@ -721,6 +746,22 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
+          {panel === "agent" && (
+            <Suspense
+              fallback={
+                <div className="modal-backdrop" role="status">
+                  正在打开 Agent 验证…
+                </div>
+              }
+            >
+              <AgentExperience
+                roomId={room.id}
+                userId={user.id}
+                pages={todoPages(state, room.id)}
+                onClose={() => setPanel(null)}
+              />
+            </Suspense>
+          )}
           {operationsOpen && (
             <OperationsCatalog
               onClose={() => setOperationsOpen(false)}

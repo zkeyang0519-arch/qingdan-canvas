@@ -1,6 +1,6 @@
 # 第 1 步：任务规则、契约与排序
 
-2026-11-03。实现位于 `shared/agent/`，对应 [Router 实施计划的 Task 1](superpowers/plans/2026-11-03-qingdan-router.md)。本步骤提供可调用、可测试的基础规则；真实清单写入在第 5 步，自动执行在第 8 步，网页操作界面在第 9 步接入。
+2026-11-03。实现位于 `shared/agent/`，对应 [Router 实施计划的 Task 1](superpowers/plans/2026-11-03-qingdan-router.md)。轻单顶部「Agent 验证 → 1 · 任务规则」可编辑验证草稿、检查依赖并预览排序；详见 [体验步骤](agent-experience.md)。真实清单规格写回在第 5 步，自动执行在第 8 步；每步均交付可体验界面，第 9 步统一整合完善。
 
 ## 一条任务包含什么
 

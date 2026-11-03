@@ -766,3 +766,19 @@
     line-height: 1.7;
   }
 }
+.agent-nav-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: #eef4ef;
+  color: #456b51;
+  font-size: 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .agent-nav-entry span {
+    display: none;
+  }
+}
