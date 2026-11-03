@@ -20,6 +20,7 @@ function fixture() {
   });
   const first = {
     ...createObject(boardId, "note"),
+    noteKind: "checklist",
     id: "first",
     parentId: frame.id,
     createdAt: "2026-10-20T00:00:00.000Z",
@@ -35,6 +36,7 @@ function fixture() {
   };
   const second = {
     ...createObject(boardId, "note"),
+    noteKind: "checklist",
     id: "second",
     parentId: frame.id,
     createdAt: "2026-10-21T00:00:00.000Z",
@@ -46,6 +48,7 @@ function fixture() {
   };
   const other = {
     ...createObject(boardId, "note"),
+    noteKind: "checklist",
     id: "other",
     blocks: [block("other-task")],
   };
@@ -331,6 +334,7 @@ test("超过同步上限的排序在应用前明确拒绝，不留下无法同�
     f.frame,
     ...Array.from({ length: 201 }, (_, i) => ({
       ...createObject(f.boardId, "note"),
+      noteKind: "checklist",
       id: `note-${String(i).padStart(3, "0")}`,
       createdAt: "2026-10-20T00:00:00.000Z",
       parentId: "page",

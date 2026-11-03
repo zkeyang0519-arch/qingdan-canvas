@@ -815,6 +815,24 @@ a:focus-visible,
   color: #a6afa0;
   pointer-events: none;
 }
+.prose-body {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+  line-height: 1.7;
+}
+.prose-body > div {
+  min-height: 1.7em;
+}
+.prose-copy {
+  user-select: text;
+}
+.prose-body:has(> div:only-child:empty)::before {
+  content: attr(data-placeholder);
+  color: #a6afa0;
+  pointer-events: none;
+}
 .block-copy.empty-copy {
   color: #a6afa0;
 }

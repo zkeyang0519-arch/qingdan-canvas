@@ -30,6 +30,7 @@ import {
   createObject,
   id,
   makeBlock,
+  objectLabel,
   patchObjects,
 } from "./model.js";
 import { effectivelyLocked } from "./layout.js";
@@ -59,7 +60,7 @@ import {
 } from "./TaskDeadline.jsx";
 import { HoverText } from "./ChecklistParts.jsx";
 import ProjectTabs from "./ProjectTabs.jsx";
-import { EditableBlock, RichText } from "./Note.jsx";
+import { EditableBlock, RichText, ProseBody } from "./Note.jsx";
 import { TodoActions, ChecklistMenu, useTodoTools } from "./TodoTools.jsx";
 import { TaskAuthorAvatar } from "./TaskAuthors.jsx";
 import { formatCreatedAt } from "./dateFormat.js";
@@ -195,6 +196,7 @@ function ChecklistPane({
     (page.group && effectivelyLocked(state.objects, page.group.id));
   const pending = page?.tasks.filter((t) => !t.block.done) || [],
     completed = page?.tasks.filter((t) => t.block.done) || [];
+  const attachments = page?.objects.filter((o) => o.type === "image") || [];
   const orderDisabled =
     frozen || workspace.readOnly || pending.some((task) => task.locked);
   const finishDrag = () => {
@@ -305,17 +307,18 @@ function ChecklistPane({
       deadlineEditor.blockId === task.key
         ? deadlineEditor
         : null;
-    const text = blockText(task.block),
+    const text = task.article ? objectLabel(task.note) : blockText(task.block),
       deadline = deadlineInfo(task.block, clock),
       isEditing =
-        editing?.noteId === task.note.id && editing.blockId === task.key;
+        editing?.noteId === task.note.id &&
+        (task.article || editing.blockId === task.key);
     return (
       <div
         key={task.key}
         data-task-id={task.key}
         data-object-id={task.note.id}
         data-deadline={deadline.status}
-        className={`todo-row ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""} ${dragging === task.key ? "is-reordering" : ""} ${dropTarget?.key === task.key ? `drop-${dropTarget.placement}` : ""}`}
+        className={`todo-row ${task.article ? "is-article" : ""} ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""} ${dragging === task.key ? "is-reordering" : ""} ${dropTarget?.key === task.key ? `drop-${dropTarget.placement}` : ""}`}
         data-reorderable={!orderDisabled && !task.block.done && !isEditing}
         onDragStart={(e) => e.preventDefault()}
         onContextMenu={(e) => {
@@ -429,7 +432,40 @@ function ChecklistPane({
         </button>
         <div className="todo-main">
           <div className="todo-copy" onDoubleClick={() => edit(task)}>
-            {isEditing && !frozen && !task.locked ? (
+            {task.article &&
+            isEditing &&
+            !frozen &&
+            !task.locked &&
+            !workspace.readOnly ? (
+              <ProseBody
+                blocks={task.note.blocks}
+                editing
+                focusBlock={editing?.blockId}
+                objects={objectMap}
+                onEdit={() => edit(task)}
+                onChange={(blocks) => {
+                  if (frozen || workspace.readOnly) return;
+                  update(
+                    (s) => {
+                      const live = writablePage(
+                        s,
+                        boardId,
+                        page.id,
+                      )?.objects.find((n) => n.id === task.note.id);
+                      return live && !effectivelyLocked(s.objects, live.id)
+                        ? patchObjects(s, { [live.id]: { blocks } })
+                        : s;
+                    },
+                    { record: false, source: state },
+                  );
+                }}
+                onExit={onExit}
+                onReference={onReference}
+                onReferencePicker={(key) =>
+                  onReferencePicker(task.note.id, key)
+                }
+              />
+            ) : !task.article && isEditing && !frozen && !task.locked ? (
               <EditableBlock
                 key={`${task.key}:${revision}`}
                 block={task.block}
@@ -488,7 +524,7 @@ function ChecklistPane({
                 autoFocus
               />
             ) : (
-              <HoverText label={text || "空白待办"}>
+              <HoverText label={blockText(task.block) || "空白待办"}>
                 <RichText
                   runs={task.block.runs}
                   objects={objectMap}
@@ -503,7 +539,9 @@ function ChecklistPane({
                 {formatCreatedAt(task.block.createdAt)}
               </time>
               {deadline.status !== "none" && (
-                <span className="todo-deadline-status">{deadline.relative}</span>
+                <span className="todo-deadline-status">
+                  {deadline.relative}
+                </span>
               )}
             </div>
           )}
@@ -647,7 +685,9 @@ function ChecklistPane({
                     <ImagePlus size={16} />
                   </button>
                   <ChecklistMenu
-                    notes={page.objects.filter((o) => o.type === "note")}
+                    notes={page.objects.filter(
+                      (o) => o.type === "note" && o.noteKind === "checklist",
+                    )}
                     frozen={frozen}
                   />
                 </div>
@@ -708,60 +748,54 @@ function ChecklistPane({
                     <span>添加待办</span>
                   </button>
                 )}
-                {page.objects.some((o) => o.type === "image") && (
+                {attachments.length > 0 && (
                   <details className="todo-attachments" open>
-                    <summary>
-                      本页资料 ·{" "}
-                      {page.objects.filter((o) => o.type === "image").length}
-                    </summary>
+                    <summary>本页资料 · {attachments.length}</summary>
                     <div>
-                      {page.objects
-                        .filter((o) => o.type === "image")
-                        .map((o) => (
-                          <article
-                            key={o.id}
-                            data-object-id={o.id}
-                            draggable={
-                              !frozen && !effectivelyLocked(state.objects, o.id)
+                      {attachments.map((o) => (
+                        <article
+                          key={o.id}
+                          data-object-id={o.id}
+                          draggable={
+                            !frozen && !effectivelyLocked(state.objects, o.id)
+                          }
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData(
+                              "application/x-qingdan-object",
+                              JSON.stringify({ id: o.id }),
+                            );
+                            e.dataTransfer.effectAllowed = "move";
+                          }}
+                        >
+                          <button
+                            className="todo-image"
+                            aria-label={`预览图片：${o.alt}`}
+                            onClick={() =>
+                              onImagePreview({
+                                object: o,
+                                url: assetUrls.get(o.assetId),
+                              })
                             }
-                            onDragStart={(e) => {
-                              e.dataTransfer.setData(
-                                "application/x-qingdan-object",
-                                JSON.stringify({ id: o.id }),
-                              );
-                              e.dataTransfer.effectAllowed = "move";
-                            }}
                           >
+                            <ImageContent
+                              object={o}
+                              url={assetUrls.get(o.assetId)}
+                            />
+                          </button>
+                          <div>
+                            <span>{o.alt}</span>
                             <button
-                              className="todo-image"
-                              aria-label={`预览图片：${o.alt}`}
-                              onClick={() =>
-                                onImagePreview({
-                                  object: o,
-                                  url: assetUrls.get(o.assetId),
-                                })
+                              aria-label={`收纳图片：${o.alt}`}
+                              disabled={
+                                frozen || effectivelyLocked(state.objects, o.id)
                               }
+                              onClick={() => onCollect(page.id, [o.id])}
                             >
-                              <ImageContent
-                                object={o}
-                                url={assetUrls.get(o.assetId)}
-                              />
+                              <Archive size={14} />
                             </button>
-                            <div>
-                              <span>{o.alt}</span>
-                              <button
-                                aria-label={`收纳图片：${o.alt}`}
-                                disabled={
-                                  frozen ||
-                                  effectivelyLocked(state.objects, o.id)
-                                }
-                                onClick={() => onCollect(page.id, [o.id])}
-                              >
-                                <Archive size={14} />
-                              </button>
-                            </div>
-                          </article>
-                        ))}
+                          </div>
+                        </article>
+                      ))}
                     </div>
                   </details>
                 )}
@@ -1036,7 +1070,10 @@ export default function ArrangedWorkspace({
         !task.locked,
     );
     if (!latest) return "这条待办已被锁定、收纳或删除，请关闭后重试。";
-    if ((latest.block.dueAt ?? null) !== dueAt || (latest.block.dueStartAt ?? null) !== dueStartAt)
+    if (
+      (latest.block.dueAt ?? null) !== dueAt ||
+      (latest.block.dueStartAt ?? null) !== dueStartAt
+    )
       return "截止时间已被协作者修改，请关闭后重新设置。";
     setDialog(null);
     return "";
@@ -1068,7 +1105,11 @@ export default function ArrangedWorkspace({
       };
       update((s) => appendPageObjects(s, boardId, page.id, [note]));
       setQuickTaskLibraryOpen(false);
-      if (workspace.current.current.objects.some((object) => object.id === note.id))
+      if (
+        workspace.current.current.objects.some(
+          (object) => object.id === note.id,
+        )
+      )
         onToast(`已添加常用待办：${item.text}`);
       else onToast("当前清单暂时无法添加常用待办。");
     });
@@ -1318,19 +1359,37 @@ export default function ArrangedWorkspace({
         selected.side !== resolved.active
       )
         return;
-      const blocks = page.tasks
-        .filter(
-          (t) =>
-            selected.keys.includes(t.key) &&
-            t.block.done === (resolved.active === "right"),
-        )
-        .map((t) => ({ ...structuredClone(t.block), id: id("b") }));
-      if (blocks.length)
-        update((s) =>
-          appendPageObjects(s, boardId, page.id, [
-            { ...createObject(boardId, "note"), noteKind: "checklist", blocks },
-          ]),
-        );
+      const tasks = page.tasks.filter(
+        (t) =>
+          selected.keys.includes(t.key) &&
+          t.block.done === (resolved.active === "right"),
+      );
+      const copyBlock = (block) => ({ ...structuredClone(block), id: id("b") });
+      const articles = tasks
+        .filter((t) => t.article)
+        .map((t) => ({
+          ...createObject(boardId, "note"),
+          noteKind: "text",
+          color: t.note.color,
+          blocks: t.note.blocks.map(copyBlock),
+        }));
+      const blocks = tasks
+        .filter((t) => !t.article)
+        .map((t) => copyBlock(t.block));
+      const entries = [
+        ...articles,
+        ...(blocks.length
+          ? [
+              {
+                ...createObject(boardId, "note"),
+                noteKind: "checklist",
+                blocks,
+              },
+            ]
+          : []),
+      ];
+      if (entries.length)
+        update((s) => appendPageObjects(s, boardId, page.id, entries));
     },
     clearSelection: () => setSelected({ side: resolved.active, keys: [] }),
     selectAll: () => {
@@ -1516,36 +1575,39 @@ export default function ArrangedWorkspace({
           >
             <Redo2 size={16} />
           </button>
-          {!hideCollection && <button
-            ref={collectionAnchorRef}
-            className="arranged-collection"
-            aria-label="打开排列收纳框"
-            onClick={() => navigate(() => onCollection(dockedCollectionId))}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (blocked) return;
-              try {
-                const data = JSON.parse(
-                  e.dataTransfer.getData("application/x-qingdan-object"),
-                );
-                const page = todoPages(workspace.current.current, boardId).find(
-                  (p) => p.objects.some((o) => o.id === data.id),
-                );
-                if (page) collect(page.id, [data.id]);
-              } catch {}
-            }}
-          >
-            <Archive size={16} />
-            收纳框{" "}
-            <span>
-              {
-                state.objects.filter((o) => o.parentId === dockedCollectionId)
-                  .length
-              }
-            </span>
-          </button>}
+          {!hideCollection && (
+            <button
+              ref={collectionAnchorRef}
+              className="arranged-collection"
+              aria-label="打开排列收纳框"
+              onClick={() => navigate(() => onCollection(dockedCollectionId))}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (blocked) return;
+                try {
+                  const data = JSON.parse(
+                    e.dataTransfer.getData("application/x-qingdan-object"),
+                  );
+                  const page = todoPages(
+                    workspace.current.current,
+                    boardId,
+                  ).find((p) => p.objects.some((o) => o.id === data.id));
+                  if (page) collect(page.id, [data.id]);
+                } catch {}
+              }}
+            >
+              <Archive size={16} />
+              收纳框{" "}
+              <span>
+                {
+                  state.objects.filter((o) => o.parentId === dockedCollectionId)
+                    .length
+                }
+              </span>
+            </button>
+          )}
         </div>
       </div>
       {resolved.view === "calendar" ? (

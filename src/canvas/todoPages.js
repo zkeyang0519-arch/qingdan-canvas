@@ -102,16 +102,32 @@ export function todoPages(state, boardId) {
       .at(-1);
     const page = pages.find((p) => p.id === parent?.id) || loose;
     page.objects.push(o);
-    if (o.type === "note")
-      o.blocks.forEach((b, i) => {
+    if (o.type === "note") {
+      // An article is one task. Its first block owns the task metadata; the
+      // remaining blocks retain the original paragraphs and reference runs.
+      const article = o.noteKind === "text";
+      const blocks =
+        article && o.blocks.length
+          ? [
+              {
+                ...o.blocks[0],
+                runs: o.blocks.flatMap((b, i) =>
+                  i ? [{ type: "text", text: "\n" }, ...b.runs] : b.runs,
+                ),
+              },
+            ]
+          : o.blocks;
+      blocks.forEach((b, i) => {
         page.tasks.push({
           key: b.id,
           note: o,
           block: b,
           index: i,
+          article,
           locked: effectivelyLocked(state.objects, o.id),
         });
       });
+    }
   }
   if (loose.objects.length || !pages.length) pages.push(loose);
   for (const page of pages) {
