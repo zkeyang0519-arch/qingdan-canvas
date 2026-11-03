@@ -20,7 +20,7 @@ import {
   mergeRestoredNote,
   forgetRecoveryOrigin,
 } from "./taskRecords.js";
-export { setTaskRemark, deleteTask } from "./taskRecords.js";
+export { setTaskRemark, deleteTask, deleteTodo } from "./taskRecords.js";
 
 export const id = (prefix = "o") =>
   `${prefix}-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2)}`;
@@ -366,7 +366,10 @@ export function validateWorkspace(value) {
           b.dueAt === undefined || b.dueAt === null || validDeadline(b.dueAt),
           "待办截止时间无效。",
         );
-        requireValue(validDeadlineRange(b.dueStartAt, b.dueAt), "待办日期区间无效。");
+        requireValue(
+          validDeadlineRange(b.dueStartAt, b.dueAt),
+          "待办日期区间无效。",
+        );
         requireValue(
           b.arrangedOrder === undefined ||
             (Number.isSafeInteger(b.arrangedOrder) && b.arrangedOrder >= 0),

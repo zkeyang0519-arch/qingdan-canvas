@@ -8,7 +8,7 @@ import {
 } from "./model.js";
 import { todoPages } from "./todoPages.js";
 import { ancestors, effectivelyLocked, normalizeLayout } from "./layout.js";
-import { deleteTask } from "./taskRecords.js";
+import { deleteTodo } from "./taskRecords.js";
 import { validDeadline, validDeadlineRange } from "../../shared/deadline.js";
 
 function changeView(state, boardId, change) {
@@ -221,7 +221,11 @@ export function setPageDeadline(
   if (!validDeadlineRange(dueStartAt, dueAt)) return state;
   const task = pageTask(state, boardId, pageId, noteId, blockId);
   if (!task) return state;
-  if ((task.block.dueAt ?? null) === dueAt && (task.block.dueStartAt ?? null) === dueStartAt) return state;
+  if (
+    (task.block.dueAt ?? null) === dueAt &&
+    (task.block.dueStartAt ?? null) === dueStartAt
+  )
+    return state;
   if ((task.block.dueAt ?? null) !== (expectedDueAt ?? null)) return state;
   if ((task.block.dueStartAt ?? null) !== expectedDueStartAt) return state;
   return patchObjects(state, {
@@ -280,7 +284,7 @@ export function deletePageTasks(state, boardId, pageId, keys) {
   const selected = new Set(keys);
   return page.tasks
     .filter((t) => selected.has(t.key))
-    .reduce((next, t) => deleteTask(next, t.note.id, t.key), state);
+    .reduce((next, t) => deleteTodo(next, t.note.id, t.key), state);
 }
 
 export function clearCompletedPageTasks(state, boardId, pageId) {

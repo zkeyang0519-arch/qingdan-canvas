@@ -303,16 +303,19 @@ test("清空仅删除当前项目未锁定的已完成事项，保留未完成�
   f.note.blocks[0].done = true;
   const completed = {
     ...createObject(f.boardId, "note"),
+    noteKind: "checklist",
     parentId: "left",
     blocks: [{ ...makeBlock("另一个已完成事项"), done: true }],
   };
   const other = {
     ...createObject(f.boardId, "note"),
+    noteKind: "checklist",
     parentId: "right",
     blocks: [{ ...makeBlock("其他项目已完成"), done: true }],
   };
   const locked = {
     ...createObject(f.boardId, "note"),
+    noteKind: "checklist",
     parentId: "left",
     locked: true,
     blocks: [{ ...makeBlock("锁定事项"), done: true }],

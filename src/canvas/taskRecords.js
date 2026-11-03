@@ -1,4 +1,4 @@
-import { id, now, patchObjects } from "./model.js";
+import { id, now, patchObjects, deleteObjects } from "./model.js";
 import { effectivelyLocked, normalizeLayout } from "./layout.js";
 
 export function forgetRecoveryOrigin(object) {
@@ -79,6 +79,16 @@ export function deleteTask(state, noteId, blockId) {
       ...state.trash,
     ],
   };
+}
+
+// A text note is one article task; a checklist task is one individual block.
+export function deleteTodo(state, noteId, blockId) {
+  const note = state.objects.find((o) => o.id === noteId && o.type === "note");
+  if (note?.noteKind === "text")
+    return note.blocks[0]?.id === blockId
+      ? deleteObjects(state, [noteId])
+      : state;
+  return deleteTask(state, noteId, blockId);
 }
 
 export function mergeRestoredNote(existing, archived) {

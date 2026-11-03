@@ -19,7 +19,7 @@ import {
   blockText,
   objectLabel,
   setTaskRemark,
-  deleteTask,
+  deleteTodo,
   deleteObjects,
   restoreTrash,
 } from "./model.js";
@@ -111,7 +111,7 @@ export function TodoToolsProvider({
     const api = live.current.workspace,
       before = api.current.current;
     api.update((s) =>
-      blockId ? deleteTask(s, noteId, blockId) : deleteObjects(s, [noteId]),
+      blockId ? deleteTodo(s, noteId, blockId) : deleteObjects(s, [noteId]),
     );
     const batch = api.current.current.trash.find(
       (t) => !before.trash.some((old) => old.id === t.id),

@@ -20,6 +20,7 @@ function fixture() {
   const state = createWorkspace();
   const note = {
     ...createObject(state.boards[0].id, "note"),
+    noteKind: "checklist",
     blocks: [makeBlock("提交设计"), makeBlock("整理资料")],
   };
   state.objects = [note];
