@@ -608,13 +608,14 @@ export default function CanvasWorkspace({
                 className="ops-nav-entry"
                 aria-label="运维资产"
                 aria-pressed={operationsOpen}
+                title={operationsOpen ? "再次点击返回原界面" : "打开运维资产"}
                 onClick={() => {
                   exitEdit();
                   setPanel(null);
                   setContext(null);
                   setCollection(null);
                   setMenuDialog(null);
-                  setOperationsOpen(true);
+                  setOperationsOpen((open) => !open);
                 }}
               >
                 <Server size={15} />

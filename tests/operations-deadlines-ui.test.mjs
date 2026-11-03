@@ -136,6 +136,138 @@ function fixture() {
   });
 }
 
+test("目录只有一个搜索入口，详情关闭保留筛选，Escape 逐层关闭", async (t) => {
+  let closeCount = 0;
+  await mount(t, addProduct(fixture(), { name: "其他产品" }), {
+    onClose: () => closeCount++,
+  });
+  assert.equal(
+    document.querySelectorAll('input[aria-label="搜索运维资产"]').length,
+    1,
+  );
+  const input = document.querySelector('input[aria-label="搜索运维资产"]');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, "prod-api");
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
+  assert.equal(document.querySelectorAll(".ops-table tbody tr").length, 1);
+  await click(button("打开产品：轻单"));
+  const drawer = document.querySelector(
+    '[role="dialog"][aria-label="资产详情"]',
+  );
+  assert.ok(drawer);
+  assert.ok(document.querySelector(".ops-table"), "抽屉打开后列表保持挂载");
+  await click(button("编辑"));
+  await act(async () =>
+    document
+      .querySelector(".ops-modal input")
+      .dispatchEvent(
+        new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+  );
+  assert.equal(document.querySelector(".ops-modal"), null);
+  assert.ok(document.querySelector(".ops-detail-drawer"));
+  await act(async () =>
+    button("关闭资产详情").dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  assert.equal(document.querySelector(".ops-detail-drawer"), null);
+  assert.equal(closeCount, 0);
+  assert.ok(
+    document.activeElement === button("打开产品：轻单"),
+    "嵌套编辑后仍返回最初的列表入口",
+  );
+  assert.equal(
+    document.querySelector('input[aria-label="搜索运维资产"]').value,
+    "prod-api",
+  );
+  assert.equal(document.querySelectorAll(".ops-table tbody tr").length, 1);
+  await click(button("卡片视图"));
+  assert.equal(
+    document.querySelectorAll(".ops-card-grid .ops-record").length,
+    1,
+  );
+  await click(button("表格视图"));
+  assert.equal(document.querySelectorAll(".ops-table tbody tr").length, 1);
+  assert.doesNotMatch(
+    document.body.textContent,
+    /示例数据|重置演示|产品、部署与到期时间，一处掌握/,
+  );
+});
+
+test("菜单和关联资源跳转使用稳定焦点入口，Escape 仍能关闭详情", async (t) => {
+  await mount(t, fixture());
+  const menu = button("更多操作：轻单");
+  await click(menu);
+  await click(button("查看详情"));
+  await click(button("关闭资产详情"));
+  assert.ok(document.activeElement === menu, "菜单入口保持可返回焦点");
+  const opener = button("打开产品：轻单");
+  await click(opener);
+  await click(button("prod-api-01"));
+  assert.ok(
+    document
+      .querySelector(".ops-detail-drawer")
+      .contains(document.activeElement),
+  );
+  await act(async () =>
+    document.activeElement.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  assert.equal(document.querySelector(".ops-detail-drawer"), null);
+  assert.ok(
+    document.activeElement === opener,
+    "关闭关联详情后返回最初的列表入口",
+  );
+});
+
+test("7 天内到期按服务器去重，清除筛选后可按到期时间排序", async (t) => {
+  const current = Date.parse("2027-01-01T00:00:00.000Z");
+  t.mock.method(Date, "now", () => current);
+  let state = fixture();
+  state = updateServer(state, state.servers[0].id, {
+    dueAt: "2027-01-03T00:00:00.000Z",
+  });
+  state = addProduct(state, { name: "共享资源产品" });
+  state = addDeployment(state, {
+    productId: state.products[1].id,
+    serverId: state.servers[0].id,
+    environment: "production",
+  });
+  state = addServer(state, {
+    name: "already-expired",
+    dueAt: "2026-12-31T00:00:00.000Z",
+  });
+  state = addServer(state, {
+    name: "later",
+    dueAt: "2027-01-12T00:00:00.000Z",
+  });
+  state = addServer(state, { name: "undated" });
+  await mount(t, state);
+  assert.equal(button("7 天内到期").querySelector("span").textContent, "1");
+  await click(button("7 天内到期"));
+  assert.equal(document.querySelectorAll(".ops-table tbody tr").length, 1);
+  assert.match(
+    document.querySelector(".ops-table tbody").textContent,
+    /prod-api-01/,
+  );
+  await click(button("清除到期筛选"));
+  const sort = document.querySelector('select[aria-label="排序方式"]');
+  await act(async () => {
+    sort.value = "deadline";
+    sort.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+  const rows = [...document.querySelectorAll(".ops-table tbody tr")];
+  assert.equal(rows.length, 4);
+  assert.match(rows[0].textContent, /already-expired/);
+  assert.match(rows.at(-1).textContent, /undated/);
+});
+
 test("服务器复用 DDL 日历保存区间，产品联动，重开恢复并可移除", async (t) => {
   const state = fixture();
   await mount(t, state);
@@ -278,6 +410,7 @@ test("产品按服务器列出全部 DDL，同一服务器去重，删除后联�
   const confirm = window.confirm;
   window.confirm = () => true;
   try {
+    await click(button("更多操作：prod-db-01"));
     await click(button("删除服务器：prod-db-01"));
   } finally {
     window.confirm = confirm;
@@ -294,6 +427,7 @@ test("只读运维资产可见 DDL 但无法改期", async (t) => {
   await mount(t, fixture(), { readOnly: true });
   await click(button("服务器台账"));
   assert.ok(deadlineButton("prod-api-01")?.disabled);
+  await click(button("更多操作：prod-api-01"));
   const statusButtons = document.querySelectorAll(
     ".ops-server-status-switch button",
   );
@@ -307,20 +441,18 @@ test("只读运维资产可见 DDL 但无法改期", async (t) => {
   assert.equal(picker(), null);
 });
 
-test("服务器台账在 DDL 与删除之间切换三种状态，保留日期和其他服务器", async (t) => {
+test("服务器台账通过操作菜单切换三种状态，保留日期和其他服务器", async (t) => {
   const state = addServer(fixture(), { name: "prod-db-01", status: "running" });
   await mount(t, state);
   await click(button("服务器台账"));
   const row = button("打开服务器：prod-api-01").closest(".ops-record");
-  const status = row.querySelector(
+  assert.ok(row.querySelector(".ops-server-deadline"));
+  await click(button("更多操作：prod-api-01"));
+  const status = document.querySelector(
     '[role="group"][aria-label="服务器状态：prod-api-01"]',
   );
-  assert.ok(status, "台账直接提供状态切换");
-  assert.equal(status.previousElementSibling.className, "ops-server-deadline");
-  assert.equal(
-    status.nextElementSibling.getAttribute("aria-label"),
-    "删除服务器：prod-api-01",
-  );
+  assert.ok(status, "操作菜单提供状态切换");
+  assert.ok(button("删除服务器：prod-api-01"));
   assert.deepEqual(
     [...status.querySelectorAll("button")].map((item) => item.textContent),
     ["运行中", "维护中", "停用"],
@@ -347,10 +479,13 @@ test("服务器台账在 DDL 与删除之间切换三种状态，保留日期和
   assert.equal(loadOpsState().state.servers[0].status, "running");
   assert.equal(loadOpsState().state.servers[1].status, "running");
   const undated = button("打开服务器：prod-db-01").closest(".ops-record");
+  await click(button("更多操作：prod-db-01"));
   await click(
-    [...undated.querySelectorAll(".ops-server-status-switch button")].find(
-      (item) => item.textContent === "维护中",
-    ),
+    [
+      ...document.querySelectorAll(
+        '[aria-label="服务器状态：prod-db-01"] button',
+      ),
+    ].find((item) => item.textContent === "维护中"),
   );
   assert.equal(undated.dataset.status, "maintenance", "没有 DDL 也能维护");
   assert.equal(loadOpsState().state.servers[1].dueAt, null);

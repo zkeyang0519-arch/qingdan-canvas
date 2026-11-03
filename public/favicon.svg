@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>轻单</title>
+  <g transform="rotate(-5 16 16)">
+    <path
+      fill="#68896e"
+      d="M10.5 2h11a7 7 0 0 1 7 7v12a9 9 0 0 1-9 9h-9a7 7 0 0 1-7-7V9a7 7 0 0 1 7-7Z"
+    />
+    <g fill="#fff" fill-opacity=".6">
+      <rect x="9.5" y="12" width="13" height="2" rx="1" />
+      <rect x="9.5" y="18" width="8" height="2" rx="1" />
+    </g>
+  </g>
+</svg>
