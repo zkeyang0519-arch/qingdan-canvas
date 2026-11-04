@@ -6,6 +6,7 @@ export interface Env {
   ROOMS: DurableObjectNamespace<CanvasRoom>;
   RUNNER_HUBS: DurableObjectNamespace<RunnerHub>;
   RUNNER_ENABLED?: string;
+  EXECUTION_ENABLED?: string;
   ASSETS: Fetcher;
   APP_ENV: string;
   RESEND_API_KEY?: string;

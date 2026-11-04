@@ -1,5 +1,6 @@
 import { mcpRoute } from "./mcp/router";
 import { runnerRoute } from "./execution/router";
+import { executionRoute } from "./execution/execution-router";
 import type { Env, Room } from "./types";
 import { body, check, failure, json, sameOrigin, validId } from "./http";
 import {
@@ -26,6 +27,8 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const execution = await executionRoute(request, env, ctx);
+      if (execution) return execution;
       const runner = await runnerRoute(request, env);
       if (runner) return runner;
       const mcp = await mcpRoute(request, env, ctx);

@@ -37,7 +37,11 @@ const stringField = (body, key, max = 4096) => {
 
 // The loopback server applies Host/Origin and local-header guards first. The
 // upstream session is the only authority for the actor; bodies cannot pick one.
-export function createLocalRunnerApi({ getController, upstream }) {
+export function createLocalRunnerApi({
+  getController,
+  upstream,
+  prepareTrial,
+}) {
   const sessionUrl = new URL("/api/session", upstream);
   if (sessionUrl.protocol !== "http:" || sessionUrl.hostname !== "127.0.0.1")
     throw Error("Runner 控制接口只能连接本机轻单服务。");
@@ -76,6 +80,17 @@ export function createLocalRunnerApi({ getController, upstream }) {
       if (req.method === "GET" && route === "/status")
         return await controller.status(ownerId);
       if (req.method !== "POST") throw reject(404, "找不到本机 Runner 操作。");
+      if (route === "/execution/context") {
+        const body = await readBody(req, ["workspaceId"]);
+        return await controller.executionContext(
+          ownerId,
+          stringField(body, "workspaceId", 128),
+        );
+      }
+      if (route === "/execution/trial" && prepareTrial) {
+        await readBody(req, []);
+        return await prepareTrial({ controller, ownerId });
+      }
       if (route === "/pair") {
         const body = await readBody(req, ["pairingCode", "deviceName"]);
         return await controller.pair({

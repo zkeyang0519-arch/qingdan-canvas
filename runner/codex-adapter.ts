@@ -44,6 +44,9 @@ export type AdapterOptions = ProcessOptions & {
   model?: string;
   effort?: ReasoningEffort;
 };
+type DispatchGuard = (
+  stage: "thread" | "name" | "resume" | "turn" | "steer",
+) => Promise<void>;
 export class CodexAdapter {
   private client: CodexClient;
   private changes = new EventEmitter();
@@ -54,6 +57,9 @@ export class CodexAdapter {
   private cancellationCleanups = new Map<string, Promise<void>>();
   private closed = false;
   private connected = false;
+  get available() {
+    return this.connected && !this.closed;
+  }
   private store: RunnerStore;
   constructor(private options: AdapterOptions) {
     this.store = options.store;
@@ -61,12 +67,23 @@ export class CodexAdapter {
     this.client.on("notification", (packet: RpcPacket) => this.receive(packet));
     this.client.on("request", (packet: RpcPacket) => this.receive(packet));
     this.client.on("disconnect", () => {
+      this.connected = false;
       this.attachedThreads.clear();
       for (const run of this.store.allRuns())
         if (run.active)
           this.uncertain(run.runId, "Codex 连接中断，需先核实运行结果。");
       this.changes.emit("change");
     });
+  }
+  async attachWorkspace(workspaceId: string, registeredRoot: string) {
+    const root = await canonicalRoot(registeredRoot);
+    const prior = this.workspaces.get(workspaceId);
+    if (
+      rootKey(root) !== rootKey(registeredRoot) ||
+      (prior && rootKey(prior) !== rootKey(root))
+    )
+      throw new RunnerError("WORKSPACE_CHANGED", "项目目录已变更。");
+    this.workspaces.set(workspaceId, root);
   }
   async connect() {
     if (this.connected) return;
@@ -159,7 +176,10 @@ export class CodexAdapter {
       outputSchema: outputSchema(run.snapshot.kind),
     };
   }
-  async startFreshRun(input: ExecutionSnapshot): Promise<LaunchResult> {
+  async startFreshRun(
+    input: ExecutionSnapshot,
+    guard?: DispatchGuard,
+  ): Promise<LaunchResult> {
     if (this.closed) throw new RunnerError("CODEX_CLOSED", "Adapter is closed");
     const snapshot = parseExecutionSnapshot(input),
       root = this.root(snapshot.workspaceId);
@@ -203,8 +223,9 @@ export class CodexAdapter {
       { status: "preparing" },
       "accepted",
     );
-    this.store.patchRun(run.runId, { launchIntent: "thread_requested" });
     try {
+      await guard?.("thread");
+      this.store.patchRun(run.runId, { launchIntent: "thread_requested" });
       const result = await this.client.request("thread/start", {
         cwd: root,
         sandbox: snapshot.kind === "summary" ? "read-only" : "workspace-write",
@@ -222,11 +243,13 @@ export class CodexAdapter {
         launchIntent: "thread_created",
       });
       this.attachedThreads.add(result.thread.id);
+      await guard?.("name");
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
         name: `轻单 · ${snapshot.kind === "summary" ? "项目总结" : snapshot.task.text.slice(0, 40)} · ${run.runId}`,
       });
       const requestId = `initial-${run.runId}`;
+      await guard?.("turn");
       const prepared = this.store.patchRun(run.runId, {
         launchIntent: "turn_sent",
         pendingRequestId: requestId,
@@ -248,13 +271,16 @@ export class CodexAdapter {
     } catch (error) {
       const current = this.getRun(run.runId);
       if (
-        error instanceof RpcError &&
-        current.launchIntent === "thread_requested"
+        current.launchIntent === "prepared" ||
+        current.launchIntent === "thread_created" ||
+        (error instanceof RpcError &&
+          current.launchIntent === "thread_requested")
       )
         this.store.patchRun(run.runId, {
           status: "failed",
           active: false,
           terminal: true,
+          resultError: error instanceof Error ? error.message : "启动失败",
         });
       return this.uncertain(
         run.runId,
@@ -522,7 +548,10 @@ export class CodexAdapter {
     this.store.patchRun(run.runId, { status: "running" });
     this.changes.emit("change");
   }
-  async continueRun(input: ContinueRunInput): Promise<CommandReceipt> {
+  async continueRun(
+    input: ContinueRunInput,
+    guard?: DispatchGuard,
+  ): Promise<CommandReceipt> {
     runnerCommandSchema.parse({ type: "continue_run", ...input });
     let run = this.getRun(input.runId);
     const accepted = this.store.acceptCommand(
@@ -557,6 +586,7 @@ export class CodexAdapter {
       );
     try {
       if (input.mode === "steer") {
+        await guard?.("steer");
         const result = await this.client.request("turn/steer", {
           threadId: run.threadId,
           expectedTurnId: input.expectedTurnId,
@@ -575,6 +605,16 @@ export class CodexAdapter {
             "Steer returned another turn",
           );
       } else {
+        await guard?.("resume");
+        await this.client.request("thread/resume", {
+          threadId: run.threadId!,
+          cwd: run.root,
+          approvalPolicy: "on-request",
+          sandbox:
+            run.snapshot.kind === "summary" ? "read-only" : "workspace-write",
+          excludeTurns: true,
+        });
+        await guard?.("turn");
         run = this.store.patchRun(run.runId, {
           active: true,
           terminal: false,
@@ -586,14 +626,6 @@ export class CodexAdapter {
           result: null,
           resultValid: false,
           resultError: null,
-        });
-        await this.client.request("thread/resume", {
-          threadId: run.threadId!,
-          cwd: run.root,
-          approvalPolicy: "on-request",
-          sandbox:
-            run.snapshot.kind === "summary" ? "read-only" : "workspace-write",
-          excludeTurns: true,
         });
         const response = await this.client.request(
           "turn/start",
@@ -827,20 +859,26 @@ export class CodexAdapter {
     } while (cursor);
     return items;
   }
-  async listProjects() {
+  async listProjects(options?: { workspaceId: string; limit: number }) {
     const all: Thread[] = [],
       seen = new Set<string>();
     let cursor: string | null = null;
-    if (!this.workspaces.size) return [];
+    const projects = options
+      ? [[options.workspaceId, this.root(options.workspaceId)] as const]
+      : [...this.workspaces];
+    if (!projects.length) return [];
     do {
       const page: ThreadListResponse = await this.client.request(
         "thread/list",
         {
           cursor,
-          limit: 100,
+          limit: options?.limit ?? 100,
+          ...(options
+            ? { sortKey: "updated_at" as const, useStateDbOnly: true }
+            : {}),
           sourceKinds: ["cli", "vscode", "exec", "appServer"],
           modelProviders: [],
-          cwd: [...this.workspaces.values()],
+          cwd: projects.map(([, root]) => root),
         },
       );
       all.push(...page.data);
@@ -851,15 +889,16 @@ export class CodexAdapter {
           "Invalid project pagination",
         );
       if (cursor) seen.add(cursor);
-    } while (cursor);
-    return [...this.workspaces].map(([workspaceId, root]) => ({
+    } while (cursor && !options);
+    return projects.map(([workspaceId, root]) => ({
       workspaceId,
       root,
       threads: all
         .filter((thread) => rootKey(thread.cwd) === rootKey(root))
         .map((thread) => ({
           threadId: thread.id,
-          title: thread.name ?? thread.preview?.slice(0, 200) ?? "",
+          title:
+            thread.name ?? (options ? "" : thread.preview?.slice(0, 200)) ?? "",
           cwd: thread.cwd,
           source: thread.source,
           updatedAt: thread.updatedAt,
@@ -923,9 +962,9 @@ export class CodexAdapter {
         });
     }
   }
-  async close() {
+  async close(options?: { stopRuns?: boolean }) {
     if (this.closed) return;
-    for (const run of this.store.allRuns())
+    for (const run of options?.stopRuns === false ? [] : this.store.allRuns())
       if (run.active && run.activeTurnId) {
         await this.cancelRun(run.runId).catch(() => {});
         await this.waitForRun(

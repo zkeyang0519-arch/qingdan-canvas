@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../types";
+import { ExecutionDispatch } from "./dispatch";
 import { body, check, failure, HttpError, json, validId } from "../http";
 import { digest } from "../auth";
 import { parseRunnerEvent } from "../../shared/agent/schemas";
@@ -82,6 +83,10 @@ export class RunnerHub extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
+        if (new URL(request.url).pathname.startsWith("/execution/")) {
+          check(this.env.EXECUTION_ENABLED === "true", "执行服务尚未启用。", 404);
+          return await new ExecutionDispatch(this.ctx.storage, this.env).fetch(request);
+        }
         const url = new URL(request.url),
           state = await this.state();
         if (url.pathname === "/revoke") {

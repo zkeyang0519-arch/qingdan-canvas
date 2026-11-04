@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   realpath,
   stat,
@@ -20,13 +18,12 @@ import {
   CHECK_LABEL_MAX,
   validMetadataId,
 } from "./metadata";
-import { rootKey } from "./workspace";
+import { gitProjectRoot, rootKey } from "./workspace";
 import {
   DeviceStore,
   type WorkspaceRecord,
   type WorkspaceView,
 } from "./device-store";
-const exec = promisify(execFile);
 const key = (value: string) => rootKey(path.resolve(value));
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -118,32 +115,8 @@ export class WorkspaceRegistry {
         "VALIDATION_ERROR",
         "Workspace display path is too long.",
       );
-    let lockRoot = root;
     await identity(root);
-    try {
-      const result = await exec(
-        "git",
-        ["-C", root, "rev-parse", "--show-toplevel"],
-        {
-          windowsHide: true,
-          timeout: 5000,
-          maxBuffer: 100000,
-          env: { ...process.env, LC_ALL: "C", LANG: "C" },
-        },
-      );
-      lockRoot = await realpath(result.stdout.trim());
-    } catch (error) {
-      // Only an actual non-Git directory can fall back to its own lock root.
-      if (
-        !String((error as { stderr?: string }).stderr ?? "").includes(
-          "not a git repository",
-        )
-      )
-        throw new RunnerError(
-          "VALIDATION_ERROR",
-          "Cannot verify the project Git worktree root.",
-        );
-    }
+    const lockRoot = (await gitProjectRoot(root)) ?? root;
     const rootIdentity = await identity(root);
     const prior = this.store
       .workspaces()
@@ -174,14 +147,20 @@ export class WorkspaceRegistry {
     this.store.saveWorkspace(record, key(root));
     return workspaceView(record);
   }
-  async resolve(workspaceId: string): Promise<WorkspaceRecord> {
+  async resolve(
+    workspaceId: string,
+    verifyWorktree = false,
+  ): Promise<WorkspaceRecord> {
     const record = this.store.workspace(workspaceId);
     if (!record)
       throw new RunnerError("ACCESS_DENIED", "Workspace is not registered.");
     try {
       if (
         key(await realpath(record.registeredPath)) !== key(record.root) ||
-        (await identity(record.root)) !== record.identity
+        (await identity(record.root)) !== record.identity ||
+        (verifyWorktree &&
+          key((await gitProjectRoot(record.root)) ?? record.root) !==
+            key(record.lockRoot))
       )
         throw new Error("retargeted");
     } catch {
@@ -253,8 +232,8 @@ export class WorkspaceRegistry {
       );
     return check;
   }
-  async acquire(workspaceId: string, runId: string) {
-    const record = await this.resolve(workspaceId);
+  async acquire(workspaceId: string, runId: string, durableOwner?: string) {
+    const record = await this.resolve(workspaceId, true);
     if (!runId || runId.length > 256)
       throw new RunnerError("VALIDATION_ERROR", "Invalid run identity.");
     await mkdir(this.locksDir, { recursive: true });
@@ -262,11 +241,25 @@ export class WorkspaceRegistry {
     try {
       await mkdir(lock);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST")
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        if (durableOwner) {
+          const saved = await readFile(
+            path.join(lock, "owner.json"),
+            "utf8",
+          ).then(JSON.parse, () => null);
+          if (
+            saved?.owner === durableOwner &&
+            saved.runId === runId &&
+            saved.workspaceId === workspaceId &&
+            saved.rootKey === key(record.root)
+          )
+            return;
+        }
         throw new RunnerError(
           "WORKSPACE_BUSY",
           "Project is occupied by another or unconfirmed run.",
         );
+      }
       throw error;
     }
     try {
@@ -274,7 +267,7 @@ export class WorkspaceRegistry {
         path.join(lock, "owner.json"),
         JSON.stringify({
           runId,
-          owner: this.lockOwner,
+          owner: durableOwner ?? this.lockOwner,
           workspaceId,
           rootKey: key(record.root),
         }),
@@ -286,7 +279,35 @@ export class WorkspaceRegistry {
       throw error;
     }
   }
-  async release(workspaceId: string, runId: string, confirmedStopped: boolean) {
+  async assertLock(workspaceId: string, runId: string, durableOwner: string) {
+    const record = this.store.workspace(workspaceId);
+    if (!record)
+      throw new RunnerError(
+        "WORKSPACE_CHANGED",
+        "Workspace is not registered.",
+      );
+    const lock = path.join(this.locksDir, hash(key(record.lockRoot)));
+    const owner = await readFile(path.join(lock, "owner.json"), "utf8").then(
+      JSON.parse,
+      () => null,
+    );
+    if (
+      owner?.runId !== runId ||
+      owner.workspaceId !== workspaceId ||
+      owner.owner !== durableOwner ||
+      owner.rootKey !== key(record.root)
+    )
+      throw new RunnerError(
+        "WORKSPACE_CHANGED",
+        "The original workspace lock is no longer held.",
+      );
+  }
+  async release(
+    workspaceId: string,
+    runId: string,
+    confirmedStopped: boolean,
+    durableOwner?: string,
+  ) {
     if (confirmedStopped !== true)
       throw new RunnerError(
         "CONFIRMATION_REQUIRED",
@@ -296,10 +317,29 @@ export class WorkspaceRegistry {
     if (!record)
       throw new RunnerError("ACCESS_DENIED", "Workspace is not registered.");
     const lock = path.join(this.locksDir, hash(key(record.lockRoot)));
-    const owner = JSON.parse(
-      await readFile(path.join(lock, "owner.json"), "utf8"),
+    const owner = await readFile(path.join(lock, "owner.json"), "utf8").then(
+      JSON.parse,
+      async (error) => {
+        if (durableOwner && error.code === "ENOENT") {
+          // A previous confirmed release may have removed the whole directory.
+          // An existing lock with missing owner metadata is never claimed.
+          try {
+            await stat(lock);
+          } catch (missing) {
+            if ((missing as NodeJS.ErrnoException).code === "ENOENT")
+              return null;
+            throw missing;
+          }
+        }
+        throw error;
+      },
     );
-    if (owner.runId !== runId || owner.workspaceId !== workspaceId)
+    if (owner === null) return;
+    if (
+      owner.runId !== runId ||
+      owner.workspaceId !== workspaceId ||
+      (durableOwner !== undefined && owner.owner !== durableOwner)
+    )
       throw new RunnerError(
         "WORKSPACE_BUSY",
         "Lock is owned by another or unconfirmed run.",

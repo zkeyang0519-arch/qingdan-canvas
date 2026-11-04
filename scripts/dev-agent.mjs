@@ -6,6 +6,7 @@ import { ExperienceService } from "./lib/agent-experience-service.mjs";
 import { stopOwnedChild } from "./lib/stop-child.mjs";
 import { startExperience } from "./lib/agent-experience-launcher.mjs";
 import { createLocalRunnerApi } from "./lib/local-runner-api.mjs";
+import { prepareExecutionTrial } from "./lib/execution-trial.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 if (Number(process.versions.node.split(".")[0]) < 24)
@@ -32,6 +33,8 @@ const server = createExperienceServer({
   runnerApi: createLocalRunnerApi({
     getController: () => deviceController,
     upstream: "http://127.0.0.1:8788",
+    prepareTrial: (input) =>
+      prepareExecutionTrial({ ...input, projectRoot: root }),
   }),
 });
 const run = (script, args = []) =>
@@ -47,6 +50,7 @@ const run = (script, args = []) =>
         WRANGLER_SEND_METRICS: "false",
         WRANGLER_LOG_PATH: path.join(root, ".tmp/wrangler-logs/"),
         QINGDAN_RUNNER_ENABLED: "true",
+        QINGDAN_EXECUTION_ENABLED: "true",
       },
       stdio: "inherit",
       windowsHide: true,
@@ -86,6 +90,7 @@ try {
       deviceController = new RunnerDeviceController({
         stateDir: path.join(root, ".tmp/runner-device"),
         serverOrigin: "http://127.0.0.1:8788",
+        executionEnabled: true,
       });
       await deviceController.start();
       if (closing) {

@@ -3,8 +3,9 @@ import { Modal } from "../canvas/Panels.jsx";
 import RuleTrial from "./RuleTrial.jsx";
 import CodexTrial from "./CodexTrial.jsx";
 import DevicePanel from "./DevicePanel.jsx";
+import ExecutionPanel from "./ExecutionPanel.jsx";
 import "./experience.css";
-export { RuleTrial, CodexTrial, DevicePanel };
+export { RuleTrial, CodexTrial, DevicePanel, ExecutionPanel };
 
 export default function AgentExperience({ roomId, userId, pages, onClose }) {
   const [step, setStep] = useState("rules");
@@ -44,6 +45,15 @@ export default function AgentExperience({ roomId, userId, pages, onClose }) {
         >
           3 · 绑定电脑
         </button>
+        <button
+          role="tab"
+          id="agent-tab-execution"
+          aria-selected={step === "execution"}
+          aria-controls="agent-experience-content"
+          onClick={() => setStep("execution")}
+        >
+          4 · MCP 派单
+        </button>
       </div>
       <div
         id="agent-experience-content"
@@ -57,8 +67,15 @@ export default function AgentExperience({ roomId, userId, pages, onClose }) {
           />
         ) : step === "codex" ? (
           <CodexTrial />
-        ) : (
+        ) : step === "devices" ? (
           <DevicePanel roomId={roomId} userId={userId} pages={pages} />
+        ) : (
+          <ExecutionPanel
+            key={`${userId}/${roomId}`}
+            roomId={roomId}
+            userId={userId}
+            pages={pages}
+          />
         )}
       </div>
     </Modal>

@@ -55,7 +55,8 @@ type Request = {
   reject: (error: Error) => void;
   timer: any;
 };
-/** Native-only outbound connection. Command consumption intentionally belongs to step 4. */
+export type ExecutionAction = "context" | "poll" | "ack" | "events" | "report";
+/** Native-only outbound connection. The device credential stays in this transport. */
 export class RunnerTransport {
   readonly status: TransportStatus = {
     connectionStatus: "offline",
@@ -75,6 +76,8 @@ export class RunnerTransport {
   private attempt = 0;
   private lastSeen = 0;
   private tokenExpires = 0;
+  #executionToken?: string;
+  private executionAbort = new AbortController();
   private authEpoch: number;
   private requestMap = new Map<string, Request>();
   private abort?: AbortController;
@@ -107,6 +110,9 @@ export class RunnerTransport {
     this.clearTimers();
     this.abort?.abort();
     this.abort = undefined;
+    this.#executionToken = undefined;
+    this.executionAbort.abort();
+    this.executionAbort = new AbortController();
     const socket = this.socket;
     this.socket = undefined;
     socket?.close();
@@ -202,6 +208,7 @@ export class RunnerTransport {
       )
         throw new RunnerError("AUTH_INVALID", "Invalid device authorization.");
       this.tokenExpires = expiresAt;
+      this.#executionToken = token.token;
       const url = new URL("/api/runner/connect", this.options.serverOrigin);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = this.options.socketFactory
@@ -457,6 +464,65 @@ export class RunnerTransport {
       };
     }
   }
+  async acceptExecutionEnvelope(
+    envelope: CommandEnvelope,
+  ): Promise<StoredReceipt | null> {
+    if (this.status.connectionStatus !== "online") return null;
+    return this.accept(envelope, this.generation);
+  }
+  async executionRequest(
+    action: ExecutionAction,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    if (!["context", "poll", "ack", "events", "report"].includes(action))
+      throw new RunnerError("VALIDATION_ERROR", "Invalid execution operation.");
+    if (
+      this.status.connectionStatus !== "online" ||
+      !this.#executionToken ||
+      this.clock.now() >= this.tokenExpires
+    )
+      throw new RunnerError("RUNNER_OFFLINE", "Runner is offline.");
+    const generation = this.generation;
+    const response = await this.http(
+      new URL(`/api/runner/execution/${action}`, this.options.serverOrigin),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.#executionToken}`,
+        },
+        body: JSON.stringify({
+          ...body,
+          connectionEpoch: this.status.connectionEpoch,
+        }),
+        signal: AbortSignal.any([
+          this.executionAbort.signal,
+          AbortSignal.timeout(5000),
+        ]),
+        redirect: "error",
+      },
+    );
+    if (generation !== this.generation)
+      throw new RunnerError("CONNECTION_LOST", "Runner connection changed.");
+    if (response.status === 401) {
+      // Refresh the bearer; a failed exchange will transition to revoked.
+      this.reconnect();
+      throw new RunnerError("AUTH_EXPIRED", "Runner authorization expired.");
+    }
+    if (!response.ok)
+      throw new RunnerError(
+        response.status === 403
+          ? "EXECUTION_REVOKED"
+          : response.status === 404
+            ? "EXECUTION_DISABLED"
+            : `EXECUTION_HTTP_${response.status}`,
+        "Runner execution request was rejected.",
+      );
+    const result = await response.json();
+    if (generation !== this.generation)
+      throw new RunnerError("CONNECTION_LOST", "Runner connection changed.");
+    return result;
+  }
   publish(value: RunnerEvent) {
     const event = parseRunnerEvent(value);
     if (event.runnerId !== this.options.runnerId)
@@ -498,7 +564,11 @@ export class RunnerTransport {
         "Invalid workspace acknowledgement.",
       );
   }
-  async claimLease(workspaceId: string, runId: string): Promise<LeaseRecord> {
+  async claimLease(
+    workspaceId: string,
+    runId: string,
+    options?: { recoverExpired?: boolean },
+  ): Promise<LeaseRecord> {
     await this.options.validateWorkspace?.(workspaceId);
     const packet = await this.request("lease_claim", { workspaceId, runId });
     if (
@@ -508,7 +578,7 @@ export class RunnerTransport {
       !Number.isSafeInteger(packet.leaseEpoch) ||
       packet.leaseEpoch < 1 ||
       !Number.isFinite(packet.expiresAt) ||
-      packet.expiresAt <= this.clock.now()
+      (!options?.recoverExpired && packet.expiresAt <= this.clock.now())
     )
       throw new RunnerError("PROTOCOL_ERROR", "Invalid workspace lease.");
     const lease = {

@@ -34,10 +34,15 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       seen.push({ ownerId, ...input });
       return { workspaces: [input] };
     },
+    executionContext(ownerId, workspaceId) {
+      seen.push({ ownerId, workspaceId });
+      return { workspaceId };
+    },
   };
   const runnerApi = createLocalRunnerApi({
     getController: () => controller,
     upstream,
+    prepareTrial: ({ ownerId }) => ({ preparedFor: ownerId }),
   });
   const server = createExperienceServer({ service: {}, upstream, runnerApi });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -134,6 +139,27 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       ownerId: "alice",
       root: "D:/project",
       name: "当前项目",
+    });
+    assert.equal(
+      (
+        await request("/execution/context", {
+          workspaceId: "project",
+          ownerId: "bob",
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (await request("/execution/trial", { root: "D:/arbitrary" })).status,
+      400,
+    );
+    assert.equal(
+      (await request("/execution/context", { workspaceId: "project" })).status,
+      200,
+    );
+    assert.deepEqual(seen.at(-1), { ownerId: "alice", workspaceId: "project" });
+    assert.deepEqual(await (await request("/execution/trial", {})).json(), {
+      preparedFor: "alice",
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));

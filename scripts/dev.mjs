@@ -55,6 +55,9 @@ try {
     ...(process.env.QINGDAN_RUNNER_ENABLED === "true"
       ? ["--var", "RUNNER_ENABLED:true"]
       : []),
+    ...(process.env.QINGDAN_EXECUTION_ENABLED === "true"
+      ? ["--var", "EXECUTION_ENABLED:true"]
+      : []),
   ]);
 } catch (error) {
   console.error(error.message);

@@ -19,6 +19,10 @@ import {
 } from "./transport";
 import { RunnerError } from "./errors";
 import { validDeviceName } from "./metadata";
+import { ExecutionStore } from "./execution-store";
+import { RunnerExecutor, type ExecutionTransport } from "./executor";
+import { digest, RunnerStore } from "./store";
+import type { AdapterOptions } from "./codex-adapter";
 export type LocalDeviceView = {
   paired: boolean;
   runnerId: string | null;
@@ -34,7 +38,7 @@ export type LocalDeviceView = {
   error: string | null;
   credentialStorage: "windows-credential-manager";
 };
-type ManagedTransport = {
+type ManagedTransport = Partial<ExecutionTransport> & {
   status: TransportStatus;
   start(): Promise<void>;
   close(): void;
@@ -48,12 +52,19 @@ export type DeviceControllerOptions = {
   fetch?: typeof fetch;
   transportFactory?: (options: TransportOptions) => ManagedTransport;
   locksDir?: string;
+  executionEnabled?: boolean;
+  executionCodex?: Omit<AdapterOptions, "runnerId" | "store" | "workspaces">;
 };
 export class RunnerDeviceController {
   private store: DeviceStore;
   private registry: WorkspaceRegistry;
   private credentials: CredentialStore;
   private transport?: ManagedTransport;
+  private execution?: {
+    executor: RunnerExecutor;
+    journal: ExecutionStore;
+    runs: RunnerStore;
+  };
   private config: DeviceConfig | null;
   private http: typeof fetch;
   private closed = false;
@@ -95,7 +106,8 @@ export class RunnerDeviceController {
           if (!this.closed)
             this.error = "Pairing recovery is waiting for the Runner server.";
         });
-    } else this.startTransport();
+    } else if (this.config.enabled) this.startTransport();
+    else await this.ensureExecutor()?.suspend();
   }
   private checkOpen() {
     if (this.closed)
@@ -218,11 +230,80 @@ export class RunnerDeviceController {
       fetch: this.http,
       validateWorkspace: (id) => this.registry.resolve(id),
     };
+    const executor = this.ensureExecutor();
     this.transport =
       this.options.transportFactory?.(options) ?? new RunnerTransport(options);
+    executor?.start();
     void this.transport.start().catch(() => {
       if (!this.closed) this.error = "Unable to start Runner connection.";
     });
+  }
+  private ensureExecutor() {
+    if (
+      !this.options.executionEnabled ||
+      !this.config ||
+      this.config.pairingPending
+    )
+      return undefined;
+    if (this.execution) return this.execution.executor;
+    const config = this.config;
+    const dir = path.join(
+      this.options.stateDir,
+      "execution",
+      digest([config.ownerId, config.runnerId]),
+    );
+    const journal = new ExecutionStore(path.join(dir, "execution.sqlite"));
+    let runs: RunnerStore | undefined;
+    try {
+      runs = new RunnerStore(path.join(dir, "adapter.sqlite"));
+      this.execution = {
+        journal,
+        runs,
+        executor: new RunnerExecutor({
+          store: journal,
+          runs,
+          device: this.store,
+          registry: this.registry,
+          transport: () => {
+            const t = this.transport;
+            return t?.executionRequest &&
+              t.acceptExecutionEnvelope &&
+              t.claimLease &&
+              t.releaseLease
+              ? (t as ExecutionTransport)
+              : undefined;
+          },
+          runnerId: config.runnerId,
+          ownerId: config.ownerId,
+          authEpoch: config.authEpoch,
+          enabled: () => !this.closed && this.config?.enabled === true,
+          codex: this.options.executionCodex,
+        }),
+      };
+    } catch (error) {
+      runs?.close();
+      journal.close();
+      throw error;
+    }
+    return this.execution.executor;
+  }
+  async executionContext(ownerId: string, workspaceId: string) {
+    this.owner(ownerId);
+    this.requirePaired();
+    if (!this.options.executionEnabled || !this.config!.enabled)
+      throw new RunnerError(
+        "EXECUTION_DISABLED",
+        "Runner execution is disabled.",
+      );
+    await this.registry.resolve(workspaceId);
+    return this.ensureExecutor()!.context(workspaceId);
+  }
+  private async closeExecutor() {
+    if (!this.execution) return;
+    await this.execution.executor.close();
+    this.execution.journal.close();
+    this.execution.runs.close();
+    this.execution = undefined;
   }
   pair(input: { ownerId: string; pairingCode: string; deviceName: string }) {
     return this.exclusive(async () => {
@@ -374,6 +455,7 @@ export class RunnerDeviceController {
       this.save();
       if (enabled) this.startTransport();
       else {
+        await this.execution?.executor.suspend();
         this.transport?.close();
         this.transport = undefined;
       }
@@ -395,7 +477,7 @@ export class RunnerDeviceController {
     return this.exclusive(async () => {
       this.owner(ownerId);
       if (!this.config) return this.status(ownerId);
-      if (this.store.leases().length)
+      if (this.store.leases().length || this.execution?.executor.hasHold)
         throw new RunnerError(
           "WORKSPACE_BUSY",
           "Confirm all local runs are stopped before forgetting this device.",
@@ -417,6 +499,7 @@ export class RunnerDeviceController {
           "REVOCATION_REQUIRED",
           "Device must be remotely revoked before forgetting its credential.",
         );
+      await this.closeExecutor();
       this.transport?.close();
       this.transport = undefined;
       await this.credentials.delete(target);
@@ -435,9 +518,10 @@ export class RunnerDeviceController {
     if (this.closed) return;
     this.closed = true;
     ++this.generation;
+    await this.queue;
+    await this.closeExecutor();
     this.transport?.close();
     this.transport = undefined;
-    await this.queue;
     this.store.close();
   }
 }

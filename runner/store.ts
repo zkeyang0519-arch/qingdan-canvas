@@ -236,6 +236,17 @@ export class RunnerStore {
         event: JSON.parse(String(row.data)),
       }));
   }
+  eventsForRunAfter(runId: string, cursor: number): StoredEvent[] {
+    return this.db
+      .prepare(
+        "SELECT cursor, data FROM events WHERE run_id = ? AND cursor > ? ORDER BY cursor LIMIT 50",
+      )
+      .all(runId, cursor)
+      .map((row) => ({
+        cursor: Number(row.cursor),
+        event: JSON.parse(String(row.data)),
+      }));
+  }
   close() {
     this.db.close();
   }

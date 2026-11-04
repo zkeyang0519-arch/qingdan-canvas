@@ -17,6 +17,7 @@
     "test:runner": "node --test tests/runner-codex.test.mjs tests/runner-transport.test.mjs tests/runner-workspaces.test.mjs",
     "test:experience": "node --test tests/agent-experience-ui.test.mjs tests/agent-experience-server.test.mjs tests/agent-experience-launcher.test.mjs tests/agent-device-ui.test.mjs tests/local-runner-api.test.mjs",
     "test:devices": "node --test tests/agent-pairing.test.mjs tests/runner-transport.test.mjs tests/runner-workspaces.test.mjs tests/agent-device-ui.test.mjs tests/local-runner-api.test.mjs",
+    "test:execution": "node --test tests/execution-mcp.test.mjs tests/execution-dispatch-recovery.test.mjs tests/runner-execution.test.mjs tests/agent-execution-ui.test.mjs tests/execution-trial.test.mjs tests/local-runner-api.test.mjs",
     "runner:protocol": "node scripts/generate-codex-protocol.mjs",
     "runner:check": "tsc --noEmit -p runner/tsconfig.json",
     "runner:build": "npm run runner:check && node scripts/build-runner.mjs",

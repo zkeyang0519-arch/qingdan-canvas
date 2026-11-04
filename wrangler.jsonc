@@ -13,6 +13,7 @@
       "/api/*",
       "/mcp",
       "/mcp/*",
+      "/executor-mcp",
       "/oauth/*",
       "/.well-known/*",
     ],
@@ -52,6 +53,7 @@
     "APP_ENV": "production",
     "MCP_ENABLED": "false",
     "RUNNER_ENABLED": "false",
+    "EXECUTION_ENABLED": "false",
   },
   "observability": {
     "enabled": true,
@@ -61,6 +63,7 @@
       "APP_ENV": "preview",
       "MCP_ENABLED": "false",
       "RUNNER_ENABLED": "false",
+      "EXECUTION_ENABLED": "false",
     },
     "durable_objects": {
       "bindings": [

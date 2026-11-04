@@ -8,7 +8,7 @@
 
 **Tech Stack:** 现有 React 19、Workers、SQLite Durable Objects、D1、R2；agents 0.30.1；MCP client/server 2.3.1；Zod 4；Node.js 24；Codex app-server 固定版本。
 
-**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。2026-11-03 已按用户要求完成 Task 1、Task 2；其余步骤仍未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md) 与 [本机 Codex 验收](../../agent-codex-compatibility.md)。
+**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。截至 2026-11-04 已按用户要求完成 Task 1–4，并提供轻单内体验入口；Task 5–10 尚未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md)、[本机 Codex 验收](../../agent-codex-compatibility.md)、[设备绑定验收](../../agent-device-verification-2026-11-04.md) 与 [MCP 派单验收](../../agent-execution-verification-2026-11-04.md)。
 
 ## Global Constraints
 
@@ -119,13 +119,15 @@ assert.throws(() => sortPlan([A_depends_on_B, B_depends_on_A]), { code: 'DEPENDE
 
 **Interfaces:** registerWorkspace(root, checks): RegisteredWorkspace；resolveWorkspace(workspaceId): Workspace；claimWorkspace(workspaceId, runId, epoch): LeaseResult；RunnerStore.acceptCommand(envelope): CommandReceipt；RunnerStore.appendEvent(event): number；pairDevice(input, browserActor): PairingResult；verifyDeviceToken(token): DevicePrincipal。
 
-- [ ] 写测试：10 分钟后配对码失效、重复使用拒绝；非设备所有者无法绑定；15 分钟 token 过期；撤销使旧 token 无效。
-- [ ] 写路径和互斥测试：前缀相似目录越界、junction 逃逸、路径别名指向同一锁；两个本地进程争同一根目录只能一个成功。
-- [ ] 写传输测试：重复 commandId 返回旧回执，换 payloadHash 拒绝；已 ACK 事件不补发，未 ACK 事件重启后补发；旧 connectionEpoch 不收新命令。
-- [ ] 运行 `node --test tests/runner-transport.test.mjs tests/agent-pairing.test.mjs` 验证失败。
-- [ ] 实现 Credential Manager 接入、单次配对、认证路由、15/45/60 秒时钟、递增 leaseEpoch、指数退避、本地排他锁；测试时注入时钟，不用真实等待一分钟。
-- [ ] 新增带 Bearer 的 /api/runner/connect 路由，置于现有浏览器 sameOrigin 分支前；校验 WS origin/认证与连接身份。
-- [ ] 测试通过并运行 `npm run check`、`npm run deploy:check`；记录迁移/绑定变更并提交。
+- [x] 写测试：10 分钟后配对码失效、重复使用拒绝；非设备所有者无法绑定；15 分钟 token 过期；撤销使旧 token 无效。
+- [x] 写路径和互斥测试：前缀相似目录越界、junction 逃逸、路径别名指向同一锁；两个本地进程争同一根目录只能一个成功。
+- [x] 写传输测试：重复 commandId 返回旧回执，换 payloadHash 拒绝；已 ACK 事件不补发，未 ACK 事件重启后补发；旧 connectionEpoch 不收新命令。
+- [x] 运行 `node --test tests/runner-transport.test.mjs tests/agent-pairing.test.mjs` 验证失败。
+- [x] 实现 Credential Manager 接入、单次配对、认证路由、15/45/60 秒时钟、递增 leaseEpoch、指数退避、本地排他锁；测试时注入时钟，不用真实等待一分钟。
+- [x] 新增带 Bearer 的 /api/runner/connect 路由，置于现有浏览器 sameOrigin 分支前；校验 WS origin/认证与连接身份。
+- [x] 测试通过并运行 `npm run check`、`npm run deploy:check`；记录迁移/绑定变更并提交。
+
+验收：完整回归 545/545、类型与构建检查通过。轻单内完成配对、目录登记、清单关联、断开/重连、关闭网页后心跳及服务重启验证。真实解绑因自动审批拒绝而未执行，隔离测试覆盖撤销；详见 [第 3 步记录](../../agent-device-verification-2026-11-04.md)。
 
 ## Task 4: 异步执行 MCP
 
@@ -133,12 +135,14 @@ assert.throws(() => sortPlan([A_depends_on_B, B_depends_on_A]), { code: 'DEPENDE
 
 **Interfaces:** ExecutionPort.createRun(input: CreateRunInput): Promise<RunReceipt>、getRun(runId, afterSeq?): Promise<RunView>、continueRun(input): Promise<CommandReceipt>、cancelRun(input): Promise<CommandReceipt>、listProjects(runnerId,cursor?): Promise<ProjectPage>；MCP 名称按设计第 8 节，不暴露任意本机命令。
 
-- [ ] 写真实 MCP transport 测试：未授权 401；错误 audience/owner/binding/authEpoch 拒绝；已持久化 intent 的 create_run 才可调用；离线 submit 返回 queued。
-- [ ] 写幂等测试：同 requestId 重放不重复投递；相同 ID 不同内容返回 IDEMPOTENCY_KEY_REUSED；submit 仅返回回执，不等待 fake Codex 完成。
-- [ ] 运行 `node --test tests/execution-mcp.test.mjs` 验证失败。
-- [ ] 用现有版本 createMcpHandler 和 Zod 注册五个执行工具；由 MCPClientManager 集成测试客户端调用，不能只测试 handler 的内部函数。
-- [ ] 工具先保存 outbox 再投递，返回 runId；输出事件经 Hub 转给 ProjectQueue，调用超时不删除持久化意图。
-- [ ] 测试通过，回归 `tests/mcp-oauth.test.mjs`，证明现有 `/mcp` scopes 不获得执行权限；提交。
+- [x] 写真实 MCP transport 测试：未授权 401；错误 audience/owner/binding/authEpoch 拒绝；已持久化 intent 的 create_run 才可调用；离线 submit 返回 queued。
+- [x] 写幂等测试：同 requestId 重放不重复投递；相同 ID 不同内容返回 IDEMPOTENCY_KEY_REUSED；submit 仅返回回执，不等待 fake Codex 完成。
+- [x] 运行 `node --test tests/execution-mcp.test.mjs` 验证失败。
+- [x] 用现有版本 createMcpHandler 和 Zod 注册五个执行工具；由 MCPClientManager 集成测试客户端调用，不能只测试 handler 的内部函数。
+- [x] 工具先保存 outbox 再投递，返回 runId；输出事件与状态由现有 Hub 内的 ExecutionDispatch 持久化并查询，调用超时不删除意图；第 8 步再接入 ProjectQueue。
+- [x] 测试通过，回归 `tests/mcp-oauth.test.mjs`，证明现有 `/mcp` scopes 不获得执行权限；提交。
+
+详细实现采用 [第 4 步执行计划](2026-11-04-execution-mcp.md)，补充原计划中必需的原生持久化消费者和轻单体验入口。验收：完整回归 583/583、Worker/Runner 类型检查及部署 dry run 通过；真实 UI 验证创建文件、同会话补充、独立新会话、确认停止、只读总结、服务重启与页面恢复。审查问题均修复并复查通过，详见 [第 4 步记录](../../agent-execution-verification-2026-11-04.md)。
 
 ## Task 5: 原子清单生成、规格与排序写回
 

@@ -55,7 +55,13 @@ npm run dev:agent
 
 本机入口通过当前登录会话校验账号；切换到其他账号不能控制这台已绑定设备。设备密钥仅保存在当前 Windows 用户的凭据管理器，普通配置、日志、网页都不保存它。配对与连接必须使用同一个 Windows 用户启动服务。
 
-本步骤完成设备连接和项目关联，下一步接入 MCP 派单。启动器需要持续运行；Windows 开机自启与安装包完善属于第 10 步。本机账号和绑定与线上环境独立。更多连接机制与排查见 [Runner 设备绑定](agent-device-binding.md)。
+本步骤完成设备连接和项目关联，第 4 步在这条连接上派单。启动器需要持续运行；Windows 开机自启与安装包完善属于第 10 步。本机账号和绑定与线上环境独立。更多连接机制与排查见 [Runner 设备绑定](agent-device-binding.md)。
+
+## 第 4 步：MCP 派单
+
+进入 **Agent 验证 → 4 · MCP 派单**，点击 **准备独立测试项目**，再点击 **提交任务**。默认测试会创建一个 `hello.txt` 文件，派单记录显示进度、输出和真实会话编号。完成后输入补充说明，可以在原会话继续一轮；执行过程中可以请求停止，界面等待本机确认后再显示停止结果。
+
+也可选择已关联的清单项目，输入执行要求和完成标准，或只总结项目。详细体验步骤、接口与范围见 [MCP 派单](agent-execution-mcp.md)。
 
 ## 后续每一步的界面验收
 
@@ -77,6 +83,7 @@ npm run dev:agent
 ```powershell
 npm run test:experience
 npm run test:devices
+npm run test:execution
 npm test
 npm run check
 npm run runner:check
