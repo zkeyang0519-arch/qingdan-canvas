@@ -2,7 +2,7 @@ import readline from "node:readline";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-const version = "0.166.0-alpha.5.1";
+const version = "0.166.0-alpha.6";
 if (process.argv.includes("--version")) {
   console.log(`codex-cli ${process.env.FAKE_VERSION ?? version}`);
   process.exit(0);

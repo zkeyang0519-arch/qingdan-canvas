@@ -197,7 +197,7 @@ test("Codex UI starts once and displays verified outputs returned by the local s
     if (route === "/connection")
       return {
         authenticated: true,
-        version: "0.166.0-alpha.5.1",
+        version: "0.166.0-alpha.6",
         projects: [{ workspaceId: "project", root: "D:/project", threads: [] }],
       };
     if (route === "/tests" && options?.method === "POST") {

@@ -1,6 +1,6 @@
 # 第 2 步：本机 Codex 适配与验证
 
-日期：2026-11-03。对应 [实施计划 Task 2](superpowers/plans/2026-11-03-qingdan-router.md)。本步骤已经提供独立本地适配器，可读取已登记目录的 Codex 会话、新建总结和任务会话、发送要求、接收结构化结果、继续同一任务、取消及核实中断状态。
+首次验收：2026-11-03；当前兼容版本更新：2026-11-04。对应 [实施计划 Task 2](superpowers/plans/2026-11-03-qingdan-router.md)。本步骤已经提供独立本地适配器，可读取已登记目录的 Codex 会话、新建总结和任务会话、发送要求、接收结构化结果、继续同一任务、取消及核实中断状态。
 
 ## 已验证的本机环境
 
@@ -10,7 +10,7 @@
 | --------- | ---------------------------------------------------------------------- |
 | 操作系统  | Windows，用户交互登录账号                                              |
 | Node.js   | 24.18.0；Runner 要求 Node.js 24 或以上                                 |
-| Codex CLI | **0.166.0-alpha.5.1**，与 `runner/protocol-version.json` 一致          |
+| Codex CLI | **0.166.0-alpha.6**，与 `runner/protocol-version.json` 一致            |
 | 登录      | 使用本机已登录的 ChatGPT 账号，不需要新增 API key                      |
 | 连接      | Runner 自行创建 app-server stdio 子进程，JSONL / JSON-RPC              |
 | 协议类型  | 由固定版本生成并保留所用类型的依赖，共 143 个声明文件                  |
@@ -22,7 +22,24 @@
 
 协议字段通过本机生成的类型检查。流程参考 [OpenAI 官方 app-server 文档](https://learn.chatgpt.com/docs/app-server)：初始化、线程、轮次、通知、历史分页和审批请求。版本不匹配时适配器在创建 app-server 前明确拒绝执行，不自动升级或静默改用其他接口。
 
-## 真实三会话验收
+## 2026-11-04：Codex alpha.6 兼容修复
+
+用户实际安装的 Codex 已更新为 `0.166.0-alpha.6`，而轻单仍固定在 `0.166.0-alpha.5.1`，导致连接前的版本检查拒绝启动。先将假 Codex 的报告版本改为 alpha.6，现有三会话集成测试复现同一 `CODEX_VERSION_MISMATCH`；随后更新固定版本，并用当前真实二进制重新生成协议。
+
+143 个生成的声明文件仅版本来源注释发生变化，字段与旧版完全一致；未放宽未知版本检查、审批策略或目录授权，也未修改用户 Codex 配置。
+
+验证结果：
+
+- 本机适配器和执行消费者专项 45/45 通过，包含不支持版本仍在启动前拒绝的检查。
+- 完整回归 583/583 通过；Worker/Runner 类型检查、Runner 构建和部署 dry run 通过，未部署生产。
+- 当前 Windows 用户的真实 app-server 握手、`account/read`、项目会话查询通过，报告 `codex-cli 0.166.0-alpha.6`、authenticated=true。
+- 在轻单第 4 步通过 MCP 提交单独的文件任务。运行 `9b176a47-1fbd-4746-82cf-5c2e65209526`，会话 `01a1a576-df23-7522-88ad-79b8ac614f05`，轮次 `01a1a576-f411-7a31-92c5-9901dc283b79` 已结束，状态 verifying、结果 done。
+- 本机读取 `D:\TODO\qingdan-canvas\.tmp\execution-trial\1d70cd93dd84791ab0868eab\codex-alpha6-check.txt`，内容严格为 `Codex alpha.6 连接正常。`，无额外换行；原 `hello.txt` 内容、设备及测试关联保持不变。
+- 原浏览器页面恢复同步、版本错误消失；保留用户已经填写的执行要求和完成标准。验证在独立临时标签页完成，随后关闭该页并返回原入口。
+
+本地证据：`.tmp/codex-alpha6-verification.json`、`.tmp/codex-alpha6-capabilities.runner/report.json`、`.tmp/codex-alpha6-tests.log`、`.tmp/codex-alpha6-deploy.log` 和 `.tmp/codex-alpha6-fixed.png`。未来切换到其他 Codex 版本时，仍需要重新生成协议并完成兼容验证。
+
+## 真实三会话验收（2026-11-03，alpha.5.1）
 
 测试目录：`D:\TODO\qingdan-canvas\.tmp\codex-smoke-20261103-step2`。该目录是新建的独立 Git 项目，只包含测试说明和两个验证产物。会话和结果使用唯一运行 ID；本地 SQLite 与运行快照放在同级 `.runner` 临时目录。
 
