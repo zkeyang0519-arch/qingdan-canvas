@@ -6,6 +6,34 @@ import path from "node:path";
 
 const run = promisify(execFile);
 const fail = (message) => Object.assign(Error(message), { status: 409 });
+const ownerKey = (ownerId) =>
+  createHash("sha256").update(ownerId).digest("hex").slice(0, 24);
+const projectSection = (workspaceId) =>
+  `agent-execution-project-${workspaceId}`;
+
+export function validateProjectName(value) {
+  const invalid = () =>
+    Object.assign(
+      Error(
+        "项目名称需为 1–60 个字符，不能以点开头或结尾，也不能包含路径符号或 Windows 保留名称。",
+      ),
+      { status: 400 },
+    );
+  if (typeof value !== "string") throw invalid();
+  const name = value.trim().normalize("NFC");
+  if (
+    !name ||
+    name.length > 60 ||
+    name.startsWith(".") ||
+    name.endsWith(".") ||
+    /[<>:"/\\|?*\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/u.test(name) ||
+    /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)$/iu.test(
+      name.split(".")[0].trimEnd(),
+    )
+  )
+    throw invalid();
+  return name;
+}
 const pathKey = (value) =>
   process.platform === "win32"
     ? path.resolve(value).toLowerCase()
@@ -20,23 +48,64 @@ const inside = (root, target) => {
   );
 };
 
+export async function listExecutionProjects({
+  projectRoot,
+  ownerId,
+  workspaces = [],
+}) {
+  const root = await realpath(projectRoot);
+  const parent = path.join(
+    root,
+    ".tmp",
+    "execution-projects",
+    ownerKey(ownerId),
+  );
+  return workspaces
+    .flatMap((workspace) => {
+      if (
+        typeof workspace.displayPath !== "string" ||
+        typeof workspace.workspaceId !== "string"
+      )
+        return [];
+      if (pathKey(path.dirname(workspace.displayPath)) !== pathKey(parent))
+        return [];
+      try {
+        validateProjectName(path.basename(workspace.displayPath));
+      } catch {
+        return [];
+      }
+      return [
+        {
+          workspaceId: workspace.workspaceId,
+          name: workspace.name || path.basename(workspace.displayPath),
+          sectionId: projectSection(workspace.workspaceId),
+        },
+      ];
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+}
+
 // The destination is selected by this helper, never by the browser or model.
 // Reusing the trial retains files and history so the user can inspect results.
 export async function prepareExecutionTrial({
   projectRoot,
   controller,
   ownerId,
+  projectName,
 }) {
   const state = await controller.status(ownerId);
   if (!state.paired) throw fail("请先在第 3 步绑定这台电脑。");
   if (state.connectionStatus !== "online")
     throw fail("请等电脑在线后再准备测试项目。");
+  const name =
+    projectName === undefined ? null : validateProjectName(projectName);
   const root = await realpath(projectRoot);
   let directory = root;
   for (const component of [
     ".tmp",
-    "execution-trial",
-    createHash("sha256").update(ownerId).digest("hex").slice(0, 24),
+    name === null ? "execution-trial" : "execution-projects",
+    ownerKey(ownerId),
+    ...(name === null ? [] : [name]),
   ]) {
     const candidate = path.join(directory, component);
     try {
@@ -127,7 +196,7 @@ export async function prepareExecutionTrial({
   await verifyGit();
   const registered = await controller.registerWorkspace(ownerId, {
     root: directory,
-    name: "MCP 派单测试项目",
+    name: name ?? "MCP 派单测试项目",
   });
   const workspace = registered.workspaces.find(
     (item) => pathKey(item.displayPath) === pathKey(directory),
@@ -137,5 +206,13 @@ export async function prepareExecutionTrial({
     ownerId,
     workspace.workspaceId,
   );
-  return { runnerId: registered.runnerId, workspace, context };
+  return {
+    runnerId: registered.runnerId,
+    workspace,
+    context,
+    sectionId:
+      name === null
+        ? "agent-execution-trial"
+        : projectSection(workspace.workspaceId),
+  };
 }

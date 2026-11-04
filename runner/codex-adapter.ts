@@ -25,7 +25,7 @@ import type { ProcessOptions } from "./supervisor";
 import { RunnerStore } from "./store";
 import { RpcError, RunnerError } from "./errors";
 import { canonicalRoot, rootKey, assertGitBaseline } from "./workspace";
-import { outputSchema, runPrompt } from "./prompt";
+import { outputSchema, runPrompt, runTitle } from "./prompt";
 import { stopThreadTerminals } from "./process-cleanup";
 import type {
   CommandReceipt,
@@ -155,7 +155,7 @@ export class CodexAdapter {
       input: [
         {
           type: "text",
-          text: runPrompt(run.snapshot, requestId, message),
+          text: runPrompt(run.snapshot, message),
           text_elements: [],
         },
       ],
@@ -246,7 +246,7 @@ export class CodexAdapter {
       await guard?.("name");
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
-        name: `轻单 · ${snapshot.kind === "summary" ? "项目总结" : snapshot.task.text.slice(0, 40)} · ${run.runId}`,
+        name: runTitle(snapshot),
       });
       const requestId = `initial-${run.runId}`;
       await guard?.("turn");
@@ -401,7 +401,21 @@ export class CodexAdapter {
         if (run.snapshot.kind === "summary")
           result = projectSummarySchema.parse(value);
         else {
-          const parsed = parseRunOutcome(value);
+          // New model results carry business facts only. Old chats may still
+          // return their legacy IDs, which must be checked rather than replaced.
+          const legacyIds =
+            value &&
+            typeof value === "object" &&
+            ("runId" in value || "taskId" in value);
+          const parsed = parseRunOutcome(
+            legacyIds
+              ? value
+              : {
+                  ...value,
+                  runId,
+                  taskId: run.snapshot.task.taskRef.taskId,
+                },
+          );
           if (
             parsed.runId !== runId ||
             parsed.taskId !== run.snapshot.task.taskRef.taskId
@@ -594,7 +608,7 @@ export class CodexAdapter {
           input: [
             {
               type: "text",
-              text: runPrompt(run.snapshot, input.requestId, input.message),
+              text: runPrompt(run.snapshot, input.message),
               text_elements: [],
             },
           ],

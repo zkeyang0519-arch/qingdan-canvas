@@ -47,7 +47,9 @@ const edit = async (label, value) => {
   assert.ok(el, label);
   await act(async () => {
     Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
+      el.tagName === "INPUT"
+        ? window.HTMLInputElement.prototype
+        : window.HTMLTextAreaElement.prototype,
       "value",
     ).set.call(el, value);
     el.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -247,6 +249,152 @@ async function mount(f) {
     );
   return unmount;
 }
+test("named project creation sends the name and retains distinct project bindings after reopening", async () => {
+  const base = fixture(),
+    projects = [],
+    bindings = new Map();
+  const requests = [];
+  let unavailable = false;
+  const local = {
+    paired: true,
+    runnerId: "runner",
+    connectionStatus: "online",
+  };
+  const f = {
+    ...base,
+    requestLocal: async (route, options) => {
+      requests.push({ route, options });
+      if (unavailable && route === "/status") throw Error("本机暂时离线");
+      if (route === "/execution/trial") {
+        const name = options.body.projectName;
+        let project = projects.find((p) => p.name === name);
+        if (!project) {
+          project = {
+            name,
+            workspaceId: `named-${projects.length + 1}`,
+            displayPath: `D:/trials/${name}`,
+          };
+          project.sectionId = `agent-execution-project-${project.workspaceId}`;
+          projects.push(project);
+        }
+        return {
+          runnerId: "runner",
+          workspace: project,
+          sectionId: project.sectionId,
+        };
+      }
+      return { ...local, executionProjects: projects.map((p) => ({ ...p })) };
+    },
+    requestCloud: async (route, options = {}) => {
+      requests.push({ route, options });
+      if (route === "/api/agent/bindings" && options.method === "POST") {
+        const body = options.body;
+        const binding = {
+          ...body,
+          bindingId: `binding-${body.workspaceId}`,
+          revision: 1,
+          enabled: true,
+        };
+        bindings.set(body.sectionId, binding);
+        return { binding };
+      }
+      if (route.startsWith("/api/agent/bindings?")) {
+        const section = new URL(route, "https://local.test").searchParams.get(
+          "sectionId",
+        );
+        if (section.startsWith("agent-execution-project-"))
+          return { binding: bindings.get(section) || null };
+      }
+      const response = await base.requestCloud(route, options);
+      if (route === "/api/agent/devices")
+        response.devices[0].workspaces.push(...projects);
+      return response;
+    },
+  };
+  let unmount = await mount(f);
+  try {
+    await edit("项目名称", "个人网站");
+    await click("创建项目");
+    assert.deepEqual(
+      requests.find((r) => r.route === "/execution/trial").options.body,
+      { projectName: "个人网站" },
+    );
+    assert.equal(
+      document.querySelector('[aria-label="清单关联"]').value,
+      "agent-execution-project-named-1",
+    );
+    await edit("项目名称", "个人笔记");
+    await click("创建项目");
+    assert.equal(bindings.size, 2);
+    assert.equal(
+      bindings.get("agent-execution-project-named-1").workspaceId,
+      "named-1",
+    );
+    assert.equal(
+      bindings.get("agent-execution-project-named-2").workspaceId,
+      "named-2",
+    );
+    assert.ok(
+      !requests
+        .filter(
+          (r) =>
+            r.route === "/api/agent/bindings" && r.options.method === "POST",
+        )
+        .some((r) => r.options.body.sectionId === "agent-execution-trial"),
+    );
+    await unmount();
+    unmount = await mount(f);
+    const select = document.querySelector('[aria-label="清单关联"]');
+    for (const name of ["个人网站", "个人笔记", "独立测试项目"])
+      assert.ok(
+        [...select.options].some((o) => o.textContent === name),
+        name,
+      );
+    await act(async () => {
+      select.value = "agent-execution-project-named-1";
+      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    assert.match(document.body.textContent, /个人网站/);
+    assert.equal(select.value, "agent-execution-project-named-1");
+    unavailable = true;
+    await click("刷新状态");
+    assert.equal(
+      document.querySelector('[aria-label="清单关联"]').value,
+      "agent-execution-project-named-1",
+      "temporary local failure must not discard the selected cloud binding",
+    );
+    assert.ok(requests.every((r) => r.options.accountId === "alice"));
+  } finally {
+    await unmount();
+  }
+});
+
+test("named project result cannot redirect creation to an existing checklist binding", async () => {
+  const f = fixture();
+  const requestLocal = f.requestLocal;
+  f.requestLocal = (route, options) =>
+    route === "/execution/trial"
+      ? Promise.resolve({
+          runnerId: "runner",
+          workspace: { workspaceId: "different-workspace", name: "个人网站" },
+          sectionId: "section",
+        })
+      : requestLocal(route, options);
+  const unmount = await mount(f);
+  try {
+    await edit("项目名称", "个人网站");
+    await click("创建项目");
+    assert.ok(
+      !f.calls.some(
+        (c) => c.route === "/api/agent/bindings" && c.options.method === "POST",
+      ),
+    );
+    assert.match(document.body.textContent, /项目创建结果/);
+  } finally {
+    await unmount();
+  }
+});
+
 test("panel submits through MCP, follows up in the same turn and shows requested stop honestly", async () => {
   const f = fixture(),
     unmount = await mount(f);

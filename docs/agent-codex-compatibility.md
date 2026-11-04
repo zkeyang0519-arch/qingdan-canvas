@@ -81,6 +81,8 @@ node scripts/agent-codex-smoke.mjs --workspace D:\TODO\qingdan-canvas\.tmp\my-co
 
 ## 公共接口
 
+2026-11-04 可读性更新：用户消息改为自然语言任务/完成标准/必要背景，执行快照仍保存在 Runner。模型结果不再要求生成 runId/taskId，由适配器补全可信身份；旧结果带身份时仍严格核对。历史恢复使用协议中的 clientUserMessageId/clientId，未改为根据提示词猜测。详见 [项目命名与派单验收](agent-readable-dispatch-verification-2026-11-04.md)。
+
 从 `runner/dist/index.js` 导入 `CodexAdapter`、`RunnerStore`、`readGitBaseline`。构造时由可信本地调用方提供 workspaceId 与允许目录的对应关系，快照本身不能指定 cwd。
 
 | 接口                                   | 行为                                                                                                 |

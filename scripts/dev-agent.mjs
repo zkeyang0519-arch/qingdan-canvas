@@ -6,7 +6,10 @@ import { ExperienceService } from "./lib/agent-experience-service.mjs";
 import { stopOwnedChild } from "./lib/stop-child.mjs";
 import { startExperience } from "./lib/agent-experience-launcher.mjs";
 import { createLocalRunnerApi } from "./lib/local-runner-api.mjs";
-import { prepareExecutionTrial } from "./lib/execution-trial.mjs";
+import {
+  prepareExecutionTrial,
+  listExecutionProjects,
+} from "./lib/execution-trial.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 if (Number(process.versions.node.split(".")[0]) < 24)
@@ -35,6 +38,12 @@ const server = createExperienceServer({
     upstream: "http://127.0.0.1:8788",
     prepareTrial: (input) =>
       prepareExecutionTrial({ ...input, projectRoot: root }),
+    listTrials: ({ ownerId, state }) =>
+      listExecutionProjects({
+        projectRoot: root,
+        ownerId,
+        workspaces: state.workspaces,
+      }),
   }),
 });
 const run = (script, args = []) =>

@@ -90,6 +90,124 @@ if (api) {
     };
   }
 
+  test("natural-language task and follow-up omit dispatch data while wire identities remain stable", async (t) => {
+    const f = await fixture(t),
+      adapter = await f.open();
+    const snapshot = await f.snapshot("natural-task");
+    snapshot.task.text = "创建欢迎文件";
+    snapshot.task.instruction = "创建 welcome.txt，内容为你好。";
+    snapshot.task.acceptance = [
+      {
+        id: "check-a",
+        kind: "human",
+        required: true,
+        description: "welcome.txt 内容为你好。",
+      },
+    ];
+    await adapter.startFreshRun(snapshot);
+    await adapter.waitForRun(snapshot.runId, 4000);
+    let calls = (await f.state()).calls;
+    const start = calls.find((c) => c.method === "turn/start").params;
+    assert.match(start.input[0].text, /^请在当前项目中/);
+    assert.ok(start.input[0].text.includes(snapshot.task.instruction));
+    assert.ok(
+      start.input[0].text.includes(snapshot.task.acceptance[0].description),
+    );
+    for (const internal of [
+      snapshot.runId,
+      snapshot.snapshotId,
+      snapshot.ownerId,
+      snapshot.bindingId,
+      snapshot.payloadHash,
+    ])
+      assert.ok(!start.input[0].text.includes(internal), internal);
+    assert.equal(start.clientUserMessageId, "initial-natural-task");
+    assert.equal(start.outputSchema.properties.runId, undefined);
+    assert.equal(start.outputSchema.properties.taskId, undefined);
+    assert.equal(
+      calls.find((c) => c.method === "thread/name/set").params.name,
+      "轻单 · 创建欢迎文件",
+    );
+    const first = adapter.getRun(snapshot.runId);
+    assert.equal(first.result.runId, snapshot.runId);
+    assert.equal(first.result.taskId, snapshot.task.taskRef.taskId);
+    await adapter.continueRun({
+      requestId: "natural-follow",
+      runId: snapshot.runId,
+      expectedTurnId: first.activeTurnId,
+      mode: "reply",
+      message: "再增加一行：欢迎回来。",
+    });
+    await adapter.waitForRun(snapshot.runId, 4000);
+    calls = (await f.state()).calls;
+    const follow = calls.filter((c) => c.method === "turn/start").at(-1).params;
+    assert.match(follow.input[0].text, /^请继续当前任务/);
+    assert.ok(follow.input[0].text.includes("再增加一行：欢迎回来。"));
+    assert.ok(!follow.input[0].text.includes(snapshot.payloadHash));
+    assert.ok(!follow.input[0].text.includes("natural-follow"));
+    assert.equal(follow.clientUserMessageId, "natural-follow");
+    assert.equal(adapter.getRun(snapshot.runId).threadId, first.threadId);
+  });
+
+  test("natural-language summary keeps useful context and its read-only scope", async (t) => {
+    const f = await fixture(t),
+      adapter = await f.open();
+    const snapshot = await f.snapshot("natural-summary", "summary");
+    snapshot.context.projectSummary = {
+      overview: "这是个人网站",
+      completed: [{ text: "首页已有草稿" }],
+      inProgress: [],
+      pending: [],
+      blockers: [],
+      verification: [],
+      uncertainties: [],
+    };
+    snapshot.context.decisions = ["使用中文文件名"];
+    snapshot.context.previousTaskNotes = ["上一项已创建说明文档"];
+    await adapter.startFreshRun(snapshot);
+    await adapter.waitForRun(snapshot.runId, 4000);
+    const calls = (await f.state()).calls;
+    const text = calls.find((c) => c.method === "turn/start").params.input[0]
+      .text;
+    assert.match(text, /^请只读检查当前项目/);
+    for (const value of [
+      "个人网站",
+      "首页已有草稿",
+      "使用中文文件名",
+      "上一项已创建说明文档",
+    ])
+      assert.ok(text.includes(value), value);
+    for (const value of [
+      snapshot.runId,
+      snapshot.ownerId,
+      snapshot.payloadHash,
+    ])
+      assert.ok(!text.includes(value), value);
+    assert.equal(
+      calls.find((c) => c.method === "thread/name/set").params.name,
+      "轻单 · 项目总结",
+    );
+  });
+
+  test("business result receives authoritative task identities; legacy identities still must match", async (t) => {
+    for (const mode of [
+      "business-output",
+      "legacy-output",
+      "wrong-result-id",
+    ]) {
+      const f = await fixture(t, mode),
+        adapter = await f.open();
+      const snapshot = await f.snapshot();
+      await adapter.startFreshRun(snapshot);
+      const result = await adapter.waitForRun(snapshot.runId, 4000);
+      assert.equal(result.resultValid, mode !== "wrong-result-id", mode);
+      if (mode !== "wrong-result-id") {
+        assert.equal(result.result.runId, snapshot.runId);
+        assert.equal(result.result.taskId, snapshot.task.taskRef.taskId);
+      } else assert.equal(result.status, "waiting_input");
+    }
+  });
+
   test("summary and tasks A/B each start a fresh thread in the selected workspace and return results", async (t) => {
     const f = await fixture(t),
       adapter = await f.open();

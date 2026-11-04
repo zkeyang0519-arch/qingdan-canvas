@@ -42,7 +42,21 @@ test("local Runner controls authenticate the browser and never accept a caller-c
   const runnerApi = createLocalRunnerApi({
     getController: () => controller,
     upstream,
-    prepareTrial: ({ ownerId }) => ({ preparedFor: ownerId }),
+    prepareTrial: ({ ownerId, projectName }) => ({
+      preparedFor: ownerId,
+      ...(projectName === undefined ? {} : { projectName }),
+    }),
+    listTrials: ({ ownerId, state }) => {
+      assert.equal(ownerId, "alice");
+      assert.equal(state.ownerId, "alice");
+      return [
+        {
+          workspaceId: "named",
+          name: "个人网站",
+          sectionId: "agent-execution-project-named",
+        },
+      ];
+    },
   });
   const server = createExperienceServer({ service: {}, upstream, runnerApi });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -115,6 +129,13 @@ test("local Runner controls authenticate the browser and never accept a caller-c
     assert.deepEqual(await (await request("/status")).json(), {
       paired: true,
       ownerId: "alice",
+      executionProjects: [
+        {
+          workspaceId: "named",
+          name: "个人网站",
+          sectionId: "agent-execution-project-named",
+        },
+      ],
     });
     assert.equal(
       (await request("/workspaces", { root: "D:/project", ownerId: "bob" }))
@@ -161,6 +182,17 @@ test("local Runner controls authenticate the browser and never accept a caller-c
     assert.deepEqual(await (await request("/execution/trial", {})).json(), {
       preparedFor: "alice",
     });
+    assert.deepEqual(
+      await (
+        await request("/execution/trial", { projectName: "  个人网站  " })
+      ).json(),
+      { preparedFor: "alice", projectName: "个人网站" },
+    );
+    assert.equal(
+      (await request("/execution/trial", { projectName: "a".repeat(61) }))
+        .status,
+      400,
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await new Promise((resolve) => worker.close(resolve));

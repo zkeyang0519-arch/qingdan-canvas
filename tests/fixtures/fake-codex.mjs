@@ -22,30 +22,41 @@ function finish(thread, turn, status = "completed") {
   turn.status = status;
   thread.status = { type: "idle" };
   if (status === "completed") {
-    const input = turn.items.find((item) => item.type === "userMessage")
-      .content[0].text;
-    const { snapshot } = JSON.parse(input);
-    const result =
-      snapshot.kind === "summary"
-        ? {
-            overview: "测试项目",
-            completed: [],
-            inProgress: [],
-            pending: [],
-            blockers: [],
-            verification: [],
-            uncertainties: [],
-          }
-        : {
-            runId: snapshot.runId,
-            taskId: snapshot.task.taskRef.taskId,
-            outcome: "done",
-            summary: "任务完成",
-            changedFiles: [],
-            evidenceRefs: [],
-            remainingIssues: [],
-            nextTaskNotes: [],
-          };
+    const schema = thread.responseSchemas?.[turn.id];
+    const result = schema?.properties?.overview
+      ? {
+          overview: "测试项目",
+          completed: [],
+          inProgress: [],
+          pending: [],
+          blockers: [],
+          verification: [],
+          uncertainties: [],
+        }
+      : {
+          outcome: "done",
+          summary: "任务完成",
+          changedFiles: [],
+          evidenceRefs: [],
+          remainingIssues: [],
+          nextTaskNotes: [],
+        };
+    if (mode() === "legacy-output" && process.env.FAKE_RUNNER_DB) {
+      const db = new DatabaseSync(process.env.FAKE_RUNNER_DB, {
+        readOnly: true,
+      });
+      const record = JSON.parse(
+        db.prepare("SELECT data FROM runs WHERE thread_id = ?").get(thread.id)
+          .data,
+      );
+      db.close();
+      result.runId = record.runId;
+      result.taskId = record.snapshot.task.taskRef.taskId;
+    }
+    if (mode() === "wrong-result-id") {
+      result.runId = "foreign-run";
+      result.taskId = "foreign-task";
+    }
     const text =
       mode() === "invalid-output"
         ? "not structured JSON"
@@ -236,6 +247,7 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
         },
       ],
     };
+    (thread.responseSchemas ||= {})[turn.id] = params.outputSchema;
     thread.turns.push(turn);
     if (["background-cancel", "background-stuck"].includes(mode()))
       thread.terminals = ["process-a", "process-b"].map((processId) => ({

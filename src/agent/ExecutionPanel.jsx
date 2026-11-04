@@ -33,12 +33,17 @@ export default function ExecutionPanel({
   const [device, setDevice] = useState(null);
   const [project, setProject] = useState(null);
   const [local, setLocal] = useState(null);
+  const [projectOptions, setProjectOptions] = useState({
+    accountId: userId,
+    items: [],
+  });
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState(null);
   const [instruction, setInstruction] = useState("");
   const [acceptance, setAcceptance] = useState("");
   const [followup, setFollowup] = useState("");
+  const [projectName, setProjectName] = useState("轻单测试项目");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -51,8 +56,12 @@ export default function ExecutionPanel({
     activeBinding = useRef(null);
   const followPending = useRef(null),
     stopPending = useRef(null);
+  const namedProjects =
+    projectOptions.accountId === userId ? projectOptions.items : [];
   const sectionValid =
-    sectionId === trialSection || pages.some((page) => page.id === sectionId);
+    sectionId === trialSection ||
+    pages.some((page) => page.id === sectionId) ||
+    namedProjects.some((item) => item.sectionId === sectionId);
   const valid = (version) => mounted.current && version === epoch.current;
 
   const callTool = useCallback(
@@ -135,6 +144,11 @@ export default function ExecutionPanel({
       activeBinding.current = nextBinding;
       setBinding(nextBinding);
       setLocal(localResult.status === "fulfilled" ? localResult.value : null);
+      if (localResult.status === "fulfilled")
+        setProjectOptions({
+          accountId: userId,
+          items: localResult.value.executionProjects || [],
+        });
       const currentDevice = cloud.value.devices?.find(
         (item) => item.runnerId === nextBinding?.runnerId,
       );
@@ -259,8 +273,18 @@ export default function ExecutionPanel({
     }
   }
   async function prepareTrial(version) {
-    const trial = await localPost("/execution/trial");
-    const route = `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${trialSection}`;
+    const trial = await localPost("/execution/trial", {
+      projectName: projectName.trim(),
+    });
+    const workspaceId = trial.workspace?.workspaceId;
+    const targetSection = `agent-execution-project-${workspaceId}`;
+    if (
+      typeof workspaceId !== "string" ||
+      !/^[a-zA-Z0-9_-]{1,76}$/.test(workspaceId) ||
+      trial.sectionId !== targetSection
+    )
+      throw Error("项目创建结果不匹配，请刷新后重试。");
+    const route = `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(targetSection)}`;
     const previous = (await requestCloud(route, { accountId: userId })).binding;
     if (
       !previous?.enabled ||
@@ -269,20 +293,35 @@ export default function ExecutionPanel({
     ) {
       await cloudPost("/api/agent/bindings", {
         canvasId: roomId,
-        sectionId: trialSection,
+        sectionId: targetSection,
         runnerId: trial.runnerId,
         workspaceId: trial.workspace.workspaceId,
         expectedRevision: previous?.revision ?? null,
       });
     }
+    const nextLocal = await requestLocal("/status", { accountId: userId });
     if (!valid(version)) return;
+    if (
+      !nextLocal.executionProjects?.some(
+        (item) =>
+          item.workspaceId === workspaceId && item.sectionId === targetSection,
+      )
+    )
+      throw Error("本机项目列表已变化，请刷新后选择项目。");
+    setLocal(nextLocal);
+    setProjectOptions({
+      accountId: userId,
+      items: nextLocal.executionProjects,
+    });
     setInstruction(
       "在当前测试项目中创建 hello.txt，内容为：你好，轻单 MCP！只修改这个文件。",
     );
     setAcceptance("hello.txt 存在，内容为：你好，轻单 MCP！");
-    setMessage("独立测试项目已准备。可以提交示例任务，也可以修改执行要求。");
-    if (sectionId === trialSection) await refresh(version);
-    else setSectionId(trialSection);
+    setMessage(
+      `项目“${trial.workspace.name}”已准备。可以提交示例任务，也可以修改执行要求。`,
+    );
+    if (sectionId === targetSection) await refresh(version);
+    else setSectionId(targetSection);
   }
   async function submit(kind, version) {
     if (!binding || !sectionValid || !loaded) return;
@@ -466,6 +505,11 @@ export default function ExecutionPanel({
                 </option>
               ))}
             <option value={trialSection}>独立测试项目</option>
+            {namedProjects.map((item) => (
+              <option key={item.sectionId} value={item.sectionId}>
+                {item.name}
+              </option>
+            ))}
           </select>
         </label>
         {!loaded ? (
@@ -480,7 +524,10 @@ export default function ExecutionPanel({
               </span>
             </p>
             {project?.displayPath && (
-              <p className="agent-path">{project.displayPath}</p>
+              <details>
+                <summary>查看本机目录</summary>
+                <p className="agent-path">{project.displayPath}</p>
+              </details>
             )}
           </>
         ) : (
@@ -488,11 +535,27 @@ export default function ExecutionPanel({
             这个清单还没有关联项目。可在第 3 步关联，或准备下方的独立测试项目。
           </p>
         )}
+        <label>
+          新建项目名称
+          <input
+            aria-label="项目名称"
+            value={projectName}
+            onChange={(event) => setProjectName(event.target.value)}
+            maxLength={60}
+            placeholder="例如：个人网站"
+            disabled={busy}
+          />
+        </label>
         <div className="agent-actions">
-          <button disabled={busy} onClick={() => perform(prepareTrial)}>
-            准备独立测试项目
+          <button
+            disabled={busy || !projectName.trim()}
+            onClick={() => perform(prepareTrial)}
+          >
+            创建项目
           </button>
-          <span className="agent-note">创建单独的测试目录，保留体验结果。</span>
+          <span className="agent-note">
+            文件夹使用这个名称；同名项目会继续使用原目录，保留已有结果。
+          </span>
         </div>
       </section>
       <section className="agent-device-card" aria-label="提交任务">

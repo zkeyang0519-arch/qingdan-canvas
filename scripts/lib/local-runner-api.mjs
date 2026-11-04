@@ -41,6 +41,7 @@ export function createLocalRunnerApi({
   getController,
   upstream,
   prepareTrial,
+  listTrials,
 }) {
   const sessionUrl = new URL("/api/session", upstream);
   if (sessionUrl.protocol !== "http:" || sessionUrl.hostname !== "127.0.0.1")
@@ -77,8 +78,15 @@ export function createLocalRunnerApi({
     if (!controller) throw reject(503, "本机 Runner 正在准备，请稍后重试。");
     const route = url.pathname.slice("/api/local-runner".length);
     try {
-      if (req.method === "GET" && route === "/status")
-        return await controller.status(ownerId);
+      if (req.method === "GET" && route === "/status") {
+        const state = await controller.status(ownerId);
+        return listTrials
+          ? {
+              ...state,
+              executionProjects: await listTrials({ ownerId, state }),
+            }
+          : state;
+      }
       if (req.method !== "POST") throw reject(404, "找不到本机 Runner 操作。");
       if (route === "/execution/context") {
         const body = await readBody(req, ["workspaceId"]);
@@ -88,8 +96,14 @@ export function createLocalRunnerApi({
         );
       }
       if (route === "/execution/trial" && prepareTrial) {
-        await readBody(req, []);
-        return await prepareTrial({ controller, ownerId });
+        const body = await readBody(req, ["projectName"]);
+        return await prepareTrial({
+          controller,
+          ownerId,
+          ...(body.projectName === undefined
+            ? {}
+            : { projectName: stringField(body, "projectName", 60) }),
+        });
       }
       if (route === "/pair") {
         const body = await readBody(req, ["pairingCode", "deviceName"]);

@@ -362,6 +362,7 @@
   color: #57534e;
 }
 .agent-execution-panel textarea,
+.agent-execution-panel input,
 .agent-execution-panel select {
   display: block;
   width: 100%;
