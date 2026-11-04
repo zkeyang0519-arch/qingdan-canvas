@@ -24,6 +24,7 @@
         "name": "ROOMS",
         "class_name": "CanvasRoom",
       },
+      { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
     ],
   },
   "migrations": [
@@ -31,6 +32,7 @@
       "tag": "v1",
       "new_sqlite_classes": ["CanvasRoom"],
     },
+    { "tag": "v2", "new_sqlite_classes": ["RunnerHub"] },
   ],
   "d1_databases": [
     {
@@ -49,14 +51,22 @@
   "vars": {
     "APP_ENV": "production",
     "MCP_ENABLED": "false",
+    "RUNNER_ENABLED": "false",
   },
   "observability": {
     "enabled": true,
   },
   "previews": {
-    "vars": { "APP_ENV": "preview", "MCP_ENABLED": "false" },
+    "vars": {
+      "APP_ENV": "preview",
+      "MCP_ENABLED": "false",
+      "RUNNER_ENABLED": "false",
+    },
     "durable_objects": {
-      "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
+      "bindings": [
+        { "name": "ROOMS", "class_name": "CanvasRoom" },
+        { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
+      ],
     },
     "d1_databases": [
       {

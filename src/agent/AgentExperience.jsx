@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import { Modal } from "../canvas/Panels.jsx";
 import RuleTrial from "./RuleTrial.jsx";
 import CodexTrial from "./CodexTrial.jsx";
+import DevicePanel from "./DevicePanel.jsx";
 import "./experience.css";
-export { RuleTrial, CodexTrial };
+export { RuleTrial, CodexTrial, DevicePanel };
 
 export default function AgentExperience({ roomId, userId, pages, onClose }) {
   const [step, setStep] = useState("rules");
@@ -34,6 +35,15 @@ export default function AgentExperience({ roomId, userId, pages, onClose }) {
         >
           2 · 本机 Codex
         </button>
+        <button
+          role="tab"
+          id="agent-tab-devices"
+          aria-selected={step === "devices"}
+          aria-controls="agent-experience-content"
+          onClick={() => setStep("devices")}
+        >
+          3 · 绑定电脑
+        </button>
       </div>
       <div
         id="agent-experience-content"
@@ -45,8 +55,10 @@ export default function AgentExperience({ roomId, userId, pages, onClose }) {
             storageKey={`qingdan.agent-trial.v1.${userId}/${roomId}`}
             pages={pages}
           />
-        ) : (
+        ) : step === "codex" ? (
           <CodexTrial />
+        ) : (
+          <DevicePanel roomId={roomId} userId={userId} pages={pages} />
         )}
       </div>
     </Modal>

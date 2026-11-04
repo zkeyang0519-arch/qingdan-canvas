@@ -1,8 +1,11 @@
 import type { CanvasRoom } from "./room";
+import type { RunnerHub } from "./execution/hub";
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
   ROOMS: DurableObjectNamespace<CanvasRoom>;
+  RUNNER_HUBS: DurableObjectNamespace<RunnerHub>;
+  RUNNER_ENABLED?: string;
   ASSETS: Fetcher;
   APP_ENV: string;
   RESEND_API_KEY?: string;

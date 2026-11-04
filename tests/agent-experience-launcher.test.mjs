@@ -35,3 +35,24 @@ test("an already-stopped launcher creates no subprocess", async () => {
     onReady: () => assert.fail("must not initialize"),
   });
 });
+
+test("async Runner initialization is awaited and shutdown prevents a late worker launch", async () => {
+  let stopped = false,
+    finish;
+  const calls = [];
+  const completion = startExperience({
+    root: "D:/project",
+    isClosing: () => stopped,
+    run: async (script) => calls.push(script),
+    onReady: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  stopped = true;
+  finish();
+  await completion;
+  assert.equal(calls.length, 1);
+});

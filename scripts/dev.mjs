@@ -52,6 +52,9 @@ try {
     "0",
     "--var",
     "APP_ENV:local",
+    ...(process.env.QINGDAN_RUNNER_ENABLED === "true"
+      ? ["--var", "RUNNER_ENABLED:true"]
+      : []),
   ]);
 } catch (error) {
   console.error(error.message);

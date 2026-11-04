@@ -1,4 +1,5 @@
 import { mcpRoute } from "./mcp/router";
+import { runnerRoute } from "./execution/router";
 import type { Env, Room } from "./types";
 import { body, check, failure, json, sameOrigin, validId } from "./http";
 import {
@@ -16,6 +17,7 @@ import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 import { registrationRequest } from "./registration";
 import { quickTasksEndpoint } from "./quick-tasks";
 export { CanvasRoom } from "./room";
+export { RunnerHub } from "./execution/hub";
 
 export default {
   async fetch(
@@ -24,6 +26,8 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const runner = await runnerRoute(request, env);
+      if (runner) return runner;
       const mcp = await mcpRoute(request, env, ctx);
       if (mcp) return mcp;
       const url = new URL(request.url),

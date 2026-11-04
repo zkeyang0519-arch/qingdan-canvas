@@ -56,16 +56,21 @@ function json(res, body, status = 200) {
   });
   res.end(JSON.stringify(body));
 }
-export function createExperienceServer({ service, upstream }) {
+export function createExperienceServer({ service, upstream, runnerApi }) {
   const target = new URL(upstream);
   if (target.protocol !== "http:" || target.hostname !== "127.0.0.1")
     throw Error("上游必须是本机轻单开发服务。");
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, originFor(req));
-      const local = url.pathname.startsWith("/api/local-codex/");
-      guard(req, local);
-      if (local) {
+      const localCodex = url.pathname.startsWith("/api/local-codex/");
+      const localRunner = url.pathname.startsWith("/api/local-runner/");
+      guard(req, localCodex || localRunner);
+      if (localRunner) {
+        if (!runnerApi) throw reject(503, "本机 Runner 尚未启动。");
+        return json(res, await runnerApi(req, url));
+      }
+      if (localCodex) {
         if (req.method === "GET" && url.pathname === "/api/local-codex/status")
           return json(res, await service.status());
         if (
