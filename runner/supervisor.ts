@@ -19,9 +19,15 @@ export class CodexSupervisor {
   async start() {
     const command = this.options.command ?? "codex";
     const args = this.options.args ?? [];
+    // The desktop's registered-Core routing applies only to its own host.
+    // A standalone app-server must select its normal Windows sandbox launcher.
+    // Copy rather than mutate the caller's environment; retain auth/config paths.
+    const env = { ...(this.options.env ?? process.env) };
+    for (const key of Object.keys(env))
+      if (key.toUpperCase() === "CODEX_WINDOWS_REGISTERED_CORE") delete env[key];
     const version = (
       await exec(command, [...args, "--version"], {
-        env: this.options.env,
+        env,
         windowsHide: true,
         timeout: 10000,
       })
@@ -32,7 +38,7 @@ export class CodexSupervisor {
         `需要 Codex ${pin.codexVersion}，当前为 ${version}`,
       );
     const child = spawn(command, [...args, "app-server", "--stdio"], {
-      env: this.options.env,
+      env,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,

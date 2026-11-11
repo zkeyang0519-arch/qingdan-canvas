@@ -243,13 +243,13 @@ try {
       if (!run.terminal || !run.resultValid)
         throw Error(run.resultError ?? `运行 ${value.runId} 未在限时内完成。`);
       if (key !== "summary") {
+        if (run.result.outcome !== "done")
+          throw Error(`任务 ${key.toUpperCase()} 返回 ${run.result.outcome}：${[run.result.summary, ...(run.result.remainingIssues ?? [])].filter(Boolean).join("；")}`);
         const contents = (
           await readFile(path.join(workspace, `task-${key}.txt`), "utf8")
         ).replaceAll("\r\n", "\n");
         if (contents !== `${key.toUpperCase()}:${ledger.token}\n`)
           throw Error(`task-${key}.txt 内容验收失败。`);
-        if (run.result.outcome !== "done")
-          throw Error(`任务返回 ${run.result.outcome}`);
       }
       const history = await adapter.readThread(run.threadId, "smoke-workspace");
       report.runs.push({
