@@ -10,12 +10,36 @@ let cursor = null,
   activeSearch = "",
   rows = [],
   listSequence = 0,
+  selection = 0,
+  viewGeneration = 0,
   busy = false,
   lastStatus = null,
   stopped = false;
-function notice(message) {
-  $("notice").hidden = !message;
-  $("notice").textContent = message || "";
+const notices = { operation: "", connection: "", transport: "" };
+function notice(message, source = "operation") {
+  notices[source] = message || "";
+  const text = notices.transport || notices.connection || notices.operation;
+  $("notice").hidden = !text;
+  $("notice").textContent = text;
+}
+function readable(s) {
+  return ["ready", "login_required"].includes(s?.status);
+}
+function sameConnection(a, b) {
+  return (
+    a?.connection?.instanceId === b?.connection?.instanceId &&
+    a?.connection?.generation === b?.connection?.generation
+  );
+}
+function invalidateProjects() {
+  ++viewGeneration;
+  ++selection;
+  ++listSequence;
+  $("project").hidden = true;
+  rows = [];
+  cursor = null;
+  drawRows();
+  $("listMessage").textContent = "连接更新后重新读取会话。";
 }
 async function api(route, body) {
   const res = await fetch(route, {
@@ -31,6 +55,11 @@ async function api(route, body) {
   return data;
 }
 function render(s) {
+  if (
+    lastStatus &&
+    (!sameConnection(lastStatus, s) || (readable(lastStatus) && !readable(s)))
+  )
+    invalidateProjects();
   lastStatus = s;
   const labels = {
     idle: "等待连接",
@@ -77,10 +106,12 @@ function render(s) {
     : "尚未完成检查";
   if (document.activeElement !== $("manualPath"))
     $("manualPath").value = s.preferences?.manualPath || "";
-  if (s.error)
-    notice(
-      `${s.error.message} ${s.error.action || ""}${s.retryAt ? " · 正在自动重试" : ""}`,
-    );
+  notice(
+    s.error
+      ? `${s.error.message} ${s.error.action || ""}${s.retryAt ? " · 正在自动重试" : ""}`
+      : "",
+    "connection",
+  );
 }
 function setBusy(value) {
   busy = value;
@@ -97,8 +128,10 @@ async function connect(body) {
   if (busy || stopped) return;
   setBusy(true);
   notice("");
+  notice("", "transport");
+  notice("", "connection");
   $("status").textContent = "正在检查连接…";
-  ++listSequence;
+  invalidateProjects();
   try {
     const s = await api(body ? "/api/config" : "/api/connect", body || {});
     render(s);
@@ -114,6 +147,7 @@ async function connect(body) {
   }
 }
 function drawRows() {
+  const generation = viewGeneration;
   $("sessions").replaceChildren(
     ...rows.map((row) => {
       const button = document.createElement("button");
@@ -131,7 +165,7 @@ function drawRows() {
         "zh-CN",
       );
       button.append(left, time);
-      button.addEventListener("click", () => select(row.threadId));
+      button.addEventListener("click", () => select(row.threadId, generation));
       return button;
     }),
   );
@@ -169,12 +203,13 @@ async function load(more = false) {
     }
   }
 }
-let selection = 0;
-async function select(id) {
+async function select(id, generation = viewGeneration) {
+  if (busy || stopped || generation !== viewGeneration || !readable(lastStatus))
+    return;
   const seq = ++selection;
   try {
     const data = await api("/api/session?id=" + encodeURIComponent(id));
-    if (seq !== selection) return;
+    if (seq !== selection || generation !== viewGeneration || stopped) return;
     $("project").hidden = false;
     $("projectTitle").textContent = data.title;
     $("projectPath").textContent = data.cwd;
@@ -182,7 +217,8 @@ async function select(id) {
       ? "目录存在，项目位置读取成功。"
       : "此目录当前不存在，请在 Codex 中检查项目位置。";
   } catch (e) {
-    notice(e.message);
+    if (seq === selection && generation === viewGeneration && !stopped)
+      notice(e.message);
   }
 }
 $("reconnect").addEventListener("click", () => connect());
@@ -231,18 +267,19 @@ $("quit").addEventListener("click", async () => {
 });
 async function poll() {
   if (stopped || busy) return;
+  const generation = viewGeneration;
   try {
     const s = await api("/api/status");
-    const recovered = s.status === "ready" && lastStatus?.status !== "ready";
+    if (stopped || busy || generation !== viewGeneration) return;
+    const recovered =
+      readable(s) && (!readable(lastStatus) || !sameConnection(lastStatus, s));
+    notice("", "transport");
     render(s);
-    if (recovered) {
-      notice("");
-      await load();
-    }
+    if (recovered) await load();
   } catch {
-    if (!stopped) {
+    if (!stopped && !busy && generation === viewGeneration) {
       $("status").textContent = "无法连接后台程序";
-      notice("连接器可能已退出，请重新打开程序。");
+      notice("连接器可能已退出，请重新打开程序。", "transport");
     }
   }
 }

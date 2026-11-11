@@ -81,6 +81,23 @@ if (Connector) {
       ["initialize", "initialized", "account/read", "thread/list"],
     );
   });
+  test("status identifies each client replacement and a new connector instance", async (t) => {
+    const { c } = await setup(t);
+    await c.inspect();
+    const first = c.status().connection;
+    assert.equal(typeof first?.instanceId, "string");
+    assert.ok(Number.isSafeInteger(first.generation));
+    await c.inspect();
+    const second = c.status().connection;
+    assert.equal(second.instanceId, first.instanceId);
+    assert.ok(second.generation > first.generation);
+    const { c: other } = await setup(t);
+    await other.inspect();
+    assert.notEqual(other.status().connection.instanceId, first.instanceId);
+    assert.equal(other.status().connection.generation, first.generation);
+    assert.equal(c.status().status, "ready");
+    assert.equal(c.status().preferences.manualPath, "");
+  });
   test("not logged in is not confused with disconnected and metadata remains readable", async (t) => {
     const { c } = await setup(t, "logged-out");
     await c.inspect();

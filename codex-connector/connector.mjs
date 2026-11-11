@@ -16,6 +16,7 @@ export class Connector {
     this.options = options;
     this.config = { manualPath: "", cachedPath: "" };
     this.client = null;
+    this.connection = { instanceId: randomUUID(), generation: 0 };
     this.closed = false;
     this.probe = null;
     this.configQueue = Promise.resolve();
@@ -34,6 +35,7 @@ export class Connector {
   status() {
     return structuredClone({
       ...this.view,
+      connection: this.connection,
       preferences: { manualPath: this.config.manualPath },
       retryAttempt: this.retryCount,
     });
@@ -150,6 +152,7 @@ export class Connector {
         const c = (this.options.createClient ?? ((x) => new ReadonlyCodex(x)))(
           candidate,
         );
+        this.connection.generation++;
         this.client = c;
         this.probeFailure = null;
         c.on("disconnect", (e) => {
