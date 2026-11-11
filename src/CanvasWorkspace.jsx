@@ -39,6 +39,7 @@ import {
 import UserAvatar from "./UserAvatar.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
 import OpeningPreparation from "./opening/OpeningPreparation.jsx";
+import { APP_PATH } from "./navigation.js";
 import {
   CollectionPanel,
   SearchPanel,
@@ -596,7 +597,7 @@ export default function CanvasWorkspace({
               </button>
               <a
                 className="brand"
-                href="/"
+                href={APP_PATH}
                 onClick={(e) => {
                   e.preventDefault();
                   onLeave();

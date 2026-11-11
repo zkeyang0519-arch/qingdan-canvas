@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
+import { APP_PATH } from "../navigation.js";
 import McpClientIdentity from "./McpClientIdentity.jsx";
 
 export default function McpConsent(props) {
@@ -113,7 +114,7 @@ function ConsentPanel({ handle, user, isCurrentSession, onFinish }) {
   return (
     <div className="home auth-page mcp-consent-page">
       <header className="home-nav">
-        <a className="brand" href="/">
+        <a className="brand" href={APP_PATH}>
           <span className="brand-mark" />
           <span>轻单</span>
           <small>Agent 连接</small>
@@ -289,7 +290,7 @@ function ConsentPanel({ handle, user, isCurrentSession, onFinish }) {
               重试读取授权
             </button>
           )}
-          <a className="mcp-back" href="/">
+          <a className="mcp-back" href={APP_PATH}>
             返回轻单
           </a>
         </section>
