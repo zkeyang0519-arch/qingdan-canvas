@@ -186,7 +186,7 @@ function fixture() {
           bindingRevision: 1,
           kind: "task",
           snapshotId: "snapshot-a",
-          payloadHash: "hash",
+          payloadHash: "a".repeat(64),
         },
       };
     if (route.endsWith("/execution/tools")) {
