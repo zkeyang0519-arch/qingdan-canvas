@@ -31,6 +31,10 @@
       "tag": "v1",
       "new_sqlite_classes": ["CanvasRoom"],
     },
+    // Already applied in production. Retain the history and inactive class
+    // exports so withdrawing Agent code does not recreate or delete namespaces.
+    { "tag": "v2", "new_sqlite_classes": ["RunnerHub"] },
+    { "tag": "v3", "new_sqlite_classes": ["AgentChatRouter"] },
   ],
   "d1_databases": [
     {

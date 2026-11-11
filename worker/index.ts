@@ -16,6 +16,7 @@ import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 import { registrationRequest } from "./registration";
 import { quickTasksEndpoint } from "./quick-tasks";
 export { CanvasRoom } from "./room";
+export { RunnerHub, AgentChatRouter } from "./retired-agent";
 
 export default {
   async fetch(

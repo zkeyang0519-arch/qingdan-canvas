@@ -173,6 +173,14 @@ npm run deploy
 
 ## 排查
 
+### 下线 Agent 并保留已部署的数据
+
+撤回 Agent 页面和接口时，线上已经应用的 Durable Object `v1`、`v2`、`v3` 迁移记录仍须保留。`RunnerHub` 和 `AgentChatRouter` 由 `worker/retired-agent.ts` 提供停用兼容类：请求返回 410，旧连接关闭，已有 alarm 不再执行或调度任务，不读取或修改历史业务数据。应用不再配置这两个类的绑定，也不提供 Agent 页面或业务接口。
+
+保留 D1 的 `0007_agent_bindings.sql` 和 `0008_execution_tokens.sql` 作为既有迁移历史。下线功能不需要删除数据库、存储对象或画布数据；不要用 `deleted_classes` 代替停用兼容类。删除类的迁移会永久删除对应命名空间的数据，详见 [Cloudflare 迁移说明](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)。
+
+GitHub 自动部署以 Cloudflare 配置的生产分支为准。推送修正后检查该提交的 Workers Builds 结果和实际生效版本；本地 `deploy:check` 不会核对线上已应用的迁移记录。
+
 ### Git 分支预览构建
 
 Cloudflare Workers Builds 的非生产分支使用 `npx wrangler preview`。这个命令要求 `wrangler.jsonc` 声明 `previews`，并显式提供 `APP_ENV`、`DB`、`FILES`、`ROOMS`；顶层的这些设置不会自动继承到预览环境。
