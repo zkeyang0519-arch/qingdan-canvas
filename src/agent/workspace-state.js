@@ -177,13 +177,117 @@ function isSafeStop(request) {
   );
 }
 
+// Ownership describes the recovery protocol, not the panel currently mounted.
+// Infer it from existing wire data so old journals keep their key and identity.
+export function workspaceRequestOwner(record) {
+  try {
+    const { path, body } = exactRequest(record.request, record.requestId);
+    const key = record.operationKey;
+    const matches = (value) => canonical(JSON.parse(key)) === canonical(value);
+    const chatAction = path.match(
+      /^\/api\/agent\/chat\/(send|new|save-tasks|remember|memory)$/,
+    )?.[1];
+    if (chatAction && body.requestId === record.requestId) {
+      const expected =
+        chatAction === "send"
+          ? `send:${body.chatId || "new"}`
+          : chatAction === "new"
+            ? "new"
+            : chatAction === "save-tasks"
+              ? `save-tasks:${body.messageId}`
+              : chatAction === "remember"
+                ? `remember:${body.messageId}:${body.index}`
+                : `memory:${body.id || JSON.stringify([body.scope, body.key])}`;
+      return key === expected ? "chat" : null;
+    }
+    if (key === "summary:stop" && isSafeStop(record.request))
+      return "summary-stop";
+    const summaryAction = path.match(
+      /^\/api\/agent\/project\/(initialize|refresh|use-previous)$/,
+    )?.[1];
+    if (
+      summaryAction &&
+      body.requestId === record.requestId &&
+      key === `summary:${summaryAction}`
+    )
+      return "summary";
+    if (
+      path === "/api/agent/execution/checklist" &&
+      body.requestId === record.requestId &&
+      ["create", "save", "reorder"].includes(body.action)
+    ) {
+      const { bindingId: _, action, requestId: _id, ...payload } = body;
+      return matches([action, payload]) ? "checklist" : null;
+    }
+    if (
+      path === "/api/agent/execution/intents" &&
+      body.requestId === record.requestId &&
+      body.kind === "task" &&
+      Array.isArray(body.sourceTasks)
+    ) {
+      const { requestId: _, ...payload } = body;
+      return matches(["dispatch", payload]) ? "checklist" : null;
+    }
+    if (isSafeStop(record.request) && matches(["stop", body.arguments.runId]))
+      return "checklist";
+    const route =
+      path === "/api/agent/execution/tools"
+        ? body.name
+        : path === "/api/agent/execution/queue"
+          ? "queue"
+          : path === "/api/agent/execution/respond"
+            ? "respond"
+            : null;
+    if (
+      !["queue", "respond", "codex_cancel_run", "codex_continue_run"].includes(
+        route,
+      )
+    )
+      return null;
+    const input = ["queue", "respond"].includes(route) ? body : body.arguments;
+    return typeof input?.runId === "string" &&
+      input.runId &&
+      matches([
+        route,
+        input.action || "",
+        input.expectedRevision ?? null,
+        input.pendingRequestId || "",
+      ])
+      ? "batch"
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // This store only keeps facts. It never sends a request, including on restore.
 // All durable read/modify/write operations use the origin's real LockManager.
-export function createWorkspaceRequests(scope) {
+export function createWorkspaceRequests(scope, { owner = null } = {}) {
+  if (
+    owner !== null &&
+    !["chat", "checklist", "summary", "summary-stop", "batch"].includes(owner)
+  )
+    throw Error("未知的恢复入口。");
   const key = `qingdan.agent-requests:v1:${scope}`;
   const listeners = new Set();
   const memoryStops = new Map();
-  let snapshot = { records: [], warning: "", durable: true };
+  let snapshot = {
+    records: [],
+    ownedRecords: [],
+    unknownRecords: [],
+    warning: "",
+    durable: true,
+  };
+  const owns = (record) =>
+    owner === null || workspaceRequestOwner(record) === owner;
+  function assertOwned(record) {
+    if (!record || !owns(record))
+      throw failure(
+        "原操作不属于此恢复入口，归属不明的记录仅供只读核对。",
+        "WORKSPACE_OWNER",
+      );
+    return record;
+  }
   function read() {
     try {
       const raw = window.localStorage.getItem(key);
@@ -242,6 +346,10 @@ export function createWorkspaceRequests(scope) {
         : warning,
       durable: durable && !volatile.length,
     };
+    snapshot.ownedRecords = snapshot.records.filter(owns);
+    snapshot.unknownRecords = snapshot.records.filter(
+      (record) => !workspaceRequestOwner(record),
+    );
     for (const listener of listeners) listener();
   }
   const durableSnapshot = () =>
@@ -327,6 +435,7 @@ export function createWorkspaceRequests(scope) {
     return old;
   }
   function persistExisting(records, record) {
+    assertOwned(record);
     if (memoryStops.has(record.operationKey)) {
       write(
         records.some((item) => item.requestId === record.requestId)
@@ -338,6 +447,7 @@ export function createWorkspaceRequests(scope) {
     return clone(record);
   }
   function retainStop(operationKey, record, error) {
+    assertOwned(record);
     if (!isSafeStop(record.request))
       throw Error("仅停止原执行可在存储不可用时继续。");
     const records = durableSnapshot();
@@ -356,6 +466,7 @@ export function createWorkspaceRequests(scope) {
   refresh();
   const store = {
     getSnapshot: () => snapshot,
+    assertOwned,
     subscribe(listener) {
       listeners.add(listener);
       const changed = (event) => {
@@ -378,6 +489,7 @@ export function createWorkspaceRequests(scope) {
           const old = existing(records, operationKey);
           const requestId = old?.requestId || requestUuid();
           const request = exactRequest(buildRequest(requestId), requestId);
+          assertOwned({ operationKey, requestId, request });
           if (safeStop && !isSafeStop(request))
             throw Error("仅停止原执行可使用安全停止通道。");
           if (old) {
@@ -432,6 +544,7 @@ export function createWorkspaceRequests(scope) {
         checkpoint: clone(legacy.checkpoint ?? null),
         createdAt: Date.now(),
       };
+      assertOwned(record);
       try {
         return await locked((records) => {
           const old = existing(records, operationKey, legacy.requestId);
@@ -460,6 +573,7 @@ export function createWorkspaceRequests(scope) {
       return locked((records) => {
         const record = records.find((item) => item.requestId === requestId);
         if (!record) throw Error("原请求尚未保存。");
+        assertOwned(record);
         record.checkpoint = clone(value);
         write(records);
       });
@@ -471,20 +585,26 @@ export function createWorkspaceRequests(scope) {
         (item) => item.requestId === requestId,
       );
       if (memory) {
+        assertOwned(memory);
         memoryStops.delete(memory.operationKey);
         refresh();
         return;
       }
-      return locked((records) =>
-        write(records.filter((item) => item.requestId !== requestId)),
-      );
+      return locked((records) => {
+        const record = records.find((item) => item.requestId === requestId);
+        if (record) assertOwned(record);
+        write(records.filter((item) => item.requestId !== requestId));
+      });
     },
   };
   return store;
 }
 
-export function useWorkspaceRequests(scope) {
-  const store = useMemo(() => createWorkspaceRequests(scope), [scope]);
+export function useWorkspaceRequests(scope, { owner = null } = {}) {
+  const store = useMemo(
+    () => createWorkspaceRequests(scope, { owner }),
+    [scope, owner],
+  );
   const snapshot = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,

@@ -506,7 +506,10 @@ export default function ExecutionPanel({
         runId: run.runId,
       });
       if (!recoveryStopStores.current.has(scope))
-        recoveryStopStores.current.set(scope, createWorkspaceRequests(scope));
+        recoveryStopStores.current.set(
+          scope,
+          createWorkspaceRequests(scope, { owner: "summary-stop" }),
+        );
       const store = recoveryStopStores.current.get(scope);
       const record = await store.prepare(
         "summary:stop",
@@ -523,6 +526,7 @@ export default function ExecutionPanel({
       );
       if (!valid(version)) return;
       setMessage(store.getSnapshot().warning || "正在请求停止原总结。");
+      store.assertOwned(record);
       await requestCloud(record.request.path, {
         method: record.request.method,
         accountId: userId,

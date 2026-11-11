@@ -1,3 +1,4 @@
+import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, RefreshCw } from "lucide-react";
 import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
@@ -367,7 +368,7 @@ function BoundChecklist({
     sectionId: page.id,
     binding,
   });
-  const requests = useWorkspaceRequests(scope);
+  const requests = useWorkspaceRequests(scope, { owner: "checklist" });
   const [draft, setDraft, draftStorage] = useWorkspaceDraft(
     `${draftScope}:new-task`,
     emptyDraft,
@@ -600,7 +601,7 @@ function BoundChecklist({
   async function resolveRecord(requestId, outcome) {
     const record = requests
       .getSnapshot()
-      .records.find((item) => item.requestId === requestId);
+      .ownedRecords.find((item) => item.requestId === requestId);
     await requests.resolve(requestId, outcome);
     if (record) retireLegacyRequest(requests, context, record);
   }
@@ -639,6 +640,7 @@ function BoundChecklist({
     await refresh(version, true);
   }
   async function sendRecord(record, version) {
+    requests.assertOwned(record);
     const info = inspectChecklistRequest(record, binding);
     if (!valid(version)) return false;
     if (info.request) {
@@ -746,6 +748,7 @@ function BoundChecklist({
     return sendRecord(saved, version);
   }
   async function inspectRecord(record, version) {
+    requests.assertOwned(record);
     const info = inspectChecklistRequest(record, binding);
     if (info.request)
       return settleInspection(
@@ -764,6 +767,7 @@ function BoundChecklist({
       );
   }
   async function abandonRecord(record, version) {
+    requests.assertOwned(record);
     const { request } = inspectChecklistRequest(record, binding);
     if (!request) throw Error("派单和停止操作不能在清单中封存。");
     const abandonRequest = {
@@ -1042,13 +1046,14 @@ function BoundChecklist({
           />
         </details>
       )}
-      {requests.records.length > 0 && (
+      <UnknownWorkspaceRequests requests={requests} />
+      {requests.ownedRecords.length > 0 && (
         <section className="agent-checklist-editor" aria-label="待核对清单操作">
           <p>
-            有 {requests.records.length}{" "}
+            有 {requests.ownedRecords.length}{" "}
             个原操作待核对。未查到回执不代表未提交；放弃清单操作会请求服务端封存。派单和停止只能核对或重试。
           </p>
-          {requests.records.map((record) => {
+          {requests.ownedRecords.map((record) => {
             let info;
             try {
               info = inspectChecklistRequest(record, binding);

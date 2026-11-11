@@ -1,3 +1,4 @@
+import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api.js";
@@ -400,7 +401,7 @@ function BoundBatch({
     "",
     !!selectedId,
   );
-  const requests = useWorkspaceRequests(scope);
+  const requests = useWorkspaceRequests(scope, { owner: "batch" });
   const [confirmingStop, setConfirmingStop] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [responded, setResponded] = useState(new Map());
@@ -598,6 +599,7 @@ function BoundBatch({
     }
   }
   async function sendRecord(record, version) {
+    requests.assertOwned(record);
     try {
       const { path, method, body } = record.request;
       const response = await callCloud(path, { method, body });
@@ -813,16 +815,17 @@ function BoundBatch({
           {requests.warning || draftStorage.warning}
         </p>
       )}
-      {requests.records.length > 0 && (
+      <UnknownWorkspaceRequests requests={requests} />
+      {requests.ownedRecords.length > 0 && (
         <section
           className="agent-pending-operations"
           aria-label="待核对的批次操作"
         >
           <p className="agent-note">
-            有 {requests.records.length}{" "}
+            有 {requests.ownedRecords.length}{" "}
             项操作尚未确认。重新打开页面不会自动重发，请先核对原执行。
           </p>
-          {requests.records.map((record) => (
+          {requests.ownedRecords.map((record) => (
             <div className="agent-actions" key={record.requestId}>
               <span>
                 {record.request.body.name === "codex_continue_run"

@@ -563,7 +563,9 @@ for (const outcome of ["failed", "expired"])
       "model failure",
     );
     assert.equal(sendPosts(f).length, 1);
-    assert.equal((await f.call("/fixture/chat/count")).count, 1);
+    await act(async () => {
+      assert.equal((await f.call("/fixture/chat/count")).count, 1);
+    });
     window.Storage.prototype.setItem = storageSetItem;
     await click("重试保存草稿");
     await until(
@@ -584,7 +586,9 @@ for (const outcome of ["failed", "expired"])
     assert.equal(sendPosts(f).length, 2);
     assert.notEqual(sendPosts(f)[1].body.requestId, original.requestId);
     assert.equal(sendPosts(f)[1].body.chatId, committed.thread.id);
-    assert.equal((await f.call("/fixture/chat/count")).count, 2);
+    await act(async () => {
+      assert.equal((await f.call("/fixture/chat/count")).count, 2);
+    });
   });
 
 test("personal memory remains readable and writable on initial Hub503", async (t) => {

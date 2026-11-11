@@ -1,3 +1,4 @@
+import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, {
   useCallback,
   useEffect,
@@ -241,9 +242,10 @@ function ChatWorkspace({
     sectionId: accountScope[2],
     binding,
   });
-  const requests = useWorkspaceRequests(requestScope);
+  const requests = useWorkspaceRequests(requestScope, { owner: "chat" });
   const personalRequests = useWorkspaceRequests(
     workspaceScope({ accountId: accountScope[0], canvasId: null }),
+    { owner: "chat" },
   );
   const [state, setState] = useState(null);
   const [personalState, setPersonalState] = useState(null);
@@ -390,7 +392,7 @@ function ChatWorkspace({
         return;
       // The request collection stays at binding scope even when a first send
       // creates a chat. Restoration only reads the original server receipt.
-      for (const record of requests.getSnapshot().records) {
+      for (const record of requests.getSnapshot().ownedRecords) {
         if (record.request.path !== `${chatApi}/send`) continue;
         const params = new URLSearchParams({
           bindingId,
@@ -484,7 +486,7 @@ function ChatWorkspace({
 
   const job = state?.job;
   const pendingJob = queued(job);
-  const pendingSend = requests.records.some(
+  const pendingSend = requests.ownedRecords.some(
     (record) =>
       record.request.path === `${chatApi}/send` &&
       (!(record.request.body.chatId || record.checkpoint?.chatId) ||
@@ -492,7 +494,7 @@ function ChatWorkspace({
         record.checkpoint?.chatId === state?.thread?.id),
   );
   useEffect(() => {
-    for (const record of requests.records) {
+    for (const record of requests.ownedRecords) {
       const receipt = received[record.requestId];
       if (
         !receipt ||
@@ -518,7 +520,7 @@ function ChatWorkspace({
   }, [
     received,
     state?.thread?.id,
-    requests.records,
+    requests.ownedRecords,
     requests.resolve,
     clearOriginalDraft,
     draftHandoff,
@@ -604,6 +606,7 @@ function ChatWorkspace({
     return dispatch(record, store, version);
   }
   async function dispatch(record, store, version) {
+    store.assertOwned(record);
     const result = await call(record.request.path, {
       method: record.request.method,
       body: record.request.body,
@@ -1061,9 +1064,14 @@ function ChatWorkspace({
             重试保存草稿
           </button>
         )}
+        <UnknownWorkspaceRequests requests={requests} />
+        <UnknownWorkspaceRequests requests={personalRequests} />
         {[
-          ...requests.records.map((record) => ({ record, personal: false })),
-          ...personalRequests.records.map((record) => ({
+          ...requests.ownedRecords.map((record) => ({
+            record,
+            personal: false,
+          })),
+          ...personalRequests.ownedRecords.map((record) => ({
             record,
             personal: true,
           })),

@@ -1,3 +1,4 @@
+import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, {
   useCallback,
   useEffect,
@@ -282,7 +283,7 @@ function SummarySession({
     binding,
   };
   const scope = workspaceScope(fullScope);
-  const requests = useWorkspaceRequests(scope);
+  const requests = useWorkspaceRequests(scope, { owner: "summary" });
   const requestRef = useRef(requests);
   requestRef.current = requests;
   const stopStores = useRef(new Map());
@@ -290,7 +291,10 @@ function SummarySession({
     (runId) => {
       const key = workspaceScope({ ...fullScope, runId });
       if (!stopStores.current.has(key))
-        stopStores.current.set(key, createWorkspaceRequests(key));
+        stopStores.current.set(
+          key,
+          createWorkspaceRequests(key, { owner: "summary-stop" }),
+        );
       return stopStores.current.get(key);
     },
     [scope],
@@ -344,14 +348,14 @@ function SummarySession({
         const sealedRequest = next.sealedLaunch?.projectRequestId;
         if (
           sealedRequest &&
-          requestRef.current.records.some(
+          requestRef.current.ownedRecords.some(
             (record) => record.requestId === sealedRequest,
           )
         )
           await requestRef.current.resolve(sealedRequest, "sealed");
         const target =
           stopRequest.current ??
-          stopStore.getSnapshot().records[0]?.request.body.arguments;
+          stopStore.getSnapshot().ownedRecords[0]?.request.body.arguments;
         if (target) {
           let confirmed = next.sealedLaunch?.runId === target.runId;
           let notice = confirmed ? "已封存原总结启动，未派发到电脑。" : "";
@@ -376,7 +380,7 @@ function SummarySession({
             setStopNotice(notice);
             const saved = stopStoreFor(target.runId)
               .getSnapshot()
-              .records.find((r) => r.requestId === target.requestId);
+              .ownedRecords.find((r) => r.requestId === target.requestId);
             if (saved)
               await stopStoreFor(target.runId).resolve(
                 saved.requestId,
@@ -430,7 +434,7 @@ function SummarySession({
       let record, store;
       try {
         if (!(await confirmBinding(version))) return;
-        if (!saved && requestRef.current.records.length)
+        if (!saved && requestRef.current.ownedRecords.length)
           throw Error("原总结操作仍待核对，请先核对或重试原操作。");
         store = requestRef.current;
         record = saved
@@ -452,6 +456,7 @@ function SummarySession({
         )
           await prepareSummaryContext(binding, userId, requestLocal);
         if (!valid(version)) return;
+        store.assertOwned(record);
         const next = await call(record.request.path, {
           method: record.request.method,
           body: record.request.body,
@@ -525,6 +530,7 @@ function SummarySession({
       );
       if (!valid(version)) return;
       stopRequest.current = saved.request.body.arguments;
+      store.assertOwned(saved);
       setStopping(true);
       setStopNotice("正在请求停止，等待本机确认。");
       const result = await call(saved.request.path, {
@@ -554,7 +560,7 @@ function SummarySession({
       autoInitialize &&
       state?.status === "uninitialized" &&
       requests.durable &&
-      !requests.records.length
+      !requests.ownedRecords.length
     )
       void operate("initialize");
   }, [
@@ -562,7 +568,7 @@ function SummarySession({
     autoInitialize,
     state?.status,
     requests.durable,
-    requests.records.length,
+    requests.ownedRecords.length,
     operate,
   ]);
   useEffect(() => {
@@ -579,7 +585,7 @@ function SummarySession({
     }, 2000);
     return () => clearInterval(timer);
   }, [state?.status, stopping]);
-  const unknown = requests.records.length > 0;
+  const unknown = requests.ownedRecords.length > 0;
   const blocked = unknown || !requests.durable || !readConfirmed;
   return (
     <>
@@ -588,7 +594,9 @@ function SummarySession({
           {requests.warning || stopSnapshot.warning}
         </p>
       )}
-      {requests.records.map((record) => (
+      <UnknownWorkspaceRequests requests={requests} />
+      <UnknownWorkspaceRequests requests={stopSnapshot} />
+      {requests.ownedRecords.map((record) => (
         <div
           className="agent-note"
           key={record.requestId}
