@@ -103,7 +103,7 @@ async function chooseChat(id) {
     select.value = id;
     select.dispatchEvent(new window.Event("change", { bubbles: true }));
   });
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
 }
 async function mount(f, extra = {}) {
   const { default: ChatPanel } = await import(
@@ -180,7 +180,7 @@ for (const destination of ["history", "new"])
     if (destination === "history") await chooseChat(b.id);
     else {
       await click("新聊天");
-      await until(() => !button("刷新聊天与记忆")?.disabled);
+      await until(() => button("刷新聊天与记忆")?.disabled === false);
     }
     assert.equal(
       JSON.parse(window.localStorage.getItem(draftStorageKey(a.id))).value,
@@ -204,7 +204,7 @@ for (const embedded of [false, true])
     f.dropSend("after");
     await edit("聊天消息", "one paid model call");
     await click("发送");
-    await until(() => !button("刷新聊天与记忆")?.disabled);
+    await until(() => button("刷新聊天与记忆")?.disabled === false);
     const original = sendPosts(f)[0].body;
     const committed = await until(async () => {
       const s = await state(f);
@@ -241,7 +241,7 @@ test("explicit unknown-send retry after reload keeps exact payload and a newer d
   f.dropSend("before");
   await edit("聊天消息", "original request text");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   await edit("聊天消息", "new draft must survive");
   const original = sendPosts(f)[0].body;
   await reopen(f);
@@ -264,7 +264,7 @@ test("first-send lost ACK carries a newer null-chat draft into the recovered cha
   f.dropSend("after");
   await edit("聊天消息", "original first send");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   await edit("聊天消息", "new draft after the uncertain first send");
   await until(async () => (await state(f)).job?.status === "succeeded");
   await reopen(f, { embedded: true });
@@ -295,7 +295,7 @@ test("draft handoff keeps an existing newer target draft and offers an explicit 
   f.dropSend("after");
   await edit("聊天消息", "first request");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   await edit("聊天消息", "unsent null-chat draft");
   const committed = await until(async () => {
     const s = await state(f);
@@ -337,7 +337,7 @@ async function conflictingHandoff(t, extra = {}) {
   f.dropSend("after");
   await edit("聊天消息", "first request for A");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   await edit("聊天消息", "unsent source for A");
   const a = await until(async () => {
     const s = await state(f);
@@ -373,7 +373,7 @@ for (const choice of ["保留当前草稿", "使用此前草稿"])
       "a handoff choice must not act on the unrelated selected chat",
     );
     await click("返回待恢复聊天");
-    await until(() => !button("刷新聊天与记忆")?.disabled);
+    await until(() => button("刷新聊天与记忆")?.disabled === false);
     assert.equal(field("聊天历史").value, a.id);
     assert.equal(field("聊天消息").value, "existing draft for A");
     await click(choice);
@@ -420,7 +420,9 @@ test("returning to a handoff target rechecks scope after an awaited GET", async 
   await until(() => release);
   await render({ userId: "bob" });
   await act(async () => release());
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(
+    () => field("聊天消息") && button("刷新聊天与记忆")?.disabled === false,
+  );
   assert.equal(field("聊天消息")?.value, "");
   assert.equal(button("保留当前草稿"), undefined);
   assert.equal(button("使用此前草稿"), undefined);
@@ -439,7 +441,7 @@ test("reopen between destination draft write and source cleanup recovers idempot
   f.dropSend("after");
   await edit("聊天消息", "first request");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   await edit("聊天消息", "survives interrupted handoff");
   const committed = await until(async () => {
     const s = await state(f);
@@ -486,7 +488,7 @@ test("a failed original-draft cleanup cannot discard its accepted request identi
   f.dropSend("after");
   await edit("聊天消息", "original draft needs cleanup");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   const original = sendPosts(f)[0].body;
   await until(async () => (await state(f)).job?.status === "succeeded");
   window.Storage.prototype.setItem = function (key, value) {
@@ -525,7 +527,7 @@ for (const outcome of ["failed", "expired"])
     f.dropSend("after");
     await edit("聊天消息", "model failure");
     await click("发送");
-    await until(() => !button("刷新聊天与记忆")?.disabled);
+    await until(() => button("刷新聊天与记忆")?.disabled === false);
     const original = sendPosts(f)[0].body;
     const committed = await until(async () => {
       const s = await state(f);
@@ -547,7 +549,9 @@ for (const outcome of ["failed", "expired"])
       return storageSetItem.call(this, key, value);
     };
     await reopen(f);
-    await until(() => button("重试保存草稿") && !field("聊天消息")?.disabled);
+    await until(
+      () => button("重试保存草稿") && field("聊天消息")?.disabled === false,
+    );
     assert.ok(
       pendingRequests().some(
         (record) => record.requestId === original.requestId,
@@ -611,7 +615,8 @@ test("personal memory remains readable and writable on initial Hub503", async (t
   await click("删除记忆：independent");
   await until(
     () =>
-      !button("删除记忆：independent") && !button("刷新聊天与记忆")?.disabled,
+      !button("删除记忆：independent") &&
+      button("刷新聊天与记忆")?.disabled === false,
   );
   assert.equal((await f.call("/api/agent/chat/state")).memories.length, 1);
   assert.equal((await f.call("/fixture/chat/count")).count, 0);
@@ -712,7 +717,7 @@ test("chat refuses a normal write without Web Locks while read controls remain u
   await until(() => field("聊天消息")?.disabled === false);
   await edit("聊天消息", "must not dispatch");
   await click("发送");
-  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await until(() => button("刷新聊天与记忆")?.disabled === false);
   assert.equal(sendPosts(f).length, 0);
   assert.match(document.body.textContent, /Web Locks/);
   await click("刷新聊天与记忆");
