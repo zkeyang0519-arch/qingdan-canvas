@@ -4,17 +4,38 @@ import { ExecutionDispatch } from "../../worker/execution/dispatch";
 import { executionRoute } from "../../worker/execution/execution-router";
 import { nativePrincipal } from "../../worker/execution/execution-auth";
 import { HttpError } from "../../worker/http";
+import type { Env } from "../../worker/types";
 
 const principal = { ownerId: "audit-owner", runnerId: "runner", bindingId: "binding", bindingRevision: 1, authEpoch: 1 };
+type AlarmOrigin = { instanceId: string; alarmId: string | null };
 
 // Fault injection and observations live only in this isolated worker. The
 // production Hub owns HTTP dispatch, socket leases and actual persisted alarms.
 export class WritebackHub extends RunnerHub {
+  private readonly origin: AlarmOrigin;
+  constructor(ctx: DurableObjectState, env: Env) {
+    const origin: AlarmOrigin = { instanceId: crypto.randomUUID(), alarmId: null };
+    // Trace the real DO-to-DO HTTP request without replacing its body or response.
+    const rooms = {
+      idFromName: env.ROOMS.idFromName.bind(env.ROOMS),
+      get(id: DurableObjectId) {
+        const stub = env.ROOMS.get(id);
+        return { fetch(input: RequestInfo | URL, init?: RequestInit) {
+          const request = new Request(input, init);
+          request.headers.set("X-Fixture-Hub-Instance", origin.instanceId);
+          if (origin.alarmId) request.headers.set("X-Fixture-Alarm-Id", origin.alarmId);
+          return stub.fetch(request);
+        } };
+      },
+    } as Env["ROOMS"];
+    super(ctx, { ...env, ROOMS: rooms });
+    this.origin = origin;
+  }
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname !== "/fixture") return super.fetch(request);
     return this.ctx.blockConcurrencyWhile(async () => {
       const input = await request.json() as any;
-      if (input.op === "state") return Response.json({ rows: Object.fromEntries(await this.ctx.storage.list()), alarm: await this.ctx.storage.getAlarm(), alarmRuns: await this.ctx.storage.get("fixture:alarmRuns") ?? 0 });
+      if (input.op === "state") return Response.json({ rows: Object.fromEntries(await this.ctx.storage.list()), alarm: await this.ctx.storage.getAlarm(), instanceId: this.origin.instanceId, alarms: await this.ctx.storage.get("fixture:alarms") ?? [] });
       if (input.op === "create") {
         const dispatch = new ExecutionDispatch(this.ctx.storage, this.env);
         const response = await dispatch.fetch(new Request("https://runner/execution/intent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ principal, input: { requestId: "source-task-run", bindingId: "binding", bindingRevision: 1, kind: "task", sourceTasks: input.tasks, autoComplete: true } }) }));
@@ -26,8 +47,14 @@ export class WritebackHub extends RunnerHub {
     });
   }
   async alarm() {
-    await super.alarm();
-    await this.ctx.storage.put("fixture:alarmRuns", (await this.ctx.storage.get<number>("fixture:alarmRuns") ?? 0) + 1);
+    this.origin.alarmId = crypto.randomUUID();
+    try {
+      await super.alarm();
+      const alarms = await this.ctx.storage.get<AlarmOrigin[]>("fixture:alarms") ?? [];
+      await this.ctx.storage.put("fixture:alarms", [...alarms, { ...this.origin }]);
+    } finally {
+      this.origin.alarmId = null;
+    }
   }
 }
 
@@ -40,7 +67,8 @@ export class WritebackCanvas extends CanvasRoom {
     if (input?.action !== "finalize" || !response.ok) return response;
     const result = await response.clone().json() as any;
     const calls = await this.ctx.storage.get<any[]>("fixture:finalizeCalls") ?? [];
-    await this.ctx.storage.put("fixture:finalizeCalls", [...calls, { input, result }]);
+    const origin = { instanceId: request.headers.get("X-Fixture-Hub-Instance"), alarmId: request.headers.get("X-Fixture-Alarm-Id") };
+    await this.ctx.storage.put("fixture:finalizeCalls", [...calls, { input, result, origin }]);
     if (result.status === "applied" && !await this.ctx.storage.get("fixture:droppedAck")) {
       await this.ctx.storage.put("fixture:droppedAck", true);
       return Response.json({ error: "Injected response loss after Canvas completion committed" }, { status: 503 });
