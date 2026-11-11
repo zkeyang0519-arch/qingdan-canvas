@@ -30,6 +30,7 @@ import type {
   ExecutionReconcileResponse,
   ExecutionReconcileTicket,
   NativeStopProof,
+  ExecutionReceipt,
 } from "../../shared/agent/execution";
 import { authorizeExecution, type ExecutionPrincipal } from "./execution-auth";
 import { canonical, hash, materialize, type StoredCommand } from "./outbox";
@@ -114,11 +115,9 @@ export class ExecutionDispatch {
   private queue() { return new BatchQueue(this.storage, this.env); }
   private requests() { return new ExecutionRequestInbox(this.storage,this.env); }
   private projects(p: ExecutionPrincipal) {
-    return new ProjectSummaries(this.storage, this.env, async (input) => {
-      const intent = await this.intent(p, input);
-      return (await this.tool(p, "codex_create_run", intent.input)) as {
-        runId: string;
-      };
+    return new ProjectSummaries(this.storage, this.env, {
+      prepare: async (input) => ({ input: parse(executionToolSchemas.codex_create_run, (await this.intent(p, input)).input) }),
+      commit: async (input) => await this.tool(p, "codex_create_run", input) as ExecutionReceipt,
     });
   }
   async retryWritebacks() {
@@ -447,6 +446,7 @@ export class ExecutionDispatch {
         input.limit ?? 50,
       );
     await this.reserve(p, input.requestId, { name, input });
+    if (name === "codex_create_run") await this.projects(p).assertCommit(p, input);
     const receiptKey = "exec:receipt:" + p.ownerId + ":" + input.requestId;
     const previous = await this.storage.get(receiptKey);
     if (previous) {
@@ -458,6 +458,8 @@ export class ExecutionDispatch {
       return previous;
     }
     const recovered = await this.storage.get<StoredRun>(runKey(input.runId));
+    if (name === "codex_cancel_run" && !recovered)
+      return this.projects(p).seal(p, input.runId, input.requestId);
     const recoveredCommand = recovered?.commands.find(
       (c) => c.payload.requestId === input.requestId,
     );

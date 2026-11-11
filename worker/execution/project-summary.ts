@@ -4,10 +4,12 @@ import type { ProjectContext } from "../../shared/agent/project";
 import type {
   ExecutionSnapshot,
   RunnerEvent,
+  RunnerCommand,
 } from "../../shared/agent/contracts";
 import type {
   ExecutionRunView,
   NativeSummaryContext,
+  ExecutionReceipt,
 } from "../../shared/agent/execution";
 import { projectSummarySchema } from "../../shared/agent/schemas";
 import { check } from "../http";
@@ -25,9 +27,20 @@ export const projectActionSchemas = {
   state: z.strictObject({
     bindingId: id.optional(),
     bindingRevision: revision.optional(),
+    inspectOnly: z.boolean().optional(),
   }),
   initialize: z.strictObject({ ...mutation, chatId: id.optional() }),
-  refresh: z.strictObject(mutation),
+  refresh: z
+    .strictObject({
+      ...mutation,
+      expectedActiveRunId: id.nullable().optional(),
+      expectedSummaryRevision: z.number().int().nonnegative().optional(),
+    })
+    .refine(
+      (v) =>
+        (v.expectedActiveRunId === undefined) ===
+        (v.expectedSummaryRevision === undefined),
+    ),
   "use-previous": z.strictObject({
     ...mutation,
     expectedSummaryRevision: revision,
@@ -46,14 +59,35 @@ type RecordState = {
   acceptedPrevious: boolean;
   operationId: string | null;
   cwd: string | null;
+  pendingLaunch?: PreparedLaunch;
+  reviewedRuns?: string[];
 };
-type Launch = (input: {
+type LaunchInput = {
   requestId: string;
   bindingId: string;
   bindingRevision: number;
   kind: "summary";
   instruction: string;
-}) => Promise<{ runId: string }>;
+};
+type PreparedInput = Omit<
+  Extract<RunnerCommand, { type: "create_run" }>,
+  "type"
+>;
+type PreparedLaunch = {
+  principal: ExecutionPrincipal;
+  projectKey: string;
+  operationId: string;
+  projectRequestId?: string;
+  input: PreparedInput;
+  inputHash: string;
+  phase: "prepared" | "committed" | "sealed";
+  sealedLaunch?: NonNullable<ProjectContext["sealedLaunch"]>;
+};
+type Launch = {
+  prepare(input: LaunchInput): Promise<{ input: PreparedInput }>;
+  commit(input: PreparedInput): Promise<ExecutionReceipt>;
+};
+const launchKey = (runId: string) => "project:launch:" + runId;
 const initial = (p: ExecutionPrincipal): ProjectContext => ({
   bindingId: p.bindingId,
   bindingRevision: p.bindingRevision,
@@ -90,18 +124,222 @@ export class ProjectSummaries {
         (await hash({ p, workspaceRevision: workspace.revision })),
     };
   }
-  async state(p: ExecutionPrincipal): Promise<ProjectContext> {
+  async assertCommit(p: ExecutionPrincipal, input: PreparedInput) {
+    const launch = await this.storage.get<PreparedLaunch>(
+      launchKey(input.runId),
+    );
+    if (!launch) return; // Existing non-coordinated/legacy execution API remains valid.
+    await this.validateLaunch(p, launch);
+    check(launch.phase !== "sealed", "总结启动已封存，不能再次提交。", 409);
+    check(
+      canonical(input) === canonical(launch.input),
+      "总结启动身份不匹配。",
+      409,
+    );
+  }
+  private async validateLaunch(p: ExecutionPrincipal, launch: PreparedLaunch) {
+    const { key } = await this.scope(p);
+    check(
+      canonical(launch.principal) === canonical(p),
+      "总结启动未授权。",
+      403,
+    );
+    check(
+      launch.projectKey === key,
+      "项目目录或授权版本已变化，请核对原运行。",
+      409,
+    );
+    check(
+      launch.inputHash === (await hash(launch.input)) &&
+        launch.operationId === launch.input.requestId,
+      "总结启动记录不完整，请人工核对。",
+      409,
+    );
+    const snapshot = await this.storage.get<{
+      principal: ExecutionPrincipal;
+      input: PreparedInput;
+    }>("exec:snapshot:" + launch.input.snapshotId);
+    check(
+      snapshot &&
+        canonical(snapshot.principal) === canonical(p) &&
+        canonical(snapshot.input) === canonical(launch.input),
+      "总结启动快照不匹配，请人工核对。",
+      409,
+    );
+  }
+  // Invoked by the existing cancel tool only after proving no run exists, under
+  // the same Hub gate as every create. A durable seal, not absence, is the proof.
+  async seal(p: ExecutionPrincipal, runId: string, requestId: string) {
+    const launch = await this.storage.get<PreparedLaunch>(launchKey(runId));
+    check(
+      launch && launch.input.runId === runId,
+      "运行不存在或无权访问。",
+      403,
+    );
+    await this.validateLaunch(p, launch);
+    check(
+      !(await this.storage.get("exec:run:" + runId)) &&
+        !(await this.storage.get(
+          "exec:receipt:" + p.ownerId + ":" + launch.input.requestId,
+        )) &&
+        !(await this.storage.get("exec:pending:" + runId)) &&
+        launch.phase !== "committed",
+      "总结已有提交记录，请核对实际运行后停止。",
+      409,
+    );
+    const sealedLaunch = launch.sealedLaunch ?? {
+      runId,
+      operationId: launch.operationId,
+      projectRequestId: launch.projectRequestId,
+      sealedAt: new Date().toISOString(),
+    };
+    const receipt = {
+      runId,
+      commandId: crypto.randomUUID(),
+      status: "accepted" as const,
+      acceptedAt: new Date().toISOString(),
+      sealedLaunch,
+    };
+    const record = await this.storage.get<RecordState>(launch.projectKey);
+    const updates: Record<string, unknown> = {
+      [launchKey(runId)]: { ...launch, phase: "sealed", sealedLaunch },
+      ["exec:receipt:" + p.ownerId + ":" + requestId]: receipt,
+    };
+    if (
+      launch.phase !== "sealed" &&
+      record?.operationId === launch.operationId &&
+      record.state.activeRunId === runId
+    ) {
+      delete record.pendingLaunch;
+      record.state = {
+        ...record.state,
+        status: "failed",
+        ready: false,
+        stale: !!record.state.summary,
+        error: "总结启动已取消，未派发到电脑。",
+        sealedLaunch,
+      };
+      delete record.state.pendingLaunch;
+      updates[launch.projectKey] = record;
+    }
+    await this.storage.put(updates);
+    return receipt;
+  }
+  private async commit(
+    p: ExecutionPrincipal,
+    key: string,
+    record: RecordState,
+  ) {
+    const pending = record.pendingLaunch!;
+    await this.assertCommit(p, pending.input);
+    const receipt = await this.launch.commit(pending.input);
+    check(receipt.runId === pending.input.runId, "总结启动回执不匹配。", 409);
+    delete record.pendingLaunch;
+    delete record.state.pendingLaunch;
+    await this.storage.put({
+      [key]: record,
+      [launchKey(receipt.runId)]: { ...pending, phase: "committed" },
+    });
+  }
+  private async recovery(
+    p: ExecutionPrincipal,
+    state: ProjectContext,
+    record?: RecordState,
+  ): Promise<ProjectContext> {
+    // Old crashes can predate pendingLaunch. Never infer a native thread or a new
+    // request ID. Surface unlinked executions, including stopped records, first.
+    const known = new Set(record?.reviewedRuns ?? []);
+    for (const value of (
+      await this.storage.list<RecordState>({ prefix: "project:state:" })
+    ).values()) {
+      if (value?.state) {
+        if (value.state.activeRunId) known.add(value.state.activeRunId);
+        if (value.state.sourceRunId) known.add(value.state.sourceRunId);
+      }
+    }
+    const runs: NonNullable<ProjectContext["recoveryRuns"]> = [];
+    let cursor: string | undefined;
+    const currentRun =
+      state.activeRunId &&
+      (await this.storage.get<Run>("exec:run:" + state.activeRunId));
+    do {
+      const page = await this.storage.list<string>({
+        prefix: `exec:list:${p.bindingId}:`,
+        limit: 100,
+        startAfter: cursor,
+      });
+      for (const [entry, runId] of page) {
+        cursor = entry;
+        if (known.has(runId) || (await this.storage.get(launchKey(runId))))
+          continue;
+        const run = await this.storage.get<Run>("exec:run:" + runId);
+        if (
+          !run ||
+          run.snapshot.kind !== "summary" ||
+          canonical(run.principal) !== canonical(p)
+        )
+          continue;
+        if (
+          currentRun &&
+          run.view.terminal &&
+          run.view.stopConfirmed &&
+          run.view.createdAt <= currentRun.view.createdAt
+        )
+          continue;
+        runs.push({
+          runId,
+          status: run.view.status,
+          terminal: run.view.terminal,
+          stopConfirmed: run.view.stopConfirmed,
+        });
+      }
+      if (page.size < 100) break;
+    } while (cursor);
+    if (!runs.length) return state;
+    return {
+      ...state,
+      status: "reconciliation_required",
+      ready: false,
+      stale: !!state.summary,
+      recoveryRuns: runs,
+      canRefresh:
+        runs.every((r) => r.terminal && r.stopConfirmed) &&
+        !record?.pendingLaunch &&
+        (!currentRun ||
+          (currentRun.view.terminal && currentRun.view.stopConfirmed)),
+      error:
+        "发现尚未关联到摘要的总结记录。请打开执行记录核对并停止原运行，再手动重新总结。",
+    };
+  }
+  async state(
+    p: ExecutionPrincipal,
+    inspectOnly = false,
+  ): Promise<ProjectContext> {
     const { key } = await this.scope(p),
       record = await this.storage.get<RecordState>(key);
-    if (!record) return initial(p);
+    if (!record) return this.recovery(p, initial(p));
+    if (record.pendingLaunch) {
+      if (inspectOnly) return record.state;
+      try {
+        await this.commit(p, key, record);
+      } catch (error) {
+        return {
+          ...record.state,
+          status: "reconciliation_required",
+          ready: false,
+          error: "总结启动仍待核对，可刷新或停止原启动。",
+        };
+      }
+    }
     const s = record.state;
-    if (!s.activeRunId) return s;
+    if (s.sealedLaunch) return this.recovery(p, s, record);
+    if (!s.activeRunId) return this.recovery(p, s, record);
     const run = await this.storage.get<Run>("exec:run:" + s.activeRunId);
     if (!run || canonical(run.principal) !== canonical(p))
       return {
         ...s,
         ready: false,
-        status: "failed",
+        status: "reconciliation_required",
         error: "项目总结运行尚未恢复，请刷新核对。",
       };
     const completion = await this.storage.get<RunnerEvent>(
@@ -148,7 +386,7 @@ export class ProjectSummaries {
         run.view.status === "queued"
           ? "queued"
           : run.view.status === "reconciliation_required"
-            ? "failed"
+            ? "reconciliation_required"
             : "running";
       s.ready = false;
       s.stale = !!s.summary;
@@ -162,7 +400,7 @@ export class ProjectSummaries {
               : null;
     }
     await this.storage.put(key, record);
-    return s;
+    return this.recovery(p, s, record);
   }
   async act(
     p: ExecutionPrincipal,
@@ -183,7 +421,11 @@ export class ProjectSummaries {
       "项目绑定已变化，请刷新。",
       409,
     );
-    const current = await this.state(p);
+    const current = await this.state(
+      p,
+      action === "state" &&
+        (input as { inspectOnly?: boolean }).inspectOnly === true,
+    );
     if (action === "state") return current;
     const { key, workspace } = await this.scope(p),
       request = input as z.infer<typeof projectActionSchemas.refresh>;
@@ -191,6 +433,14 @@ export class ProjectSummaries {
       requestPayload = canonical({ action, input }),
       old = await this.storage.get<string>(requestKey);
     const digest = await hash({ p, action, input });
+    const authorizationKey =
+      "project:request-scope:" + p.ownerId + ":" + request.requestId;
+    const authorizedKey = await this.storage.get<string>(authorizationKey);
+    check(
+      !authorizedKey || authorizedKey === key,
+      "项目目录或授权版本已变化，请核对原运行。",
+      409,
+    );
     const reservationId = "project-action:" + request.requestId;
     await this.env.DB.prepare(
       "INSERT OR IGNORE INTO agent_execution_requests VALUES(?,?,?,?,?)",
@@ -223,12 +473,17 @@ export class ProjectSummaries {
         "上次摘要版本已变化，请刷新核对。",
         409,
       );
-      check(current.status === "failed", "当前总结仍在执行，请等待结果。", 409);
+      check(
+        current.status === "failed" && !current.pendingLaunch,
+        "当前总结仍在执行，请等待结果。",
+        409,
+      );
       const active =
         current.activeRunId &&
         (await this.storage.get<Run>("exec:run:" + current.activeRunId));
       check(
-        active && active.view.terminal && active.view.stopConfirmed,
+        current.sealedLaunch ||
+          (active && active.view.terminal && active.view.stopConfirmed),
         "尚未确认本次总结停止，请先核对运行状态。",
         409,
       );
@@ -240,7 +495,11 @@ export class ProjectSummaries {
         ready: true,
         stale: current.status === "failed" || current.stale,
       };
-      await this.storage.put({ [key]: record, [requestKey]: requestPayload });
+      await this.storage.put({
+        [key]: record,
+        [requestKey]: requestPayload,
+        [authorizationKey]: key,
+      });
       return record.state;
     }
     const chatId =
@@ -248,12 +507,43 @@ export class ProjectSummaries {
         ? (input as z.infer<typeof projectActionSchemas.initialize>).chatId
         : undefined;
     const initializedKey = key + ":initialized:" + (chatId ?? "initial");
+    const active =
+      current.activeRunId &&
+      (await this.storage.get<Run>("exec:run:" + current.activeRunId));
+    const blocked =
+      !!current.pendingLaunch ||
+      (!!current.activeRunId &&
+        !current.sealedLaunch &&
+        !(active && active.view.terminal && active.view.stopConfirmed));
+    check(
+      !current.recoveryRuns?.length ||
+        (action === "refresh" && current.canRefresh),
+      "请先在执行记录中核对并停止原总结。",
+      409,
+    );
+    if (action === "refresh") {
+      if (request.expectedActiveRunId !== undefined)
+        check(
+          request.expectedActiveRunId === current.activeRunId &&
+            request.expectedSummaryRevision === current.summaryRevision,
+          "项目摘要已变化，请刷新后重新操作。",
+          409,
+        );
+      check(!blocked, "尚未确认本次总结停止，请先核对运行状态。", 409);
+    }
     if (
       action === "initialize" &&
-      ((!chatId && current.status !== "uninitialized") ||
+      (blocked ||
+        (!chatId && current.status !== "uninitialized") ||
         (await this.storage.get(initializedKey)))
     ) {
-      await this.storage.put(requestKey, requestPayload);
+      await this.storage.put({
+        [requestKey]: requestPayload,
+        [authorizationKey]: key,
+        ...(chatId && current.activeRunId
+          ? { [initializedKey]: current.activeRunId }
+          : {}),
+      });
       return current;
     }
     // Derivation survives a crash between the underlying command journal commit
@@ -267,7 +557,7 @@ export class ProjectSummaries {
             ? "initialize:" + (chatId ?? "initial")
             : "refresh:" + request.requestId,
       }));
-    const launched = await this.launch({
+    const prepared = await this.launch.prepare({
       requestId: executionId,
       bindingId: p.bindingId,
       bindingRevision: p.bindingRevision,
@@ -281,18 +571,46 @@ export class ProjectSummaries {
       ready: false,
       stale: !!current.summary,
       error: null,
-      activeRunId: launched.runId,
+      activeRunId: prepared.input.runId,
+      pendingLaunch: {
+        runId: prepared.input.runId,
+        operationId: executionId,
+        projectRequestId: request.requestId,
+      },
+    };
+    delete state.sealedLaunch;
+    delete state.recoveryRuns;
+    delete state.canRefresh;
+    const launch: PreparedLaunch = {
+      principal: p,
+      projectKey: key,
+      operationId: executionId,
+      projectRequestId: request.requestId,
+      input: prepared.input,
+      inputHash: await hash(prepared.input),
+      phase: "prepared",
+    };
+    const record: RecordState = {
+      state,
+      acceptedPrevious: false,
+      operationId: executionId,
+      cwd: workspace.displayPath,
+      pendingLaunch: launch,
+      reviewedRuns: [
+        ...((await this.storage.get<RecordState>(key))?.reviewedRuns ?? []),
+        ...(current.recoveryRuns?.map((r) => r.runId) ?? []),
+      ],
     };
     await this.storage.put({
-      [key]: {
-        state,
-        acceptedPrevious: false,
-        operationId: executionId,
-        cwd: workspace.displayPath,
-      },
+      [key]: record,
+      [launchKey(prepared.input.runId)]: launch,
       [requestKey]: requestPayload,
-      ...(action === "initialize" ? { [initializedKey]: launched.runId } : {}),
+      [authorizationKey]: key,
+      ...(action === "initialize"
+        ? { [initializedKey]: prepared.input.runId }
+        : {}),
     });
+    await this.commit(p, key, record);
     return state;
   }
 }

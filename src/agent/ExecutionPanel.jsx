@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
 import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
+import { createWorkspaceRequests, workspaceScope } from "./workspace-state.js";
 
 const trialSection = "agent-execution-trial";
 // Uncertain submissions survive panel/selection changes within this page.
@@ -56,8 +57,13 @@ export default function ExecutionPanel({
   pages = [],
   requestCloud = api,
   requestLocal = localRunnerRequest,
+  initialPageId = "",
+  initialRunId = "",
+  recoveryOnly = false,
 }) {
-  const [sectionId, setSectionId] = useState(pages[0]?.id || trialSection);
+  const [sectionId, setSectionId] = useState(
+    initialPageId || pages[0]?.id || trialSection,
+  );
   const [binding, setBinding] = useState(null);
   const [device, setDevice] = useState(null);
   const [project, setProject] = useState(null);
@@ -87,6 +93,7 @@ export default function ExecutionPanel({
     activeBinding = useRef(null);
   const followPending = useRef(null),
     stopPending = useRef(null);
+  const recoveryStopStores = useRef(new Map());
   const namedProjects =
     projectOptions.accountId === userId ? projectOptions.items : [];
   const sectionValid =
@@ -237,7 +244,7 @@ export default function ExecutionPanel({
     setDevice(null);
     setProject(null);
     setLoaded(false);
-    selectRun("");
+    selectRun(sectionId === initialPageId ? initialRunId : "");
     setRuns([]);
     setError("");
     void refresh(version).catch((err) => {
@@ -250,7 +257,7 @@ export default function ExecutionPanel({
       mounted.current = false;
       epoch.current++;
     };
-  }, [refresh, selectRun]);
+  }, [refresh, selectRun, sectionId, initialPageId, initialRunId]);
 
   useEffect(() => {
     if (sectionValid) return;
@@ -490,6 +497,52 @@ export default function ExecutionPanel({
   async function stop(version) {
     const run = detail?.run;
     if (!run) return;
+    if (recoveryOnly && run.kind === "summary") {
+      const scope = workspaceScope({
+        accountId: userId,
+        canvasId: roomId,
+        sectionId,
+        binding,
+        runId: run.runId,
+      });
+      if (!recoveryStopStores.current.has(scope))
+        recoveryStopStores.current.set(scope, createWorkspaceRequests(scope));
+      const store = recoveryStopStores.current.get(scope);
+      const record = await store.prepare(
+        "summary:stop",
+        (requestId) => ({
+          path: "/api/agent/execution/tools",
+          method: "POST",
+          body: {
+            bindingId: binding.bindingId,
+            name: "codex_cancel_run",
+            arguments: { runId: run.runId, requestId },
+          },
+        }),
+        { safeStop: true },
+      );
+      if (!valid(version)) return;
+      setMessage(store.getSnapshot().warning || "正在请求停止原总结。");
+      await requestCloud(record.request.path, {
+        method: record.request.method,
+        accountId: userId,
+        body: record.request.body,
+      });
+      if (!valid(version)) return;
+      setMessage(
+        ["停止请求已保存，等待电脑确认。", store.getSnapshot().warning]
+          .filter(Boolean)
+          .join(" "),
+      );
+      await readRun(run.runId, version, binding.bindingId);
+      if (
+        details.current?.run?.runId === run.runId &&
+        details.current.run.terminal &&
+        details.current.run.stopConfirmed
+      )
+        await store.resolve(record.requestId, "acknowledged");
+      return;
+    }
     const key = JSON.stringify([run.runId, run.turnId]);
     if (stopPending.current?.key !== key)
       stopPending.current = {
@@ -539,10 +592,11 @@ export default function ExecutionPanel({
   return (
     <div className="agent-trial agent-execution-panel">
       <div className="agent-intro">
-        <h3>把任务交给本机 Codex</h3>
+        <h3>{recoveryOnly ? "核对原总结执行" : "把任务交给本机 Codex"}</h3>
         <p>
-          每次提交新建一个 Codex
-          会话。批次里的待办在同一会话中按顺序执行，可以在这里查看进度、补充说明或请求停止。
+          {recoveryOnly
+            ? "查看已有总结的进度与输出，必要时请求停止；确认结束后返回项目摘要重新总结。"
+            : "每次提交新建一个 Codex 会话。批次里的待办在同一会话中按顺序执行，可以在这里查看进度、补充说明或请求停止。"}
         </p>
       </div>
       {error && (
@@ -569,7 +623,7 @@ export default function ExecutionPanel({
           清单关联
           <select
             aria-label="清单关联"
-            disabled={busy}
+            disabled={busy || recoveryOnly}
             value={sectionId}
             onChange={(event) => {
               epoch.current++;
@@ -614,127 +668,133 @@ export default function ExecutionPanel({
             这个清单还没有关联项目。可在第 3 步关联，或准备下方的独立测试项目。
           </p>
         )}
-        <label>
-          新建项目名称
-          <input
-            aria-label="项目名称"
-            value={projectName}
-            onChange={(event) => setProjectName(event.target.value)}
-            maxLength={60}
-            placeholder="例如：个人网站"
-            disabled={busy}
-          />
-        </label>
-        <div className="agent-actions">
-          <button
-            disabled={busy || !projectName.trim()}
-            onClick={() => perform(prepareTrial)}
-          >
-            创建项目
-          </button>
-          <span className="agent-note">
-            创建项目会准备同名文件夹。提交批次或项目总结后会新建 Codex
-            会话。同名项目保留已有结果。
-          </span>
-        </div>
+        {!recoveryOnly && (
+          <>
+            <label>
+              新建项目名称
+              <input
+                aria-label="项目名称"
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                maxLength={60}
+                placeholder="例如：个人网站"
+                disabled={busy}
+              />
+            </label>
+            <div className="agent-actions">
+              <button
+                disabled={busy || !projectName.trim()}
+                onClick={() => perform(prepareTrial)}
+              >
+                创建项目
+              </button>
+              <span className="agent-note">
+                创建项目会准备同名文件夹。提交批次或项目总结后会新建 Codex
+                会话。同名项目保留已有结果。
+              </span>
+            </div>
+          </>
+        )}
       </section>
-      <section className="agent-device-card" aria-label="提交批次">
-        <div className="agent-card-heading">
-          <h4>编排待办</h4>
-          <button
-            disabled={busy || drafts.length >= MAX_PLAN_TASKS}
-            onClick={addDraft}
-          >
-            添加待办
-          </button>
-        </div>
-        {drafts.map((item, index) => (
-          <fieldset key={item.id} className="agent-batch-draft">
-            <legend>第 {index + 1} 项待办</legend>
-            <label>
-              执行要求
-              <textarea
-                aria-label={
-                  index === 0 ? "执行要求" : `第 ${index + 1} 项执行要求`
-                }
-                value={item.instruction}
-                onChange={(event) =>
-                  editDraft(item.id, "instruction", event.target.value)
-                }
-                placeholder="描述希望 Codex 在这个项目里完成的工作"
-                rows={3}
-                maxLength={32000}
-                disabled={busy}
-              />
-            </label>
-            <label>
-              完成标准
-              <textarea
-                aria-label={
-                  index === 0 ? "完成标准" : `第 ${index + 1} 项完成标准`
-                }
-                value={item.acceptance}
-                onChange={(event) =>
-                  editDraft(item.id, "acceptance", event.target.value)
-                }
-                placeholder="写明你验收时要看到的结果"
-                rows={2}
-                maxLength={4000}
-                disabled={busy}
-              />
-            </label>
-            {drafts.length > 1 && (
-              <div className="agent-actions">
-                <button
-                  aria-label={`上移第 ${index + 1} 项`}
-                  disabled={busy || index === 0}
-                  onClick={() => moveDraft(index, -1)}
-                >
-                  上移
-                </button>
-                <button
-                  aria-label={`下移第 ${index + 1} 项`}
-                  disabled={busy || index === drafts.length - 1}
-                  onClick={() => moveDraft(index, 1)}
-                >
-                  下移
-                </button>
-                <button
-                  aria-label={`删除第 ${index + 1} 项`}
-                  disabled={busy}
-                  onClick={() =>
-                    setDrafts((current) =>
-                      current.filter((draft) => draft.id !== item.id),
-                    )
+      {!recoveryOnly && (
+        <section className="agent-device-card" aria-label="提交批次">
+          <div className="agent-card-heading">
+            <h4>编排待办</h4>
+            <button
+              disabled={busy || drafts.length >= MAX_PLAN_TASKS}
+              onClick={addDraft}
+            >
+              添加待办
+            </button>
+          </div>
+          {drafts.map((item, index) => (
+            <fieldset key={item.id} className="agent-batch-draft">
+              <legend>第 {index + 1} 项待办</legend>
+              <label>
+                执行要求
+                <textarea
+                  aria-label={
+                    index === 0 ? "执行要求" : `第 ${index + 1} 项执行要求`
                   }
-                >
-                  删除
-                </button>
-              </div>
-            )}
-          </fieldset>
-        ))}
-        <div className="agent-actions">
-          <button
-            className="primary"
-            disabled={
-              busy || !binding || incompleteDraft || !sectionValid || !loaded
-            }
-            onClick={() => perform((version) => submit("task", version))}
-          >
-            提交批次
-          </button>
-          <button
-            disabled={busy || !binding || !sectionValid || !loaded}
-            onClick={() => perform((version) => submit("summary", version))}
-          >
-            只总结项目
-          </button>
-        </div>
-        <p className="agent-note">
-          执行结束后由你检查结果。这里的执行进度仅用于本次派单。
-        </p>
-      </section>
+                  value={item.instruction}
+                  onChange={(event) =>
+                    editDraft(item.id, "instruction", event.target.value)
+                  }
+                  placeholder="描述希望 Codex 在这个项目里完成的工作"
+                  rows={3}
+                  maxLength={32000}
+                  disabled={busy}
+                />
+              </label>
+              <label>
+                完成标准
+                <textarea
+                  aria-label={
+                    index === 0 ? "完成标准" : `第 ${index + 1} 项完成标准`
+                  }
+                  value={item.acceptance}
+                  onChange={(event) =>
+                    editDraft(item.id, "acceptance", event.target.value)
+                  }
+                  placeholder="写明你验收时要看到的结果"
+                  rows={2}
+                  maxLength={4000}
+                  disabled={busy}
+                />
+              </label>
+              {drafts.length > 1 && (
+                <div className="agent-actions">
+                  <button
+                    aria-label={`上移第 ${index + 1} 项`}
+                    disabled={busy || index === 0}
+                    onClick={() => moveDraft(index, -1)}
+                  >
+                    上移
+                  </button>
+                  <button
+                    aria-label={`下移第 ${index + 1} 项`}
+                    disabled={busy || index === drafts.length - 1}
+                    onClick={() => moveDraft(index, 1)}
+                  >
+                    下移
+                  </button>
+                  <button
+                    aria-label={`删除第 ${index + 1} 项`}
+                    disabled={busy}
+                    onClick={() =>
+                      setDrafts((current) =>
+                        current.filter((draft) => draft.id !== item.id),
+                      )
+                    }
+                  >
+                    删除
+                  </button>
+                </div>
+              )}
+            </fieldset>
+          ))}
+          <div className="agent-actions">
+            <button
+              className="primary"
+              disabled={
+                busy || !binding || incompleteDraft || !sectionValid || !loaded
+              }
+              onClick={() => perform((version) => submit("task", version))}
+            >
+              提交批次
+            </button>
+            <button
+              disabled={busy || !binding || !sectionValid || !loaded}
+              onClick={() => perform((version) => submit("summary", version))}
+            >
+              只总结项目
+            </button>
+          </div>
+          <p className="agent-note">
+            执行结束后由你检查结果。这里的执行进度仅用于本次派单。
+          </p>
+        </section>
+      )}
       <section className="agent-device-card" aria-label="派单记录">
         <h4>派单记录</h4>
         {!runs.length && !run ? (

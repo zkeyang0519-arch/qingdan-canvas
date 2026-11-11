@@ -126,6 +126,8 @@ test(
       (await call("state?bindingId=binding&bindingRevision=1")).status,
       "uninitialized",
     );
+    assert.equal((await call("state?bindingId=binding&inspectOnly=true")).status,"uninitialized");
+    assert.equal((await call("state?bindingId=binding&inspectOnly=invalid")).http,400);
     assert.equal(
       (await call("state?bindingId=binding", undefined, { Cookie: "" })).http,
       401,

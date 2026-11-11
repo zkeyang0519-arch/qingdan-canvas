@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { browserLocks } from "./fixtures/browser-locks.mjs";
 
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8790",
@@ -46,6 +47,8 @@ const click = async (node) => {
 const body = () => document.body.textContent;
 let root;
 test.beforeEach(() => {
+  window.localStorage.clear();
+  navigator.locks = browserLocks();
   root = createRoot(document.getElementById("root"));
 });
 test.afterEach(async () => {
@@ -168,6 +171,64 @@ test("opening diagnostics reads versions and recovery history without reconnecti
   assert.deepEqual(
     f.calls.filter((call) => call.method === "POST"),
     [],
+  );
+});
+
+test("historical summaries open a supported execution view and stop the selected original run", async () => {
+  const f = fixture(),
+    base = f.requestCloud;
+  let lost = true;
+  const run = {
+    ...f.state.runs[0],
+    runId: "orphan-summary",
+    kind: "summary",
+    sourceBacked: false,
+    batch: undefined,
+    queue: undefined,
+  };
+  f.state.runs = [run];
+  f.requestCloud = async (route, options = {}) => {
+    if (route === "/api/agent/devices") {
+      f.calls.push({ route, ...options });
+      return { devices: [] };
+    }
+    if (route === "/api/agent/execution/tools") {
+      f.calls.push({ route, ...options });
+      if (options.body.name === "codex_list_projects")
+        return { result: { projects: [] } };
+      if (options.body.name === "codex_get_run")
+        return { result: { run, events: [], nextCursor: null } };
+      if (options.body.name === "codex_cancel_run") {
+        if (lost) {
+          lost = false;
+          throw Error("lost cancel ACK");
+        }
+        return { result: { status: "accepted" } };
+      }
+      throw Error("unexpected tool " + options.body.name);
+    }
+    return base(route, options);
+  };
+  await render(f);
+  await click(button("查看这次总结"));
+  assert.match(body(), /核对原总结执行/);
+  assert.equal(button("提交批次"), undefined);
+  assert.equal(button("只总结项目"), undefined);
+  assert.equal(f.opened.length, 0);
+  await click(button("请求停止"));
+  await click(button("关闭总结执行"));
+  await click(button("查看这次总结"));
+  await click(button("请求停止"));
+  const cancellations = f.calls.filter(
+    (c) => c.body?.name === "codex_cancel_run",
+  );
+  assert.equal(cancellations.length, 2);
+  assert.equal(cancellations[0].body.arguments.runId, "orphan-summary");
+  assert.deepEqual(cancellations[0].body, cancellations[1].body);
+  assert.ok(
+    f.calls.every(
+      (c) => !["codex_create_run", "codex_continue_run"].includes(c.body?.name),
+    ),
   );
 });
 

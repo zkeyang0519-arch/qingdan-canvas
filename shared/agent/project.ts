@@ -3,7 +3,13 @@ import type { ProjectSummary } from "./contracts";
 export interface ProjectContext {
   bindingId: string;
   bindingRevision: number;
-  status: "uninitialized" | "queued" | "running" | "ready" | "failed";
+  status:
+    | "uninitialized"
+    | "queued"
+    | "running"
+    | "ready"
+    | "failed"
+    | "reconciliation_required";
   ready: boolean;
   stale: boolean;
   summaryRevision: number;
@@ -20,4 +26,22 @@ export interface ProjectContext {
   } | null;
   error: string | null;
   activeRunId: string | null;
+  pendingLaunch?: {
+    runId: string;
+    operationId: string;
+    projectRequestId?: string;
+  };
+  sealedLaunch?: {
+    runId: string;
+    operationId: string;
+    projectRequestId?: string;
+    sealedAt: string;
+  };
+  recoveryRuns?: {
+    runId: string;
+    status: string;
+    terminal: boolean;
+    stopConfirmed: boolean;
+  }[];
+  canRefresh?: boolean;
 }

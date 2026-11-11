@@ -43,7 +43,7 @@ function fixture() {
       if (
         failCoordinator &&
         typeof k !== "string" &&
-        Object.keys(k).some((key) => /^project:state:[a-f0-9]+$/.test(key))
+        Object.entries(k).some(([key, value]) => /^project:state:[a-f0-9]+$/.test(key) && !value.pendingLaunch)
       ) {
         failCoordinator = false;
         throw Error("injected coordinator save failure");

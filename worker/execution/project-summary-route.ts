@@ -37,10 +37,19 @@ export async function projectSummaryRoute(
     "方法不支持。",
     405,
   );
+  if (action === "state" && url.searchParams.has("inspectOnly"))
+    check(
+      ["true", "false"].includes(url.searchParams.get("inspectOnly")!),
+      "项目总结请求格式无效。",
+      400,
+    );
   const input =
     action === "state"
       ? {
           bindingId: url.searchParams.get("bindingId") ?? "",
+          ...(url.searchParams.has("inspectOnly")
+            ? { inspectOnly: url.searchParams.get("inspectOnly") === "true" }
+            : {}),
           ...(url.searchParams.has("bindingRevision")
             ? {
                 bindingRevision: Number(

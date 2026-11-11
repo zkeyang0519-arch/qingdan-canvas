@@ -905,6 +905,8 @@ function ChatWorkspace({
       <ProjectSummary
         binding={binding}
         userId={accountScope[0]}
+        roomId={accountScope[1]}
+        pageId={accountScope[2]}
         call={call}
         loadBinding={loadBinding}
         requestLocal={requestLocal}

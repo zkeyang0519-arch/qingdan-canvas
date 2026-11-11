@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
 import { batchStatusLabel } from "./BatchPanel.jsx";
 import { currentNativeRequests } from "./PermissionControls.jsx";
+import ExecutionPanel from "./ExecutionPanel.jsx";
 
 const timeLabel = (value) => {
   const date = new Date(value);
@@ -62,6 +63,7 @@ function DiagnosisScope({
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
+  const [summaryRun, setSummaryRun] = useState(null);
   const active = useRef(false);
   const sequence = useRef(0);
   const working = useRef(false);
@@ -364,6 +366,14 @@ function DiagnosisScope({
                 )}
                 {run.error && <p className="agent-error">{run.error}</p>}
                 <div className="agent-actions">
+                  {run.kind === "summary" && (
+                    <button
+                      disabled={busy}
+                      onClick={() => setSummaryRun(run.runId)}
+                    >
+                      查看这次总结
+                    </button>
+                  )}
                   {run.sourceBacked && run.kind !== "summary" && onOpenRun && (
                     <button
                       disabled={busy}
@@ -392,6 +402,19 @@ function DiagnosisScope({
           </ol>
         )}
       </section>
+      {summaryRun && (
+        <section aria-label="总结执行恢复">
+          <button onClick={() => setSummaryRun(null)}>关闭总结执行</button>
+          <ExecutionPanel
+            key={summaryRun}
+            {...{ roomId, userId, requestLocal, requestCloud }}
+            pages={[page]}
+            initialPageId={page.id}
+            initialRunId={summaryRun}
+            recoveryOnly
+          />
+        </section>
+      )}
     </div>
   );
 }

@@ -6,6 +6,11 @@ import { build } from "esbuild";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { browserLocks } from "./fixtures/browser-locks.mjs";
+import {
+  createWorkspaceRequests,
+  workspaceScope,
+} from "../src/agent/workspace-state.js";
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8790",
 });
@@ -13,6 +18,15 @@ Object.assign(globalThis, {
   window: dom.window,
   document: dom.window.document,
   IS_REACT_ACT_ENVIRONMENT: true,
+});
+Object.defineProperty(globalThis, "navigator", {
+  value: dom.window.navigator,
+  configurable: true,
+});
+test.beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  globalThis.navigator.locks = browserLocks();
 });
 const { createRoot } = await import("react-dom/client");
 const dir = mkdtempSync(resolve("node_modules/.cache/agent-project-ui-"));
@@ -72,6 +86,7 @@ const ready = {
   },
   capturedAt: "2026-11-05T03:00:00Z",
   sourceRunId: "run-1",
+  activeRunId: "run-1",
   threadId: "thread-verified",
   turnId: "turn-verified",
   cwd: "D:\\test-project",
@@ -328,6 +343,346 @@ test("stopping a summary reuses its request and waits for native stop confirmati
     await click("刷新总结状态");
     assert.match(document.body.textContent, /已确认停止总结/);
     assert.equal(button("重新总结").disabled, false);
+  } finally {
+    await close();
+  }
+});
+
+const summaryBinding = {
+  bindingId: "bound",
+  revision: 2,
+  enabled: true,
+  runnerId: "runner",
+  workspaceId: "workspace",
+};
+const summaryScope = () =>
+  workspaceScope({
+    accountId: "alice",
+    canvasId: "room",
+    sectionId: "section",
+    binding: summaryBinding,
+  });
+const saveRefresh = () =>
+  createWorkspaceRequests(summaryScope()).prepare(
+    "summary:refresh",
+    (requestId) => ({
+      path: "/api/agent/project/refresh",
+      method: "POST",
+      body: {
+        requestId,
+        bindingId: "bound",
+        bindingRevision: 2,
+        expectedActiveRunId: "run-1",
+        expectedSummaryRevision: 1,
+      },
+    }),
+  );
+
+test("restored unknown summary operation only reads and explicit retry preserves its exact payload", async () => {
+  const saved = await saveRefresh();
+  window.sessionStorage.clear();
+  const f = fixture(ready),
+    close = await mount(f, { autoSelect: false, initialPageId: "section" });
+  try {
+    assert.equal(f.calls.filter((c) => c.method === "POST").length, 0);
+    assert.ok(button("核对原总结操作"));
+    assert.ok(button("重试原总结操作"));
+    await click("核对原总结操作");
+    assert.equal(f.calls.filter((c) => c.method === "POST").length, 0);
+    await click("重试原总结操作");
+    assert.deepEqual(
+      f.calls.find((c) => c.route.endsWith("/refresh")).body,
+      saved.request.body,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("restored uninitialized project never auto starts and another account cannot see its pending action", async () => {
+  await saveRefresh();
+  const f = fixture();
+  const close = await mount(f, {
+    autoSelect: false,
+    initialPageId: "section",
+    userId: "bob",
+  });
+  try {
+    assert.equal(f.calls.filter((c) => c.method === "POST").length, 0);
+    assert.equal(button("重试原总结操作"), undefined);
+  } finally {
+    await close();
+  }
+});
+
+test("reconciliation keeps stop available when Web Locks fail and never offers previous adoption", async () => {
+  const f = fixture({
+    ...ready,
+    status: "reconciliation_required",
+    ready: false,
+    stale: true,
+    activeRunId: "uncertain",
+  });
+  const close = await mount(f);
+  globalThis.navigator.locks = undefined;
+  try {
+    assert.equal(button("重新总结").disabled, true);
+    assert.equal(button("使用上次摘要"), undefined);
+    await click("停止总结");
+    assert.equal(
+      f.calls.find((c) => c.body?.name === "codex_cancel_run").body.arguments
+        .runId,
+      "uncertain",
+    );
+    assert.match(document.body.textContent, /浏览器|保存|协调/);
+  } finally {
+    await close();
+  }
+});
+
+test("stop discovers unknown planned target through inspect-only GET without starting or checkpointing", async () => {
+  await saveRefresh();
+  const f = fixture();
+  const base = f.requestCloud;
+  let inspect = false;
+  f.requestCloud = async (route, options) => {
+    if (route.includes("inspectOnly=true") && inspect) {
+      f.calls.push({ route, ...options });
+      return {
+        ...initial,
+        status: "queued",
+        activeRunId: "planned",
+        pendingLaunch: { runId: "planned", operationId: "op" },
+      };
+    }
+    return base(route, options);
+  };
+  const close = await mount(f, { autoSelect: false, initialPageId: "section" });
+  inspect = true;
+  globalThis.navigator.locks = undefined;
+  try {
+    await click("停止总结");
+    const writes = f.calls.filter((c) => c.method === "POST");
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].body.name, "codex_cancel_run");
+    assert.equal(writes[0].body.arguments.runId, "planned");
+  } finally {
+    await close();
+  }
+});
+
+test("fresh refresh sends both CAS values", async () => {
+  const f = fixture(ready);
+  let close = await mount(f);
+  const base = f.requestCloud;
+  f.requestCloud = base;
+  try {
+    await click("重新总结");
+    const body = f.calls.find((c) => c.route.endsWith("/refresh")).body;
+    assert.equal(body.expectedSummaryRevision, 1);
+    assert.equal(body.expectedActiveRunId, "run-1");
+  } finally {
+    await close();
+  }
+});
+
+test("two summary pages retain one exact refresh request after a lost acknowledgement", async () => {
+  const f = fixture(ready),
+    base = f.requestCloud;
+  f.requestCloud = async (route, options) => {
+    if (route.endsWith("/refresh")) {
+      f.calls.push({ route, ...options });
+      throw Error("lost acknowledgement");
+    }
+    return base(route, options);
+  };
+  const close = await mount(f);
+  const host = document.createElement("div");
+  document.body.append(host);
+  const second = createRoot(host);
+  try {
+    await act(async () =>
+      second.render(
+        React.createElement(ProjectSummaryPanel, {
+          roomId: "room",
+          userId: "alice",
+          pages: [{ id: "section" }],
+          initialPageId: "section",
+          requestCloud: f.requestCloud,
+          requestLocal: f.requestLocal,
+        }),
+      ),
+    );
+    await click("重新总结");
+    const retry = [...host.querySelectorAll("button")].find(
+      (b) => b.textContent === "重试原总结操作",
+    );
+    assert.ok(retry);
+    await act(async () => retry.click());
+    const writes = f.calls.filter((c) => c.route.endsWith("/refresh"));
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes[0].body, writes[1].body);
+  } finally {
+    await act(async () => second.unmount());
+    host.remove();
+    await close();
+  }
+});
+
+test("an authoritative CAS rejection clears the rejected request and reads the new revision", async () => {
+  const f = fixture(ready),
+    base = f.requestCloud;
+  f.requestCloud = async (route, options) => {
+    if (route.endsWith("/refresh")) {
+      f.calls.push({ route, ...options });
+      f.setState({ ...ready, summaryRevision: 2, activeRunId: "other-page" });
+      throw Object.assign(Error("项目摘要已变化，请刷新后重新操作。"), {
+        status: 409,
+      });
+    }
+    return base(route, options);
+  };
+  const close = await mount(f);
+  try {
+    await click("重新总结");
+    assert.ok(!button("重试原总结操作"));
+    assert.match(document.body.textContent, /第 2 版/);
+    assert.equal(button("重新总结").disabled, false);
+  } finally {
+    await close();
+  }
+});
+
+test("a durable pre-run seal resolves the matching browser operation without pretending native stop confirmation", async () => {
+  const original = await saveRefresh(),
+    f = fixture({
+      ...initial,
+      status: "queued",
+      activeRunId: "planned",
+      pendingLaunch: {
+        runId: "planned",
+        operationId: "create",
+        projectRequestId: original.requestId,
+      },
+    }),
+    base = f.requestCloud;
+  f.requestCloud = async (route, options) => {
+    if (options?.body?.name === "codex_cancel_run") {
+      f.calls.push({ route, ...options });
+      const sealedLaunch = {
+        runId: "planned",
+        operationId: "create",
+        projectRequestId: original.requestId,
+        sealedAt: new Date().toISOString(),
+      };
+      f.setState({
+        ...initial,
+        status: "failed",
+        activeRunId: "planned",
+        sealedLaunch,
+      });
+      return { result: { status: "accepted", sealedLaunch } };
+    }
+    return base(route, options);
+  };
+  const close = await mount(f, { initialPageId: "section", autoSelect: false });
+  try {
+    await click("停止总结");
+    assert.match(document.body.textContent, /已封存原总结启动/);
+    assert.doesNotMatch(document.body.textContent, /已确认停止总结/);
+    assert.ok(!button("重试原总结操作"));
+    assert.equal(button("重新总结").disabled, false);
+  } finally {
+    await close();
+  }
+});
+
+test("unreadable browser storage blocks initialization while retaining inspect and safe stop", async () => {
+  const get = window.Storage.prototype.getItem;
+  window.Storage.prototype.getItem = function () {
+    throw Error("storage unavailable");
+  };
+  const f = fixture({ ...initial, status: "running", activeRunId: "original" });
+  let close;
+  try {
+    close = await mount(f);
+    assert.equal(
+      f.calls.some((c) => c.route.endsWith("/initialize")),
+      false,
+    );
+    await click("停止总结");
+    assert.equal(
+      f.calls.find((c) => c.body?.name === "codex_cancel_run").body.arguments
+        .runId,
+      "original",
+    );
+  } finally {
+    window.Storage.prototype.getItem = get;
+    await close?.();
+  }
+});
+
+test("an explicit selection does not authorize automatic initialization after switching account", async () => {
+  const f = fixture(),
+    root = createRoot(document.getElementById("root"));
+  const render = (userId) =>
+    act(async () =>
+      root.render(
+        React.createElement(ProjectSummaryPanel, {
+          userId,
+          roomId: "room",
+          pages: [{ id: "section" }],
+          requestCloud: f.requestCloud,
+          requestLocal: f.requestLocal,
+        }),
+      ),
+    );
+  try {
+    await render("alice");
+    await act(async () => {
+      const select = document.querySelector('[aria-label="总结项目"]');
+      select.value = "section";
+      select.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    assert.equal(
+      f.calls.filter((c) => c.route.endsWith("/initialize")).length,
+      1,
+    );
+    f.setState(initial);
+    await render("bob");
+    assert.equal(
+      f.calls.filter((c) => c.route.endsWith("/initialize")).length,
+      1,
+      "new account needs its own explicit selection",
+    );
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test("binding replacement during confirmation does not turn the previous selection into a new launch", async () => {
+  const f = fixture(),
+    base = f.requestCloud;
+  let bindings = 0;
+  f.requestCloud = async (route, options) => {
+    const result = await base(route, options);
+    if (route.startsWith("/api/agent/bindings?") && ++bindings > 1)
+      return {
+        binding: {
+          ...summaryBinding,
+          revision: 3,
+          workspaceId: "new-directory",
+        },
+      };
+    return result;
+  };
+  const close = await mount(f);
+  try {
+    assert.equal(
+      f.calls.some((c) => c.method === "POST"),
+      false,
+    );
+    assert.equal(button("开始总结").disabled, false);
   } finally {
     await close();
   }
