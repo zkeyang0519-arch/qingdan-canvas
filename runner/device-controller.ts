@@ -175,6 +175,29 @@ export class RunnerDeviceController {
     this.queue = operation.catch(() => {});
     return operation;
   }
+  private identityOperation<T>(generation: number, fn: () => Promise<T>) {
+    const pending = this.config?.pairingPending
+      ? { ownerId: this.config.ownerId, runnerId: this.config.runnerId }
+      : null;
+    return this.exclusive(async () => {
+      try {
+        return await fn();
+      } catch (error) {
+        // A failed switch retains the old identity and its recovery duty, but
+        // cannot restore work cancelled by a later identity operation or close.
+        if (
+          !this.closed &&
+          generation === this.generation &&
+          pending &&
+          this.config?.pairingPending &&
+          this.config.ownerId === pending.ownerId &&
+          this.config.runnerId === pending.runnerId
+        )
+          this.schedulePending(generation);
+        throw error;
+      }
+    });
+  }
   private save() {
     this.checkOpen();
     if (this.config) this.store.saveConfig(this.config);
@@ -428,20 +451,20 @@ export class RunnerDeviceController {
     deviceName: string;
   }) {
     this.owner(input.ownerId);
+    if (
+      typeof input.pairingCode !== "string" ||
+      !input.pairingCode.trim() ||
+      !validDeviceName(input.deviceName)
+    )
+      throw new RunnerError(
+        "VALIDATION_ERROR",
+        "Pairing code and device name are required.",
+      );
     const generation = this.invalidateIdentity();
-    return this.exclusive(async () => {
+    return this.identityOperation(generation, async () => {
       this.owner(input.ownerId);
       if (generation !== this.generation)
         throw new RunnerError("CONNECTION_CHANGED", "设备配对请求已失效。");
-      if (
-        typeof input.pairingCode !== "string" ||
-        !input.pairingCode.trim() ||
-        !validDeviceName(input.deviceName)
-      )
-        throw new RunnerError(
-          "VALIDATION_ERROR",
-          "Pairing code and device name are required.",
-        );
       if (this.config && !this.config.pairingPending)
         throw new RunnerError("ALREADY_PAIRED", "Runner is already paired.");
       let config = this.config;
@@ -697,7 +720,7 @@ export class RunnerDeviceController {
       );
     this.owner(ownerId);
     const generation = this.invalidateIdentity();
-    return this.exclusive(async () => {
+    return this.identityOperation(generation, async () => {
       this.owner(ownerId);
       if (!this.config) return this.status(ownerId);
       if (this.store.leases().length || this.execution?.executor.hasHold)
@@ -781,7 +804,7 @@ export class RunnerDeviceController {
     const generation = this.config
       ? this.invalidateIdentity()
       : this.generation;
-    return this.exclusive(async () => {
+    return this.identityOperation(generation, async () => {
       this.owner(ownerId);
       if (!this.config) {
         const receipt = this.store.resetReceipt();

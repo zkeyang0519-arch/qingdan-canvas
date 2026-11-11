@@ -217,6 +217,179 @@ test("manual pair during a pending outage does not disable automatic recovery", 
   assert.equal(f.controller.status("alice").paired, true);
 });
 
+for (const operation of [
+  "reset GET503",
+  "legacy forget busy",
+  "pair credential read failure",
+])
+  test(
+    "identity failure restores pending recovery: " + operation,
+    async (t) => {
+      const clock = new Clock();
+      const calls = [];
+      let online = false;
+      const f = await fixture(t, {
+        pending: true,
+        clock,
+        fetch: async (_url, init) => {
+          calls.push(clock.now());
+          return online
+            ? token(JSON.parse(init.body).runnerId)
+            : new Response("{}", { status: 503 });
+        },
+      });
+      await f.controller.start();
+      await tick();
+      assert.equal(clock.timers.size, 1);
+      const original = Object.assign(Error(operation), { status: 503 });
+      if (operation === "reset GET503") {
+        await assert.rejects(
+          f.controller.reset("alice", f.config.runnerId, async () => {
+            throw original;
+          }),
+          (error) => error === original,
+        );
+      } else if (operation === "legacy forget busy") {
+        const device = new api.DeviceStore(path.join(f.base, "device.sqlite"));
+        device.saveLease({
+          workspaceId: "workspace",
+          runId: "unknown",
+          leaseEpoch: 1,
+          expiresAt: 1,
+        });
+        try {
+          await assert.rejects(f.controller.forget("alice"), {
+            code: "WORKSPACE_BUSY",
+          });
+          assert.equal(device.leases().length, 1);
+        } finally {
+          device.close();
+        }
+      } else {
+        const read = f.credentials.read.bind(f.credentials);
+        f.credentials.read = async () => {
+          throw original;
+        };
+        await assert.rejects(
+          f.controller.pair({
+            ownerId: "alice",
+            pairingCode: "retry",
+            deviceName: "PC",
+          }),
+          (error) => error === original,
+        );
+        f.credentials.read = read;
+      }
+      assert.equal(persisted(f).runnerId, f.config.runnerId);
+      assert.equal(persisted(f).pairingPending, true);
+      assert.equal(f.credentials.values.size, 1);
+      assert.equal(
+        clock.timers.size,
+        1,
+        "the retained identity must keep its automatic recovery",
+      );
+      await clock.advance(91000);
+      assert.deepEqual(
+        calls,
+        [0, 1000, 3000, 7000, 15000, 31000, 61000, 91000],
+      );
+      online = true;
+      await clock.advance(30000);
+      assert.equal(f.controller.status("alice").paired, true);
+      assert.equal(clock.timers.size, 0);
+    },
+  );
+
+test("identity failure from invalid pair input preserves the existing timer and generation", async (t) => {
+  const clock = new Clock();
+  let online = false;
+  const f = await fixture(t, {
+    pending: true,
+    clock,
+    fetch: async (_url, init) =>
+      online
+        ? token(JSON.parse(init.body).runnerId)
+        : new Response("{}", { status: 503 }),
+  });
+  await f.controller.start();
+  await tick();
+  const generation = f.controller.generation;
+  const timers = [...clock.timers];
+  await clock.advance(500);
+  for (const input of [
+    { pairingCode: " ", deviceName: "PC" },
+    { pairingCode: "retry", deviceName: "" },
+  ])
+    await assert.rejects(f.controller.pair({ ownerId: "alice", ...input }), {
+      code: "VALIDATION_ERROR",
+    });
+  assert.equal(f.controller.generation, generation);
+  assert.deepEqual([...clock.timers], timers);
+  online = true;
+  await clock.advance(500);
+  assert.equal(f.controller.status("alice").paired, true);
+});
+
+for (const successor of ["close", "new generation"])
+  test(
+    "identity failure does not revive pending recovery after " + successor,
+    async (t) => {
+      const clock = new Clock();
+      let calls = 0,
+        finishToken,
+        failEvidence;
+      const f = await fixture(t, {
+        pending: true,
+        clock,
+        fetch: (_url, init) => {
+          calls++;
+          return calls === 1
+            ? Promise.resolve(new Response("{}", { status: 503 }))
+            : new Promise((resolve) => {
+                finishToken = () =>
+                  resolve(token(JSON.parse(init.body).runnerId));
+              });
+        },
+      });
+      await f.controller.start();
+      await tick();
+      assert.equal(clock.timers.size, 1);
+      const original = Object.assign(Error("GET503"), { status: 503 });
+      const failed = f.controller.reset(
+        "alice",
+        f.config.runnerId,
+        () =>
+          new Promise((_, reject) => {
+            failEvidence = () => reject(original);
+          }),
+      );
+      const rejected = assert.rejects(failed, (error) => error === original);
+      for (let n = 0; n < 30 && !failEvidence; n++) await tick();
+      assert.ok(failEvidence);
+      const next =
+        successor === "close"
+          ? f.controller.close()
+          : f.controller.reconnect("alice");
+      failEvidence();
+      await rejected;
+      if (successor === "new generation") {
+        for (let n = 0; n < 30 && !finishToken; n++) await tick();
+        assert.ok(finishToken);
+      }
+      assert.equal(
+        clock.timers.size,
+        0,
+        "old failure must not arm a timer during its successor",
+      );
+      await clock.advance(60000);
+      assert.equal(calls, successor === "close" ? 1 : 2);
+      finishToken?.();
+      await next;
+      assert.equal(clock.timers.size, 0);
+      assert.equal(persisted(f).pairingPending, successor === "close");
+    },
+  );
+
 test("legacy forget also refuses unknown native execution before an executor is created", async (t) => {
   const f = await fixture(t);
   const journal = new api.ExecutionStore(
