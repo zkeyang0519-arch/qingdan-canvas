@@ -13,6 +13,7 @@ let cursor = null,
   selection = 0,
   viewGeneration = 0,
   pollSequence = 0,
+  acceptedPollSequence = 0,
   busy = false,
   lastStatus = null,
   stopped = false;
@@ -63,7 +64,7 @@ function invalidateProjects() {
   drawRows();
   $("listMessage").textContent = "连接更新后重新读取会话。";
 }
-async function api(route, body) {
+async function api(route, body, signal) {
   try {
     const res = await fetch(route, {
       method: body === undefined ? "GET" : "POST",
@@ -72,6 +73,7 @@ async function api(route, body) {
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {}),
     });
     const data = await res.json();
     if (!res.ok)
@@ -160,7 +162,7 @@ function setBusy(value) {
 }
 async function connect(body) {
   if (busy || stopped) return;
-  ++pollSequence;
+  acceptedPollSequence = ++pollSequence;
   setBusy(true);
   notice("");
   notice("", "transport");
@@ -169,14 +171,14 @@ async function connect(body) {
   invalidateProjects();
   try {
     const s = await api(body ? "/api/config" : "/api/connect", body || {});
-    ++pollSequence;
+    acceptedPollSequence = ++pollSequence;
     render(s);
     if (["ready", "login_required"].includes(s.status)) {
       notice("");
       await load(false);
     }
   } catch (e) {
-    ++pollSequence;
+    acceptedPollSequence = ++pollSequence;
     notice(e.message);
     $("status").textContent = "连接检查未完成";
   } finally {
@@ -304,34 +306,28 @@ $("quit").addEventListener("click", async () => {
 });
 async function poll() {
   if (stopped || busy) return;
-  const generation = viewGeneration;
   const seq = ++pollSequence;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const s = await api("/api/status");
-    if (
-      stopped ||
-      busy ||
-      generation !== viewGeneration ||
-      seq !== pollSequence
-    )
-      return;
+    const s = await api("/api/status", undefined, controller.signal);
+    if (stopped || busy || seq <= acceptedPollSequence) return;
+    acceptedPollSequence = seq;
     const recovered =
       readable(s) && (!readable(lastStatus) || !sameConnection(lastStatus, s));
     notice("", "transport");
     render(s);
     if (recovered) await load();
   } catch {
-    if (
-      !stopped &&
-      !busy &&
-      generation === viewGeneration &&
-      seq === pollSequence
-    ) {
+    if (!stopped && !busy && seq > acceptedPollSequence) {
+      acceptedPollSequence = seq;
       lastStatus = null;
       invalidateProjects();
       $("status").textContent = "无法连接后台程序";
       notice("连接器可能已退出，请重新打开程序。", "transport");
     }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 if (!token) notice("请通过程序启动入口打开此页，以获取本次连接的访问凭证。");

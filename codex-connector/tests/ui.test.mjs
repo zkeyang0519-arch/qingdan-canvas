@@ -497,3 +497,125 @@ test("manual reconnect blocks interval requests and fences a late preexisting po
   assert.equal(d.getElementById("notice").hidden, true);
   assert.match(d.getElementById("sessions").textContent, /新连接会话/);
 });
+
+function controlledClock(w) {
+  let now = 0,
+    nextId = 0;
+  const timers = new Map();
+  w.setTimeout = (callback, delay) => {
+    const id = ++nextId;
+    timers.set(id, { at: now + delay, callback });
+    return id;
+  };
+  w.clearTimeout = (id) => timers.delete(id);
+  return {
+    async advance(ms) {
+      const end = now + ms;
+      while (true) {
+        const due = [...timers]
+          .filter(([, timer]) => timer.at <= end)
+          .sort((a, b) => a[1].at - b[1].at)[0];
+        if (!due) break;
+        const [id, timer] = due;
+        now = timer.at;
+        timers.delete(id);
+        timer.callback();
+        await new Promise(setImmediate);
+      }
+      now = end;
+      await new Promise(setImmediate);
+    },
+  };
+}
+
+test("five-second status replies keep applying while three-second polls overlap", async (t) => {
+  const { w, d, respond, poll } = await setup(t);
+  const clock = controlledClock(w);
+  let issued = 0;
+  respond((url) => {
+    if (url.pathname === "/api/status") {
+      const n = ++issued;
+      return new Promise((resolve) =>
+        w.setTimeout(
+          () =>
+            resolve(
+              response({
+                ...ready,
+                connection: { ...ready.connection, generation: n + 1 },
+                install: {
+                  source: "fixture",
+                  path: `C:\\poll-${n}\\codex.exe`,
+                },
+              }),
+            ),
+          5000,
+        ),
+      );
+    }
+    if (url.pathname === "/api/sessions") return response(newPage);
+  });
+  // Invoke the captured interval callback at t=0, 3s, 6s. No wall-clock waits.
+  const first = poll();
+  await clock.advance(3000);
+  const second = poll();
+  await clock.advance(2000);
+  await first;
+  assert.match(
+    d.getElementById("installation").textContent,
+    /C:\\poll-1\\codex.exe/,
+  );
+  await clock.advance(1000);
+  const third = poll();
+  await clock.advance(2000);
+  await second;
+  assert.match(
+    d.getElementById("installation").textContent,
+    /C:\\poll-2\\codex.exe/,
+  );
+  await clock.advance(3000);
+  await third;
+  assert.match(
+    d.getElementById("installation").textContent,
+    /C:\\poll-3\\codex.exe/,
+  );
+  assert.match(d.getElementById("sessions").textContent, /新连接会话/);
+});
+
+test("only status polling times out at ten seconds and a later slow response recovers", async (t) => {
+  const { w, d, calls, respond, poll } = await setup(t);
+  const clock = controlledClock(w);
+  respond((url, options) => {
+    if (url.pathname === "/api/status")
+      return new Promise((resolve, reject) =>
+        options.signal?.addEventListener(
+          "abort",
+          () => reject(options.signal.reason),
+          { once: true },
+        ),
+      );
+  });
+  const pending = poll();
+  await clock.advance(9999);
+  assert.equal(d.getElementById("status").textContent, "Codex 已连接");
+  await clock.advance(1);
+  assert.equal(d.getElementById("status").textContent, "无法连接后台程序");
+  await pending;
+  respond((url) => {
+    if (url.pathname === "/api/status")
+      return new Promise((resolve) =>
+        w.setTimeout(() => resolve(response(ready)), 5000),
+      );
+    if (url.pathname === "/api/sessions") return response(newPage);
+  });
+  const recovered = poll();
+  await clock.advance(5000);
+  await recovered;
+  assert.equal(d.getElementById("status").textContent, "Codex 已连接");
+  assert.equal(d.getElementById("notice").hidden, true);
+  assert.match(d.getElementById("sessions").textContent, /新连接会话/);
+  assert.ok(
+    calls
+      .filter((c) => c.url.pathname !== "/api/status")
+      .every((c) => c.options.signal === undefined),
+  );
+});
