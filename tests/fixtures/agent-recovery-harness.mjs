@@ -159,7 +159,11 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
         },
         async claimLease(id, idRun) {
           let lease = await storage.get(`fixture:lease:${idRun}`);
-          if (!lease) { lease = { workspaceId: id, runId: idRun, leaseEpoch: 1, expiresAt: Date.now() + 600_000 }; await storage.put(`fixture:lease:${idRun}`, lease); }
+          if (!lease) {
+            const leaseEpoch = (await storage.get(`fixture:lease-epoch:${id}`) ?? 0) + 1;
+            lease = { workspaceId: id, runId: idRun, leaseEpoch, expiresAt: Date.now() + 600_000 };
+            await storage.put({ [`fixture:lease:${idRun}`]: lease, [`fixture:lease-epoch:${id}`]: leaseEpoch });
+          }
           options.store.saveLease(lease); return lease;
         },
         async releaseLease(id, idRun, confirmedStopped) {
@@ -185,6 +189,7 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
   });
   const fixture = {
     base, workspace, workspaceId, items, principal, packets, errors,
+    journalPath: path.join(stateDir, "execution", api.digest([principal.ownerId, principal.runnerId]), "execution.sqlite"),
     get controller() { return controller; }, get executor() { return controller.execution.executor; },
     get journal() { return controller.execution.journal; }, get runs() { return controller.execution.runs; },
     get storage() { return storage; }, get dispatch() { return dispatch; }, get runId() { return runId; },
@@ -222,6 +227,25 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
       await openDevice();
     },
     async tick() { await controller.execution.executor.tick(); },
+    // Fault tests can advance only the durable consumer stages while an older
+    // RPC is paused, creating an adversarial ABA boundary without a second
+    // native consumer or bypassing public Dispatch/lease authorization.
+    async stageOffer() {
+      const { offers } = await native("poll", {}), offer = offers[0];
+      assert.ok(offer);
+      const journal = fixture.journal;
+      let held = journal.reserve(offer.runId, offer.workspaceId);
+      assert.ok(held);
+      await controller.registry.acquire(held.workspaceId, held.runId, held.lockToken);
+      held = journal.updateHold(held, "locked");
+      const lease = await transport.claimLease(held.workspaceId, held.runId);
+      held = journal.updateHold(held, "claimed");
+      held = journal.bindClaim(held, lease.leaseEpoch);
+      const delivery = (await native("poll", {})).deliveries[0];
+      await transport.acceptExecutionEnvelope(delivery.envelope);
+      journal.accept(delivery.envelope, delivery.snapshot);
+      return held;
+    },
     async until(predicate) {
       for (let attempt = 0; attempt < 100; attempt++) {
         await fixture.tick();
@@ -230,9 +254,9 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
       }
       assert.fail(`recovery condition not reached; cloud errors=${JSON.stringify(errors.slice(-4))}; run=${JSON.stringify(fixture.runs.getRun(runId))}`);
     },
-    async create() {
+    async create({ batch = true } = {}) {
       await controller.executionContext(principal.ownerId, workspaceId);
-      const intent = await request("intent", { principal, input: { requestId: "recovery-submit", bindingId: principal.bindingId, bindingRevision: 1, kind: "task", autoComplete: true, sourceTasks: items.map(item => ({ noteId: item.source.taskRef.noteId, taskId: item.taskId, generation: 1, specRevision: 1 })) } });
+      const intent = await request("intent", { principal, input: { requestId: "recovery-submit", bindingId: principal.bindingId, bindingRevision: 1, kind: "task", ...(batch ? { autoComplete: true, sourceTasks: items.map(item => ({ noteId: item.source.taskRef.noteId, taskId: item.taskId, generation: 1, specRevision: 1 })) } : { instruction: "Single task that permits a later reply" }) } });
       runId = intent.input.runId;
       created = await dispatch.tool(principal, "codex_create_run", intent.input);
       return created;

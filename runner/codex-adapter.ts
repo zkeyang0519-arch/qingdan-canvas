@@ -63,6 +63,11 @@ import type {
   Workspace,
 } from "./types";
 
+export type NativeOperationGuard = {
+  assertCurrent: () => void;
+  assertDispatch: () => void;
+  canStop: () => boolean;
+};
 export type AdapterOptions = ProcessOptions & {
   store: RunnerStore;
   runnerId: string;
@@ -74,8 +79,7 @@ export type AdapterOptions = ProcessOptions & {
   now?: () => number;
   desktopProjectSync?: (root: string) => Promise<void>;
   // Synchronous durable fence at the actual RPC send, including after awaits.
-  assertDispatchAllowed?: (runId: string) => void;
-  canStop?: (runId: string) => boolean;
+  captureGuard?: (runId: string) => NativeOperationGuard;
 };
 export function parseApprovalsReviewer(
   value?: unknown,
@@ -87,9 +91,9 @@ export function parseApprovalsReviewer(
     "审批复核方式仅支持 user 或 auto_review。",
   );
 }
-type DispatchGuard = (
+type DispatchGuard = ((
   stage: "thread" | "name" | "resume" | "turn" | "steer",
-) => Promise<void>;
+) => Promise<void>) & { native?: NativeOperationGuard };
 export class CodexAdapter {
   private client: CodexClient;
   private changes = new EventEmitter();
@@ -206,6 +210,9 @@ export class CodexAdapter {
       });
     this.changes.emit("change");
     return { status: "reconciliation_required", runId, reason };
+  }
+  private currentOperation(guard?: NativeOperationGuard) {
+    try { guard?.assertCurrent(); return true; } catch { return false; }
   }
   private syncDesktop(runId: string) {
     const notify = this.options.desktopProjectSync;
@@ -326,6 +333,8 @@ export class CodexAdapter {
     if (this.closed) throw new RunnerError("CODEX_CLOSED", "Adapter is closed");
     const snapshot = parseExecutionSnapshot(input),
       root = this.root(snapshot.workspaceId);
+    const native = guard?.native ?? this.options.captureGuard?.(snapshot.runId);
+    native?.assertCurrent();
     const previous = this.store.getRun(snapshot.runId);
     // A replay checks identity but does not re-check a baseline changed by its
     // own completed work, nor issue any RPC with execution side effects.
@@ -377,7 +386,7 @@ export class CodexAdapter {
     );
     try {
       await guard?.("thread");
-      this.options.assertDispatchAllowed?.(run.runId);
+      native?.assertDispatch();
       this.store.patchRun(run.runId, { launchIntent: "thread_requested" });
       const result = await this.client.request("thread/start", {
         cwd: root,
@@ -391,7 +400,7 @@ export class CodexAdapter {
       });
       // A reconciliation may finish while thread/start is pending. Its late
       // reply must not revive the run or proceed to name/turn/start.
-      this.options.assertDispatchAllowed?.(run.runId);
+      native?.assertDispatch();
       if (!result.thread?.id || rootKey(result.thread.cwd) !== rootKey(root))
         throw new RunnerError(
           "CODEX_PROTOCOL_ERROR",
@@ -403,7 +412,7 @@ export class CodexAdapter {
       });
       this.attachedThreads.add(result.thread.id);
       await guard?.("name");
-      this.options.assertDispatchAllowed?.(run.runId);
+      native?.assertDispatch();
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
         name: runTitle(snapshot),
@@ -420,7 +429,7 @@ export class CodexAdapter {
           : undefined;
       const summaryEvidence = summaryContext
         ? await readSummaryEvidence(root, summaryContext.gitBaseline) : undefined;
-      this.options.assertDispatchAllowed?.(run.runId);
+      native?.assertDispatch();
       const prepared = this.store.patchRun(run.runId, {
         launchIntent: "turn_sent",
         pendingRequestId: requestId,
@@ -431,6 +440,7 @@ export class CodexAdapter {
         "turn/start",
         this.turnParams(prepared, requestId),
       );
+      native?.assertDispatch();
       if (!response.turn?.id)
         throw new RunnerError("CODEX_PROTOCOL_ERROR", "Missing turn ID");
       const launch: LaunchResult = {
@@ -443,6 +453,8 @@ export class CodexAdapter {
       this.syncDesktop(run.runId);
       return launch;
     } catch (error) {
+      if (!this.currentOperation(native))
+        return { status: "reconciliation_required", runId: run.runId, reason: "原执行占用已结束。" };
       const current = this.getRun(run.runId);
       if (!current.terminal && (
         current.launchIntent === "prepared" ||
@@ -666,6 +678,7 @@ export class CodexAdapter {
     const run = this.getRun(runId);
     if (run.activeTurnId !== turn.id || run.terminal) return;
     if (!["completed", "failed", "interrupted"].includes(turn.status)) return;
+    const native = this.options.captureGuard?.(runId);
     if (
       run.resultChannel === "tool" &&
       turn.status === "completed" &&
@@ -679,7 +692,8 @@ export class CodexAdapter {
             this.complete(runId, { ...turn, items }, cleanupConfirmed, true),
           )
           .catch((error) => {
-            this.uncertain(runId, `任务结果回执需要核实：${String(error)}`);
+            if (this.currentOperation(native))
+              this.uncertain(runId, `任务结果回执需要核实：${String(error)}`);
           })
           .finally(() => this.completionReads.delete(turn.id));
         this.completionReads.set(turn.id, read);
@@ -742,10 +756,10 @@ export class CodexAdapter {
     // commands; their final release goes through finishManagedBatch instead.
     if (batchPatch.terminal !== false && !cleanupConfirmed) {
       if (!this.completionCleanups.has(runId)) {
-        const cleanup = this.confirmRunStopped(runId)
+        const cleanup = this.confirmRunStopped(runId, undefined, { readOnly: false, native })
           .then(() => this.complete(runId, turn, true, historyConfirmed))
           .catch((error) => {
-            this.uncertain(runId, String(error));
+            if (this.currentOperation(native)) this.uncertain(runId, String(error));
           })
           .finally(() => this.completionCleanups.delete(runId));
         this.completionCleanups.set(runId, cleanup);
@@ -948,6 +962,7 @@ export class CodexAdapter {
         "审批或问题已结束，需要刷新状态。",
       );
     const run = this.getRun(request.runId);
+    const native = this.options.captureGuard?.(run.runId);
     if (
       !this.available ||
       run.terminal ||
@@ -1004,7 +1019,7 @@ export class CodexAdapter {
       ).details.allowedDecisions?.includes((response as any).decision)
     )
       throw new RunnerError("ACCESS_DENIED", "当前权限不允许此审批决定。");
-    this.options.assertDispatchAllowed?.(run.runId);
+    native?.assertDispatch();
     this.client.respond(request.wireId, response);
     this.resolveRequest(run.runId, requestId, "responded");
     this.store.patchRun(run.runId, {
@@ -1042,6 +1057,8 @@ export class CodexAdapter {
     guard?: DispatchGuard,
     permit?: NonNullable<RunRecord["batchPermit"]>,
   ): Promise<CommandReceipt> {
+    const native = guard?.native ?? this.options.captureGuard?.(runId);
+    native?.assertCurrent();
     let run = this.getRun(runId);
     if (
       !run.batch ||
@@ -1135,7 +1152,7 @@ export class CodexAdapter {
       batch.items[nextIndex].status = "running";
       batch.items[nextIndex].summary = "";
       delete batch.items[nextIndex].completedTurnId;
-      this.options.assertDispatchAllowed?.(runId);
+      native?.assertDispatch();
       run = this.store.patchRun(runId, {
         batch,
         batchPhase: "running",
@@ -1160,6 +1177,7 @@ export class CodexAdapter {
         "turn/start",
         this.turnParams(run, requestId, repairMessage),
       );
+      native?.assertDispatch();
       if (!response.turn?.id)
         throw new RunnerError("CODEX_PROTOCOL_ERROR", "Missing batch turn ID");
       this.mapTurn(runId, response.turn.id);
@@ -1174,10 +1192,8 @@ export class CodexAdapter {
       return receipt;
     } catch (error) {
       if (!sent) throw error;
-      this.uncertain(
-        runId,
-        error instanceof Error ? error.message : "下一项启动结果未知",
-      );
+      if (this.currentOperation(native))
+        this.uncertain(runId, error instanceof Error ? error.message : "下一项启动结果未知");
       return {
         commandId: requestId,
         runId,
@@ -1188,6 +1204,7 @@ export class CodexAdapter {
     }
   }
   async finishManagedBatch(runId: string, guard: DispatchGuard) {
+    const native = guard.native ?? this.options.captureGuard?.(runId);
     const run = this.getRun(runId);
     if (
       run.snapshot.kind !== "task" ||
@@ -1202,7 +1219,7 @@ export class CodexAdapter {
     await guard("turn");
     // Confirm inherited background terminals have stopped before releasing the
     // native workspace lease; a completed model turn alone is not that proof.
-    await this.confirmRunStopped(runId, () => guard("turn"));
+    await this.confirmRunStopped(runId, () => guard("turn"), { readOnly: false, native });
     await guard("turn");
     const current = this.getRun(runId);
     if (
@@ -1224,6 +1241,8 @@ export class CodexAdapter {
     guard?: DispatchGuard,
   ): Promise<CommandReceipt> {
     runnerCommandSchema.parse({ type: "continue_run", ...input });
+    const native = guard?.native ?? this.options.captureGuard?.(input.runId);
+    native?.assertCurrent();
     let run = this.getRun(input.runId);
     this.assertBatchItemUnsealed(run);
     if (run.batchPhase === "complete" || run.batchPhase === "cancelled")
@@ -1267,7 +1286,7 @@ export class CodexAdapter {
       if (input.mode === "steer" && !readySupplement) {
         await guard?.("steer");
         this.assertBatchItemUnsealed(this.getRun(run.runId));
-        this.options.assertDispatchAllowed?.(run.runId);
+        native?.assertDispatch();
         this.store.patchRun(run.runId, { reportedResult: null });
         const result = await this.client.request("turn/steer", {
           threadId: run.threadId,
@@ -1281,6 +1300,7 @@ export class CodexAdapter {
             },
           ],
         });
+        native?.assertDispatch();
         if (result.turnId !== input.expectedTurnId)
           throw new RunnerError(
             "CODEX_PROTOCOL_ERROR",
@@ -1307,7 +1327,7 @@ export class CodexAdapter {
           item.summary = "";
           delete item.completedTurnId;
         }
-        this.options.assertDispatchAllowed?.(run.runId);
+        native?.assertDispatch();
         run = this.store.patchRun(run.runId, {
           active: true,
           terminal: false,
@@ -1326,6 +1346,7 @@ export class CodexAdapter {
           "turn/start",
           this.turnParams(run, input.requestId, input.message),
         );
+        native?.assertDispatch();
         this.attachedThreads.add(run.threadId!);
         this.mapTurn(run.runId, response.turn.id);
       }
@@ -1342,10 +1363,8 @@ export class CodexAdapter {
     } catch (error) {
       if (error instanceof RunnerError && error.code === "ITEM_SEALED")
         throw error;
-      this.uncertain(
-        run.runId,
-        error instanceof Error ? error.message : "补充要求的结果未知",
-      );
+      if (this.currentOperation(native))
+        this.uncertain(run.runId, error instanceof Error ? error.message : "补充要求的结果未知");
       return {
         commandId: input.requestId,
         runId: run.runId,
@@ -1367,7 +1386,8 @@ export class CodexAdapter {
       );
   }
   async cancelRun(runId: string): Promise<CommandReceipt> {
-    this.assertStopAllowed(runId);
+    const native = this.options.captureGuard?.(runId);
+    this.assertStopAllowed(native);
     const run = this.getRun(runId);
     this.resolveRequests(
       runId,
@@ -1380,9 +1400,9 @@ export class CodexAdapter {
         status: "cancel_requested",
       });
       try {
-        await this.confirmRunStopped(runId);
+        await this.confirmRunStopped(runId, undefined, { readOnly: false, native });
       } catch (error) {
-        this.uncertain(runId, String(error));
+        if (this.currentOperation(native)) this.uncertain(runId, String(error));
         return {
           commandId: `cancel-${runId}`,
           runId,
@@ -1391,6 +1411,7 @@ export class CodexAdapter {
           turnId: run.activeTurnId,
         };
       }
+      native?.assertCurrent();
       const batch = structuredClone(run.batch!);
       for (let i = batch.currentIndex + 1; i < batch.items.length; i++)
         batch.items[i].status = "cancelled";
@@ -1439,13 +1460,13 @@ export class CodexAdapter {
       cancelRequested: true,
     });
     try {
-      this.assertStopAllowed(runId);
+      this.assertStopAllowed(native);
       await this.client.request("turn/interrupt", {
         threadId: run.threadId,
         turnId: run.activeTurnId,
       });
     } catch (error) {
-      this.uncertain(runId, String(error));
+      if (this.currentOperation(native)) this.uncertain(runId, String(error));
       return { ...receipt, status: "reconciliation_required" };
     }
     return receipt;
@@ -1483,6 +1504,7 @@ export class CodexAdapter {
     return { thread: response.thread, turns: await this.turns(threadId) };
   }
   async reconcileRun(runId: string): Promise<ReconcileResult> {
+    const native = this.options.captureGuard?.(runId);
     const run = this.getRun(runId);
     if (run.terminal) return { runId, status: "completed" };
     if (!run.threadId)
@@ -1496,6 +1518,7 @@ export class CodexAdapter {
         run.threadId,
         run.snapshot.workspaceId,
       );
+      native?.assertCurrent();
       // Notifications are live while history RPCs are in flight. Never replace
       // a newer terminal state or a different pending turn with this snapshot.
       const current = this.getRun(runId);
@@ -1559,6 +1582,7 @@ export class CodexAdapter {
       if (turn.status !== "inProgress") {
         if (!turn.items.some((item) => item.type === "agentMessage"))
           turn.items = await this.items(run.threadId, turn.id);
+        native?.assertCurrent();
         this.complete(runId, turn);
         await this.completionReads.get(turn.id);
         await this.completionCleanups.get(runId);
@@ -1574,6 +1598,7 @@ export class CodexAdapter {
             ? { developerInstructions: runInstructions(run.snapshot.kind) }
             : {}),
         });
+        native?.assertCurrent();
         this.attachedThreads.add(run.threadId);
       }
       if (pending)
@@ -1594,11 +1619,13 @@ export class CodexAdapter {
             : "running",
       };
     } catch (error) {
+      if (!this.currentOperation(native)) return { runId, status: "reconciliation_required", reason: "原执行占用已改变。" };
       this.attachedThreads.delete(run.threadId);
       // A live completion can be resolving its receipt while this independent
       // history query fails. Let that authoritative result settle first.
       if (run.activeTurnId) await this.completionReads.get(run.activeTurnId);
       await this.completionCleanups.get(runId);
+      if (!this.currentOperation(native)) return { runId, status: "reconciliation_required", reason: "原执行占用已改变。" };
       const current = this.getRun(runId);
       if (current.terminal) return { runId, status: "completed" };
       if (
@@ -1621,9 +1648,11 @@ export class CodexAdapter {
   /** Recover only a uniquely recorded request identity; no completion cleanup
    * or interrupt is allowed on the inspect_only path. */
   async identifyRunTurn(runId: string) {
+    const native = this.options.captureGuard?.(runId);
     const run = this.getRun(runId);
     if (!run.threadId) throw new RunnerError("RECONCILIATION_REQUIRED", "原会话 ID 未知，不能猜测匹配。");
     const history = await this.readThread(run.threadId, run.snapshot.workspaceId);
+    native?.assertCurrent();
     const current = this.getRun(runId);
     if (current.threadId !== run.threadId || current.activeTurnId !== run.activeTurnId || current.pendingRequestId !== run.pendingRequestId)
       throw new RunnerError("RECONCILIATION_REQUIRED", "核对期间原轮次已改变。");
@@ -1635,13 +1664,16 @@ export class CodexAdapter {
     if (run.pendingRequestId) this.mapTurn(runId, matches[0].id);
     return { status: matches[0].status };
   }
-  private assertStopAllowed(runId: string) {
-    if (this.options.canStop?.(runId) === false)
+  private assertStopAllowed(native?: NativeOperationGuard) {
+    native?.assertCurrent();
+    if (native?.canStop() === false)
       throw new RunnerError("RECONCILIATION_REQUIRED", "当前票据仅允许只读核对；请先请求停止。");
   }
-  async confirmRunStopped(runId: string, guard?: () => Promise<void>, options?: { readOnly: boolean }) {
+  async confirmRunStopped(runId: string, guard?: () => Promise<void>, options?: { readOnly: boolean; native?: NativeOperationGuard }) {
+    const native = options?.native ?? this.options.captureGuard?.(runId);
     const run = this.getRun(runId);
     const unchanged = () => {
+      native?.assertCurrent();
       const current = this.getRun(runId);
       if (
         !this.available || !run.threadId || !run.activeTurnId ||
@@ -1679,15 +1711,17 @@ export class CodexAdapter {
       await checkHistory();
       this.attachedThreads.add(run.threadId!);
     }
-    if (options?.readOnly || this.options.canStop?.(runId) === false)
+    if (options?.readOnly || native?.canStop() === false)
       await confirmThreadTerminalsStopped(this.client, run.threadId!);
     else
-      await stopThreadTerminals(this.client, run.threadId!, () => this.assertStopAllowed(runId));
+      await stopThreadTerminals(this.client, run.threadId!, () => this.assertStopAllowed(native));
     await checkHistory();
   }
   async confirmPausedCheckpoint(runId: string, guard: () => Promise<void>) {
+    const native = this.options.captureGuard?.(runId);
     const run=this.getRun(runId);
     const unchanged=()=>{
+      native?.assertCurrent();
       const current=this.getRun(runId);
       if(current.terminal||!current.active||current.batchPhase!=="ready"||current.pendingRequestId||current.threadId!==run.threadId||current.activeTurnId!==run.activeTurnId)
         throw new RunnerError("RECONCILIATION_REQUIRED","原暂停点已改变，不能恢复租约。");
@@ -1711,7 +1745,7 @@ export class CodexAdapter {
       developerInstructions:runInstructions(run.snapshot.kind),
     });
     await checkHistory();
-    await stopThreadTerminals(this.client,run.threadId!);
+    await stopThreadTerminals(this.client,run.threadId!,()=>this.assertStopAllowed(native));
     await checkHistory();
     await guard();
     unchanged();

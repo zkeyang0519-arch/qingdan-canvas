@@ -17,7 +17,18 @@ let state = existsSync(statePath)
   : { threads: [], calls: [] };
 const save = () => {
   writeFileSync(`${statePath}.next`, JSON.stringify(state));
-  renameSync(`${statePath}.next`, statePath);
+  // Windows readers can briefly deny replacement. Keep the snapshot atomic and
+  // surface persistent failures instead of killing the fake on a sharing race.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      renameSync(`${statePath}.next`, statePath);
+      break;
+    } catch (error) {
+      if (process.platform !== "win32" || error.code !== "EPERM" || attempt >= 9)
+        throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
 };
 const mode = () => process.env.FAKE_CODEX_MODE ?? "normal";
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -277,6 +288,16 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
     return reply({});
   }
   if (msg.method === "thread/read" || msg.method === "thread/resume") {
+    if (msg.method === "thread/resume" && existsSync(`${statePath}.hold-resume`) && !state.heldResume) {
+      state.heldResume = true;
+      save();
+      const timer = setInterval(() => {
+        if (!existsSync(`${statePath}.release-resume`)) return;
+        clearInterval(timer);
+        reply({ thread });
+      }, 5);
+      return;
+    }
     if (
       msg.method === "thread/read" &&
       ["complete-during-read", "complete-during-read-error"].includes(mode()) &&

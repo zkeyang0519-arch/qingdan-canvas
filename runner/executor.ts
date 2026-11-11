@@ -14,11 +14,13 @@ import {
   CodexAdapter,
   parseApprovalsReviewer,
   type AdapterOptions,
+  type NativeOperationGuard,
 } from "./codex-adapter";
 import type { DeviceStore } from "./device-store";
 import { RunnerError } from "./errors";
 import {
   ExecutionStore,
+  sameExecutionClaim,
   type HeldRun,
   type JournalEntry,
   type NativeAck,
@@ -203,11 +205,11 @@ export class RunnerExecutor {
     return this.working;
   }
   requestReconciliation() {
-    const held = this.o.store.held();
+    const held = this.boundHold();
     if (!held || held.phase !== "claimed" || this.closed) return;
     // User reconnect may return before the socket comes online. Keep the
     // intent durable and fence late sends until the consumer handles it.
-    this.o.store.requestReconciliation(held.runId);
+    this.o.store.requestReconciliation(held);
     void this.tick();
   }
   async suspend() {
@@ -242,6 +244,46 @@ export class RunnerExecutor {
     const t = this.o.transport();
     return t?.status.connectionStatus === "online" ? t : undefined;
   }
+  private boundHold() {
+    const held = this.o.store.held(), lease = held && this.o.device.lease(held.runId);
+    return held && !held.leaseEpoch && lease?.workspaceId === held.workspaceId
+      ? this.o.store.bindClaim(held, lease.leaseEpoch) : held;
+  }
+  private captureNativeGuard(runId: string): NativeOperationGuard {
+    const held = this.boundHold(), entry = this.o.store.latest(runId);
+    if (!held || held.runId !== runId)
+      throw new RunnerError("LEASE_MISMATCH", "原生操作没有对应的本机占用。");
+    return this.nativeGuard(held, entry?.envelope.commandId);
+  }
+  private nativeGuard(held: HeldRun, commandId?: string): NativeOperationGuard {
+    // This immutable closure belongs to this operation, not whatever held or
+    // latest command a delayed RPC happens to find when its reply arrives.
+    const claim = { ...held }, transport = this.online, epoch = transport?.status.connectionEpoch;
+    const assertCurrent = () => this.assertHeldCurrent(claim, commandId);
+    return {
+      assertCurrent,
+      assertDispatch: () => {
+        if (!commandId) throw new RunnerError("COMMAND_SEALED", "缺少原派单记录。");
+        assertCurrent();
+        if (!transport || this.online !== transport || transport.status.connectionEpoch !== epoch)
+          throw new RunnerError("CONNECTION_LOST", "原派发连接已改变。");
+        if (this.disabled || !this.liveLease(claim, this.o.store.command(commandId)?.envelope))
+          throw new RunnerError("DISPATCH_EXPIRED", "原执行租约已失效。");
+        this.o.store.assertDispatchAllowed(claim, commandId);
+      },
+      canStop: () => {
+        assertCurrent();
+        const recovery = this.o.store.reconciliation(claim);
+        return !recovery || recovery.ticket?.action === "stop";
+      },
+    };
+  }
+  private assertHeldCurrent(held: HeldRun, commandId?: string) {
+    this.o.store.assertClaimCurrent(held, commandId);
+    const lease = this.o.device.lease(held.runId);
+    if (lease && (lease.workspaceId !== held.workspaceId || lease.leaseEpoch !== held.leaseEpoch))
+      throw new RunnerError("LEASE_MISMATCH", "原执行租约已改变。");
+  }
   private async codex(workspaceId: string) {
     const workspace = await this.o.registry.resolve(workspaceId);
     if (!this.adapter?.available) {
@@ -259,11 +301,7 @@ export class RunnerExecutor {
           runnerId: this.o.runnerId,
           store: this.o.runs,
           workspaces: [],
-          assertDispatchAllowed: runId => this.o.store.assertDispatchAllowed(runId),
-          canStop: runId => {
-            const recovery = this.o.store.reconciliation(runId);
-            return !recovery || recovery.ticket?.action === "stop";
-          },
+          captureGuard: runId => this.captureNativeGuard(runId),
         });
         this.connecting = (async () => {
           await previous?.close({ stopRuns: false, waitDesktop: false });
@@ -328,7 +366,7 @@ export class RunnerExecutor {
     return pollResult.parse(await t.executionRequest("poll", {}));
   }
   private async step() {
-    let held = this.o.store.held();
+    let held = this.boundHold();
     const t = this.online;
     this.adapter?.expireRequests();
     if (t) await this.flushInteractionAcks(t).catch(() => {});
@@ -339,11 +377,11 @@ export class RunnerExecutor {
     if (held?.phase === "claimed") {
       const active = this.o.runs.getRun(held.runId);
       const entry = this.o.store.latest(held.runId);
-      if (this.o.store.reconciliation(held.runId)) {
+      if (this.o.store.reconciliation(held)) {
         await this.reconcileHeldRun();
         return;
       }
-      if (t && this.o.store.reconciliationRequested(held.runId)) {
+      if (t && this.o.store.reconciliationRequested(held)) {
         // Reconnect must first retry ordinary reports, preserving successful
         // completion/acceptance. Only a still-unsettled run needs retirement.
         if (await this.sync(held, t)) return;
@@ -360,7 +398,7 @@ export class RunnerExecutor {
             const current = this.o.store.run(held.runId);
             if (terminal(this.o.runs.getRun(held.runId)) && current?.report?.stopConfirmed && current.reportSent && !current.reportSettled)
               await this.reconcileHeldRun();
-            else this.o.store.clearReconciliationRequest(held.runId);
+            else this.o.store.clearReconciliationRequest(held);
             return;
           }
         }
@@ -370,7 +408,7 @@ export class RunnerExecutor {
           await this.reconcileHeldRun();
           return;
         }
-        this.o.store.clearReconciliationRequest(held.runId);
+        this.o.store.clearReconciliationRequest(held);
       }
       if (!active?.activeTurnId && !active?.pendingRequestId &&
           ((!entry && !this.liveLease(held)) ||
@@ -533,9 +571,9 @@ export class RunnerExecutor {
         if (run.snapshot.kind === "task" && run.snapshot.batch?.managed)
           await this.managedBatch(held, t, entry, adapter);
         else
-          await adapter.advanceBatchRun(held.runId, async () => {
+          await adapter.advanceBatchRun(held.runId, Object.assign(async () => {
             await this.gate(held!, t, entry, true);
-          });
+          }, { native: this.nativeGuard(held, entry.envelope.commandId) }));
       } catch (error) {
         if (
           denied(error) ||
@@ -691,7 +729,7 @@ export class RunnerExecutor {
     if (["wait", "blocked"].includes(decision.decision)) return;
     if (!decision.permitId)
       throw new RunnerError("BATCH_NOT_READY", "服务端未返回有效的继续许可。");
-    const guard = async () => {
+    const guard = Object.assign(async () => {
       await this.gate(held, t, entry, true);
       const current = this.o.runs.getRun(held.runId);
       if (
@@ -699,7 +737,7 @@ export class RunnerExecutor {
         current.activeTurnId !== turnId
       )
         throw new RunnerError("BATCH_NOT_READY", "当前完成项已改变。");
-    };
+    }, { native: this.nativeGuard(held, entry.envelope.commandId) });
     if (decision.decision === "finish") {
       await adapter.finishManagedBatch(run.runId, guard);
       return;
@@ -711,11 +749,11 @@ export class RunnerExecutor {
       throw new RunnerError("BATCH_NOT_READY", "许可指向的待办顺序不匹配。");
     await adapter.advanceBatchRun(
       run.runId,
-      async (stage) => {
+      Object.assign(async (stage: string) => {
         await guard();
         if (stage === "turn")
           this.o.store.transition(entry, { startedAt: this.now() });
-      },
+      }, { native: guard.native }),
       {
         permitId: decision.permitId,
         decision: decision.decision as "advance" | "repair",
@@ -830,7 +868,7 @@ export class RunnerExecutor {
     interactionResponse = false,
   ) {
     const { envelope } = entry;
-    this.o.store.assertDispatchAllowed(held.runId, envelope.commandId);
+    this.o.store.assertDispatchAllowed(held, envelope.commandId);
     if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
     const current = this.o.runs.getRun(held.runId);
     // The original delivery expires after acceptance, but a running batch is
@@ -889,7 +927,7 @@ export class RunnerExecutor {
         );
     }
     if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
-    this.o.store.assertDispatchAllowed(held.runId, envelope.commandId);
+    this.o.store.assertDispatchAllowed(held, envelope.commandId);
     if (
       this.disabled ||
       !this.liveLease(held, envelope) ||
@@ -1006,13 +1044,13 @@ export class RunnerExecutor {
         return;
       }
       const adapter = await this.codex(held.workspaceId);
-      const guard = async (stage: string) => {
+      const guard = Object.assign(async (stage: string) => {
         await this.gate(held, t, entry);
         if (stage === "turn") {
           entry =
             this.o.store.transition(entry, { startedAt: this.now() }) ?? entry;
         }
-      };
+      }, { native: this.nativeGuard(held, entry.envelope.commandId) });
       if (command.type === "create_run") {
         const launched = await adapter.startFreshRun(entry.snapshot, guard);
         if (launched.status === "started") {
@@ -1090,6 +1128,7 @@ export class RunnerExecutor {
     else this.outcome(entry, "uncertain", "DISPATCH_RECONCILIATION_REQUIRED");
   }
   private async recover(held: HeldRun) {
+    this.assertHeldCurrent(held);
     const run = this.o.runs.getRun(held.runId);
     if (!run || terminal(run)) return;
     if (
@@ -1112,10 +1151,13 @@ export class RunnerExecutor {
       return;
     if (!run.threadId) return;
     const adapter = await this.codex(held.workspaceId);
+    this.assertHeldCurrent(held);
     const recovered = await adapter.reconcileRun(run.runId);
+    this.assertHeldCurrent(held);
     if (recovered.status === "running") this.attached.add(run.runId);
   }
   private async stop(held: HeldRun, reason: string, cancelCommandId?: string) {
+    this.assertHeldCurrent(held);
     // Persist explicit stop intent before any await or cross-store cleanup.
     // Old safety-stop display text must never recreate recovery eligibility if
     // this process dies while a later user/lifecycle stop is being handled.
@@ -1129,6 +1171,7 @@ export class RunnerExecutor {
       !run.activeTurnId
     )
       await this.recover(held).catch(() => {});
+    this.assertHeldCurrent(held);
     run = this.o.runs.getRun(held.runId);
     if (!run || terminal(run)) return;
     if (
@@ -1151,6 +1194,7 @@ export class RunnerExecutor {
       // The durable marker is intent, not proof the RPC reached Codex. In
       // particular old interruptOnce rows must not suppress recovery forever.
       const recovered = await adapter.reconcileRun(run.runId);
+      this.assertHeldCurrent(held);
       const current = this.o.runs.getRun(run.runId);
       if (!current || terminal(current)) return;
       if (
@@ -1160,6 +1204,7 @@ export class RunnerExecutor {
         current.pendingRequestId
       ) return;
       const receipt = await adapter.cancelRun(run.runId);
+      this.assertHeldCurrent(held);
       // Suppress repeated accepted interrupts only for this live connection.
       // An ambiguous send or a new connection rechecks the exact target again.
       if (receipt.status !== "reconciliation_required")
@@ -1168,9 +1213,11 @@ export class RunnerExecutor {
         .waitForRun(run.runId, this.o.codex?.shutdownTimeoutMs ?? 1500)
         .catch(() => {});
     }
+    this.assertHeldCurrent(held);
     if (!terminal(this.o.runs.getRun(run.runId))) {
       this.attached.delete(run.runId);
       await this.recover(held).catch(() => {});
+      this.assertHeldCurrent(held);
       if (!terminal(this.o.runs.getRun(run.runId)))
         this.o.runs.patchRun(run.runId, {
           status: "reconciliation_required",
@@ -1218,7 +1265,8 @@ export class RunnerExecutor {
     };
   }
   private async sync(held: HeldRun, t?: ExecutionTransport) {
-    if (this.o.store.reconciliation(held.runId)) return false;
+    if (!sameExecutionClaim(this.o.store.held(), held)) return false;
+    if (this.o.store.reconciliation(held)) return false;
     if (!t || this.o.store.held()?.phase !== "claimed") return false;
     const entry = this.o.store.latest(held.runId);
     if (entry?.ack && !entry.acked) {
@@ -1233,11 +1281,12 @@ export class RunnerExecutor {
           // A replaced workspace must still allow the already attached native
           // thread to be stopped; only new dispatch needs directory resolution.
           const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
-          await adapter.confirmRunStopped(held.runId);
+          await adapter.confirmRunStopped(held.runId, undefined, { readOnly: false, native: this.nativeGuard(held, entry.envelope.commandId) });
         } catch (error) {
           stopError = String(error);
         }
       }
+      if (!sameExecutionClaim(this.o.store.held(), held)) return false;
       const report = this.report(held, entry, stopError);
       if (report) this.o.store.saveReport(report);
       const pending = this.o.store.run(held.runId);
@@ -1275,14 +1324,15 @@ export class RunnerExecutor {
   reconcileHeldRun(): Promise<void> {
     if (this.closed) return Promise.resolve();
     if (this.reconciling) return this.reconciling;
+    const held = this.boundHold();
     this.reconciling = this.reconcileHeld().catch(error => {
-      const held = this.o.store.held();
       if (!held) return;
       const message = shorten(String(error), 2000);
-      if (this.o.store.reconciliation(held.runId))
-        this.o.store.saveReconciliation(held.runId, { error: message });
+      if (this.o.store.reconciliation(held))
+        this.o.store.saveReconciliation(held, { error: message });
       const run = this.o.runs.getRun(held.runId);
-      if (run && !terminal(run)) this.o.runs.patchRun(held.runId, { status: "reconciliation_required", resultError: message });
+      if (run && !terminal(run) && sameExecutionClaim(this.o.store.held(), held))
+        this.o.runs.patchRun(held.runId, { status: "reconciliation_required", resultError: message });
     }).finally(() => { this.reconciling = undefined; });
     return this.reconciling;
   }
@@ -1356,7 +1406,7 @@ export class RunnerExecutor {
       held = this.o.store.bindClaim(held, lease.leaseEpoch);
     }
     let recovery = this.o.store.beginReconciliation(held);
-    this.o.store.clearReconciliationRequest(held.runId);
+    this.o.store.clearReconciliationRequest(held);
     await this.assertRecoveryClaim(held, recovery);
     const epoch = t.status.connectionEpoch;
     const connection = () => {
@@ -1380,7 +1430,7 @@ export class RunnerExecutor {
       const ticket: ExecutionReconcileTicket = response.ticket;
       if (ticket.runId !== held.runId || ticket.workspaceId !== held.workspaceId || ticket.leaseEpoch !== recovery.claim.leaseEpoch)
         throw new RunnerError("LEASE_MISMATCH", "核对票据不属于原占用。");
-      recovery = this.o.store.saveReconciliation(held.runId, { ticket, error: undefined });
+      recovery = this.o.store.saveReconciliation(held, { ticket, error: undefined });
       const proof = await this.recoveryProof(held, recovery);
       connection();
       await this.assertRecoveryClaim(held, recovery);
@@ -1391,7 +1441,7 @@ export class RunnerExecutor {
           status: "cancelled" as const, terminal: true as const, stopConfirmed: true as const } };
       // Fixed payload is durable before send; only transport supplies a fresh
       // connectionEpoch on replay. Old requests remain archived on conflicts.
-      recovery = this.o.store.saveReconciliation(held.runId, { request });
+      recovery = this.o.store.saveReconciliation(held, { request });
     }
     const request = recovery.request!;
     if (!recovery.settled) {
@@ -1400,7 +1450,7 @@ export class RunnerExecutor {
         response = reconcileResult.parse(await t.executionRequest("reconcile", request));
       } catch (error) {
         if (errorCode(error) === "EXECUTION_HTTP_409")
-          this.o.store.saveReconciliation(held.runId, { request: undefined, ticket: undefined });
+          this.o.store.saveReconciliation(held, { request: undefined, ticket: undefined });
         throw error;
       }
       connection();
@@ -1409,7 +1459,7 @@ export class RunnerExecutor {
           response.leaseEpoch !== recovery.claim.leaseEpoch || response.recoveryId !== request.recoveryId ||
           response.reportRevision !== request.report.revision)
         throw new RunnerError("RECONCILIATION_REQUIRED", "停止确认回执不匹配原请求。");
-      recovery = this.o.store.saveReconciliation(held.runId, { settled: true, error: undefined });
+      recovery = this.o.store.saveReconciliation(held, { settled: true, error: undefined });
     }
     // Server settled is necessary, but P1 native verification is still required
     // on EVERY release/restart, including a cached stop proof and receipt.
@@ -1421,7 +1471,8 @@ export class RunnerExecutor {
     if (releasing) await this.release(releasing, t);
   }
   private async release(held: HeldRun, t?: ExecutionTransport) {
-    const recovery = this.o.store.reconciliation(held.runId);
+    this.assertHeldCurrent(held);
+    const recovery = this.o.store.reconciliation(held);
     if (recovery) {
       if (!recovery.settled || !recovery.request || !recovery.ticket)
         throw new RunnerError("RECONCILIATION_REQUIRED", "尚未收到匹配的服务端停止回执。");
@@ -1435,14 +1486,16 @@ export class RunnerExecutor {
       if (proof && (proof.kind !== "native_stopped" || proof.threadId !== run.threadId || proof.turnId !== run.activeTurnId))
         throw new RunnerError("RECONCILIATION_REQUIRED", "已确认的原生轮次已变化，保留原占用。");
       const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
-      await adapter.confirmRunStopped(held.runId, undefined, { readOnly: !!recovery });
+      await adapter.confirmRunStopped(held.runId, undefined, { readOnly: !!recovery, native: this.nativeGuard(held) });
     }
+    this.assertHeldCurrent(held);
     if (recovery) await this.assertRecoveryClaim(held, recovery);
     if (held.phase === "releasing") {
       if (this.o.device.lease(held.runId)) {
         if (!t) return;
         await t.releaseLease(held.workspaceId, held.runId, true);
       }
+      this.assertHeldCurrent(held);
       if (recovery) await this.assertRecoveryClaim(held, recovery);
       held = this.o.store.updateHold(held, "local_release") ?? held;
     }
@@ -1453,8 +1506,10 @@ export class RunnerExecutor {
       true,
       held.lockToken,
     );
+    // A legacy manual flag without a recovery record derives ownership from
+    // the held claim. Retire it while that original identity is still present.
+    this.o.store.clearReconciliationRequest(held);
     this.o.store.clearHold(held);
-    this.o.store.clearReconciliationRequest(held.runId);
     this.attached.delete(held.runId);
     this.interruptAttempts.delete(held.runId);
   }

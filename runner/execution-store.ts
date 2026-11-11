@@ -22,6 +22,10 @@ export type HeldRun = {
   leaseEpoch?: number;
   phase: "reserving" | "locked" | "claimed" | "releasing" | "local_release";
 };
+type ClaimIdentity = Pick<HeldRun, "runId" | "workspaceId" | "leaseEpoch" | "lockToken">;
+const claimIdentity = (claim: ClaimIdentity) => ({ runId: claim.runId, workspaceId: claim.workspaceId, leaseEpoch: claim.leaseEpoch, lockToken: claim.lockToken });
+export const sameExecutionClaim = (a: ClaimIdentity | undefined, b: ClaimIdentity) => !!a && digest(claimIdentity(a)) === digest(claimIdentity(b));
+const claimKey = (claim: ClaimIdentity) => digest(claimIdentity(claim));
 export type ReconciliationRequest = Omit<Extract<ExecutionReconcileRequest, { phase: "confirm" }>, "connectionEpoch">;
 export type NativeReconciliation = {
   claim: { runId: string; workspaceId: string; leaseEpoch: number; lockToken: string };
@@ -185,21 +189,33 @@ export class ExecutionStore {
     return this.db.prepare("SELECT data FROM commands WHERE json_extract(data,'$.envelope.runId')=?")
       .all(runId).map(row => JSON.parse(String(row.data)));
   }
-  reconciliation(runId: string) {
-    return this.read<NativeReconciliation>("state", `reconciliation:${runId}`);
+  reconciliation(claim: ClaimIdentity) {
+    const current = this.read<NativeReconciliation>("state", `reconciliation-claim:${claimKey(claim)}`);
+    if (current) return current;
+    // Retain the old record and its tombstones. It belongs only to the claim
+    // stored inside it, never to a later reply that happens to reuse runId.
+    const legacy = this.read<NativeReconciliation>("state", `reconciliation:${claim.runId}`);
+    return legacy && sameExecutionClaim(legacy.claim, claim) ? legacy : undefined;
   }
-  requestReconciliation(runId: string) {
-    this.write("state", `manual-reconciliation:${runId}`, true);
+  private legacyManualBelongs(claim: ClaimIdentity) {
+    const legacy = this.read<NativeReconciliation>("state", `reconciliation:${claim.runId}`);
+    return sameExecutionClaim(legacy?.claim ?? this.held(), claim);
   }
-  reconciliationRequested(runId: string) {
-    return this.read<boolean>("state", `manual-reconciliation:${runId}`) === true;
+  requestReconciliation(claim: ClaimIdentity) {
+    this.write("state", `manual-reconciliation-claim:${claimKey(claim)}`, true);
   }
-  clearReconciliationRequest(runId: string) {
-    this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation:${runId}`);
+  reconciliationRequested(claim: ClaimIdentity) {
+    return this.read<boolean>("state", `manual-reconciliation-claim:${claimKey(claim)}`) === true ||
+      (this.legacyManualBelongs(claim) && this.read<boolean>("state", `manual-reconciliation:${claim.runId}`) === true);
+  }
+  clearReconciliationRequest(claim: ClaimIdentity) {
+    this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation-claim:${claimKey(claim)}`);
+    if (this.legacyManualBelongs(claim))
+      this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation:${claim.runId}`);
   }
   beginReconciliation(held: HeldRun): NativeReconciliation {
     return this.transaction(() => {
-      const current = this.held(), old = this.reconciliation(held.runId);
+      const current = this.held(), old = this.reconciliation(held);
       if (!current || current.phase !== "claimed" || current.lockToken !== held.lockToken || !current.leaseEpoch)
         throw new RunnerError("RECONCILIATION_REQUIRED", "缺少原占用与租约记录，不能声明已停止。");
       const claim = { runId: current.runId, workspaceId: current.workspaceId, leaseEpoch: current.leaseEpoch, lockToken: current.lockToken };
@@ -208,13 +224,13 @@ export class ExecutionStore {
       if (old) return old;
       const record = { claim };
       // Freeze BEFORE inspect: its server-side seal may commit without an ACK.
-      this.write("state", `reconciliation:${held.runId}`, record);
+      this.write("state", `reconciliation-claim:${claimKey(held)}`, record);
       return record;
     });
   }
-  saveReconciliation(runId: string, patch: Partial<Omit<NativeReconciliation, "claim">>) {
+  saveReconciliation(claim: ClaimIdentity, patch: Partial<Omit<NativeReconciliation, "claim">>) {
     return this.transaction(() => {
-      const old = this.reconciliation(runId);
+      const old = this.reconciliation(claim);
       if (!old) throw new RunnerError("RECONCILIATION_REQUIRED", "缺少持久核对记录。");
       if (patch.request) {
         const key = `reconciliation-request:${patch.request.requestId}`;
@@ -224,14 +240,25 @@ export class ExecutionStore {
         this.write("state", key, patch.request);
       }
       if (patch.ticket)
-        this.write("state", `sealed-command:${patch.ticket.originalCommandId}`, { runId, snapshotHash: patch.ticket.snapshotHash });
+        this.write("state", `sealed-command:${patch.ticket.originalCommandId}`, { claim: old.claim, runId: claim.runId, snapshotHash: patch.ticket.snapshotHash });
       const next = { ...old, ...patch };
-      this.write("state", `reconciliation:${runId}`, next);
+      this.write("state", `reconciliation-claim:${claimKey(claim)}`, next);
       return next;
     });
   }
-  assertDispatchAllowed(runId: string, commandId?: string) {
-    if (this.reconciliation(runId) || this.reconciliationRequested(runId) || (commandId && this.read("state", `sealed-command:${commandId}`)))
+  assertClaimCurrent(claim: ClaimIdentity, commandId?: string) {
+    if (!sameExecutionClaim(this.held(), claim))
+      throw new RunnerError("LEASE_MISMATCH", "原执行占用已改变，不能使用后来的租约或目录锁。");
+    if (commandId) {
+      const command = this.command(commandId);
+      if (this.run(claim.runId)?.latest !== commandId || command?.envelope.runId !== claim.runId ||
+          command.envelope.leaseEpoch !== claim.leaseEpoch)
+        throw new RunnerError("COMMAND_SUPERSEDED", "原执行命令已更改。");
+    }
+  }
+  assertDispatchAllowed(claim: ClaimIdentity, commandId: string) {
+    this.assertClaimCurrent(claim, commandId);
+    if (this.held()?.phase !== "claimed" || this.reconciliation(claim) || this.reconciliationRequested(claim) || this.read("state", `sealed-command:${commandId}`))
       throw new RunnerError("COMMAND_SEALED", "运行正在核对或已经封存，不能发送新的轮次。");
   }
   command(commandId: string) {
@@ -274,6 +301,12 @@ export class ExecutionStore {
         return old;
       }
       const prior = this.run(envelope.runId);
+      const settledRevision = Math.max(0, ...this.db.prepare(
+        "SELECT data FROM state WHERE (key LIKE 'reconciliation-claim:%' OR key=?) AND json_extract(data,'$.claim.runId')=? AND json_extract(data,'$.settled')=1",
+      ).all(`reconciliation:${envelope.runId}`, envelope.runId).map(row => {
+        const recovery = JSON.parse(String(row.data)) as NativeReconciliation;
+        return recovery.request?.report.revision ?? 0;
+      }));
       const command = envelope.payload;
       const startedAt =
         command.type === "cancel_run" ||
@@ -295,7 +328,12 @@ export class ExecutionStore {
       this.write("runs", envelope.runId, {
         ...prior,
         latest: envelope.commandId,
-        revision: prior?.revision ?? 0,
+        revision: Math.max(prior?.revision ?? 0, settledRevision),
+        // A confirmed reconciliation is also the server's report watermark.
+        // Keep the old payload intact, but retire its superseded outbox entry
+        // so a later authorized reply can report above that committed revision.
+        ...(prior?.report && prior.report.revision <= settledRevision
+          ? { reportSent: true, reportSettled: false } : {}),
       } satisfies RunState);
       return entry;
     });
