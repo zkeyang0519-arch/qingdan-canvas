@@ -95,6 +95,16 @@ async function edit(label, text) {
     el.dispatchEvent(new window.Event("input", { bubbles: true }));
   });
 }
+async function chooseChat(id) {
+  const select = field("聊天历史");
+  assert.ok(select, "聊天历史");
+  assert.equal(select.disabled, false);
+  await act(async () => {
+    select.value = id;
+    select.dispatchEvent(new window.Event("change", { bubbles: true }));
+  });
+  await until(() => !button("刷新聊天与记忆")?.disabled);
+}
 async function mount(f, extra = {}) {
   const { default: ChatPanel } = await import(
     pathToFileURL(resolve(dir, "ui.mjs")).href + "?fresh=" + ++generation
@@ -117,7 +127,7 @@ async function reopen(f, extra) {
   await act(async () => mounted.unmount());
   mounted = null;
   window.sessionStorage.clear();
-  await mount(f, extra);
+  return mount(f, extra);
 }
 const sendPosts = (f) =>
   f.requests.filter(
@@ -146,6 +156,44 @@ const draftStorageKey = (chat) =>
     chat || "new",
     "chat",
   ]);
+const pendingRequests = () =>
+  Object.keys(window.localStorage)
+    .filter((key) => key.startsWith("qingdan.agent-requests:"))
+    .flatMap((key) => JSON.parse(window.localStorage.getItem(key)).records);
+
+for (const destination of ["history", "new"])
+  test(`standalone ${destination} navigation preserves the departing durable draft after reopening`, async (t) => {
+    const f = await chatRecoveryServer(t);
+    dom.reconfigure({ url: f.origin });
+    const a = await f.call(
+      "/api/agent/chat/new",
+      bound({ requestId: "draft-a" }),
+    );
+    const b = await f.call(
+      "/api/agent/chat/new",
+      bound({ requestId: "draft-b" }),
+    );
+    await mount(f);
+    await until(() => field("聊天消息")?.disabled === false);
+    await chooseChat(a.id);
+    await edit("聊天消息", "unsent draft belongs to A");
+    if (destination === "history") await chooseChat(b.id);
+    else {
+      await click("新聊天");
+      await until(() => !button("刷新聊天与记忆")?.disabled);
+    }
+    assert.equal(
+      JSON.parse(window.localStorage.getItem(draftStorageKey(a.id))).value,
+      "unsent draft belongs to A",
+    );
+    await chooseChat(a.id);
+    assert.equal(field("聊天消息").value, "unsent draft belongs to A");
+    await reopen(f);
+    await until(() => field("聊天消息")?.disabled === false);
+    await chooseChat(a.id);
+    assert.equal(field("聊天消息").value, "unsent draft belongs to A");
+    assert.equal(sendPosts(f).length, 0);
+  });
 
 for (const embedded of [false, true])
   test(`committed HTTP send with lost ACK is recovered by GET after fresh UI (${embedded ? "embedded" : "standalone"})`, async (t) => {
@@ -281,6 +329,108 @@ test("draft handoff keeps an existing newer target draft and offers an explicit 
   assert.equal(sendPosts(f).length, 1);
 });
 
+async function conflictingHandoff(t, extra = {}) {
+  const f = await chatRecoveryServer(t);
+  dom.reconfigure({ url: f.origin });
+  await mount(f);
+  await until(() => field("聊天消息")?.disabled === false);
+  f.dropSend("after");
+  await edit("聊天消息", "first request for A");
+  await click("发送");
+  await until(() => !button("刷新聊天与记忆")?.disabled);
+  await edit("聊天消息", "unsent source for A");
+  const a = await until(async () => {
+    const s = await state(f);
+    return s.job?.status === "succeeded" && s.thread;
+  });
+  const b = await f.call(
+    "/api/agent/chat/new",
+    bound({ requestId: "unrelated-b" }),
+  );
+  for (const [id, value] of [
+    [a.id, "existing draft for A"],
+    [b.id, "unrelated draft for B"],
+  ])
+    window.localStorage.setItem(
+      draftStorageKey(id),
+      JSON.stringify({ version: 1, value }),
+    );
+  const render = await reopen(
+    f,
+    typeof extra === "function" ? extra(f) : extra,
+  );
+  await until(() => button("保留当前草稿"));
+  return { f, a, b, render };
+}
+
+for (const choice of ["保留当前草稿", "使用此前草稿"])
+  test(`handoff ${choice} remains bound to A when visiting B`, async (t) => {
+    const { f, a, b } = await conflictingHandoff(t);
+    await chooseChat(b.id);
+    assert.equal(field("聊天消息").value, "unrelated draft for B");
+    assert.ok(
+      !button(choice),
+      "a handoff choice must not act on the unrelated selected chat",
+    );
+    await click("返回待恢复聊天");
+    await until(() => !button("刷新聊天与记忆")?.disabled);
+    assert.equal(field("聊天历史").value, a.id);
+    assert.equal(field("聊天消息").value, "existing draft for A");
+    await click(choice);
+    await until(() => !button("保留当前草稿"));
+    const expected =
+      choice === "保留当前草稿"
+        ? "existing draft for A"
+        : "unsent source for A";
+    assert.equal(field("聊天消息").value, expected);
+    assert.equal(
+      JSON.parse(window.localStorage.getItem(draftStorageKey(a.id))).value,
+      expected,
+    );
+    assert.equal(
+      JSON.parse(window.localStorage.getItem(draftStorageKey(b.id))).value,
+      "unrelated draft for B",
+    );
+    await chooseChat(b.id);
+    assert.equal(field("聊天消息").value, "unrelated draft for B");
+    await reopen(f);
+    await until(() => field("聊天消息")?.disabled === false);
+    await chooseChat(a.id);
+    assert.equal(field("聊天消息").value, expected);
+    assert.equal(sendPosts(f).length, 1);
+    assert.equal((await f.call("/fixture/chat/count")).count, 1);
+  });
+
+test("returning to a handoff target rechecks scope after an awaited GET", async (t) => {
+  let target,
+    hold = false,
+    release;
+  const { f, a, b, render } = await conflictingHandoff(t, (fixture) => ({
+    requestCloud: async (route, options) => {
+      const result = await fixture.requestCloud(route, options);
+      if (hold && route.includes("/chat/state?") && route.includes(target))
+        await new Promise((resolve) => (release = resolve));
+      return result;
+    },
+  }));
+  target = a.id;
+  await chooseChat(b.id);
+  hold = true;
+  await click("返回待恢复聊天");
+  await until(() => release);
+  await render({ userId: "bob" });
+  await act(async () => release());
+  await until(() => !button("刷新聊天与记忆")?.disabled);
+  assert.equal(field("聊天消息")?.value, "");
+  assert.equal(button("保留当前草稿"), undefined);
+  assert.equal(button("使用此前草稿"), undefined);
+  assert.equal(
+    JSON.parse(window.localStorage.getItem(draftStorageKey(b.id))).value,
+    "unrelated draft for B",
+  );
+  assert.equal(sendPosts(f).length, 1);
+});
+
 test("reopen between destination draft write and source cleanup recovers idempotently", async (t) => {
   const f = await chatRecoveryServer(t);
   dom.reconfigure({ url: f.origin });
@@ -365,6 +515,73 @@ test("a failed original-draft cleanup cannot discard its accepted request identi
   assert.equal(field("聊天消息").value, "");
   assert.equal(sendPosts(f).length, 1);
 });
+
+for (const outcome of ["failed", "expired"])
+  test(`accepted ${outcome} job keeps its identity until durable draft cleanup then allows explicit resend`, async (t) => {
+    const f = await chatRecoveryServer(t);
+    dom.reconfigure({ url: f.origin });
+    await mount(f);
+    await until(() => field("聊天消息")?.disabled === false);
+    f.dropSend("after");
+    await edit("聊天消息", "model failure");
+    await click("发送");
+    await until(() => !button("刷新聊天与记忆")?.disabled);
+    const original = sendPosts(f)[0].body;
+    const committed = await until(async () => {
+      const s = await state(f);
+      return s.job?.status === "failed" && s;
+    });
+    if (outcome === "expired") {
+      // Persist a claimed lease boundary in real SQL, restart the runtime and
+      // let the production alarm produce its supported failed outcome.
+      await f.call("/fixture/chat/expire", { jobId: committed.job.id });
+      await f.restart();
+      await f.call("/fixture/chat/alarm", {});
+      const expired = await lookup(f, original.requestId);
+      assert.equal(expired.job.status, "failed");
+      assert.match(expired.job.error, /中断/);
+    }
+    window.Storage.prototype.setItem = function (key, value) {
+      if (key === draftStorageKey(null) && JSON.parse(value).value === "")
+        throw Error("fixture accepted send cleanup denied");
+      return storageSetItem.call(this, key, value);
+    };
+    await reopen(f);
+    await until(() => button("重试保存草稿") && !field("聊天消息")?.disabled);
+    assert.ok(
+      pendingRequests().some(
+        (record) => record.requestId === original.requestId,
+      ),
+      "an accepted failed job must retain the original identity while source cleanup is not durable",
+    );
+    assert.equal(
+      JSON.parse(window.localStorage.getItem(draftStorageKey(null))).value,
+      "model failure",
+    );
+    assert.equal(sendPosts(f).length, 1);
+    assert.equal((await f.call("/fixture/chat/count")).count, 1);
+    window.Storage.prototype.setItem = storageSetItem;
+    await click("重试保存草稿");
+    await until(
+      () =>
+        !pendingRequests().some(
+          (record) => record.requestId === original.requestId,
+        ) && field("聊天消息")?.value === "model failure",
+    );
+    await reopen(f);
+    await until(() => field("聊天消息")?.value === "model failure");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem(draftStorageKey(null))).value,
+      "",
+    );
+    await edit("聊天消息", "explicit retry after durable recovery");
+    await click("发送");
+    await until(async () => (await state(f)).job?.status === "succeeded");
+    assert.equal(sendPosts(f).length, 2);
+    assert.notEqual(sendPosts(f)[1].body.requestId, original.requestId);
+    assert.equal(sendPosts(f)[1].body.chatId, committed.thread.id);
+    assert.equal((await f.call("/fixture/chat/count")).count, 2);
+  });
 
 test("personal memory remains readable and writable on initial Hub503", async (t) => {
   const f = await chatRecoveryServer(t);

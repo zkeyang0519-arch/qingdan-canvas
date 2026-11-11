@@ -290,6 +290,8 @@ function ChatWorkspace({
   const draftControl = useRef(null);
   draftControl.current = {
     chatId: state?.thread?.id || null,
+    draft,
+    durable: draftStorage.durable,
     setDraft,
     newDraft,
     setNewDraft,
@@ -357,7 +359,12 @@ function ChatWorkspace({
       );
   }, []);
   useEffect(() => {
-    if (!draftHandoff || state?.thread?.id !== draftHandoff.chatId) return;
+    if (
+      !draftHandoff ||
+      state?.thread?.id !== draftHandoff.chatId ||
+      chatId.current !== draftHandoff.chatId
+    )
+      return;
     if (!chatDraft) {
       setChatDraft(draftHandoff.text);
     } else if (chatDraft === draftHandoff.text && chatDraftStorage.durable) {
@@ -495,17 +502,15 @@ function ChatWorkspace({
         settling.current.has(record.requestId)
       )
         continue;
-      if (receipt.job.status === "succeeded") {
-        const sourceDraft = record.request.body.chatId ? draft : newDraft;
-        const sourceStorage = record.request.body.chatId
-          ? draftStorage
-          : newDraftStorage;
-        if (sourceDraft.trim() === record.request.body.text) {
-          clearOriginalDraft(record, receipt);
-          continue;
-        }
-        if (!sourceStorage.durable) continue;
+      const sourceDraft = record.request.body.chatId ? draft : newDraft;
+      const sourceStorage = record.request.body.chatId
+        ? draftStorage
+        : newDraftStorage;
+      if (sourceDraft.trim() === record.request.body.text) {
+        clearOriginalDraft(record, receipt);
+        continue;
       }
+      if (!sourceStorage.durable) continue;
       settling.current.add(record.requestId);
       // A failed model job still acknowledges the accepted send request.
       void requests.resolve(record.requestId, "acknowledged").catch(() => {});
@@ -540,15 +545,18 @@ function ChatWorkspace({
     return () => clearInterval(timer);
   }, [pendingJob, refresh, valid]);
   useEffect(() => {
-    if (!job || queued(job) || handledJob.current === job.id) return;
+    if (!job || queued(job) || handledJob.current === job.id || pendingSend)
+      return;
     handledJob.current = job.id;
     if (job.status === "failed" || job.status === "stale") {
+      // Finish the accepted request's durable cleanup before offering its text
+      // as a new draft. Otherwise the two writes can hide an unfinished cleanup.
       const previous = state.messages.findLast(
         (message) => message.role === "user",
       )?.text;
       if (previous) setDraft((current) => current || previous);
     }
-  }, [job, state]);
+  }, [job, state, pendingSend]);
 
   async function perform(operation) {
     if (busyRef.current) return false;
@@ -711,7 +719,6 @@ function ChatWorkspace({
       const result = await write("new", { bindingId }, version);
       if (!result) return;
       switchThread(result.thread ?? result);
-      if (!embedded) setDraft("");
       await refresh(version);
     });
   }
@@ -720,9 +727,29 @@ function ChatWorkspace({
     if (!thread || id === chatId.current) return;
     return perform(async (version) => {
       switchThread(thread);
-      if (!embedded) setDraft("");
       await refresh(version);
     });
+  }
+  function chooseHandoff(keepCurrent) {
+    const control = draftControl.current;
+    const target = draftHandoff?.chatId;
+    if (
+      !mounted.current ||
+      busyRef.current ||
+      !target ||
+      chatId.current !== target ||
+      control.chatId !== target
+    )
+      return;
+    if (keepCurrent) {
+      if (!control.durable) return;
+      setDraftHandoff((current) =>
+        current?.requestId === draftHandoff.requestId &&
+        current.chatId === target
+          ? { ...current, text: control.draft }
+          : current,
+      );
+    } else control.setDraft(draftHandoff.text);
   }
   function loadEarlier() {
     const cursor = older ? older.nextBeforeSequence : state.nextBeforeSequence;
@@ -994,7 +1021,14 @@ function ChatWorkspace({
         {draftHandoff && (
           <div className="agent-note" role="status">
             <p>原草稿仍保留，确认保存后才会结束恢复。</p>
-            {chatDraft && chatDraft !== draftHandoff.text && (
+            {state?.thread?.id !== draftHandoff.chatId ? (
+              <button
+                disabled={busy}
+                onClick={() => chooseThread(draftHandoff.chatId)}
+              >
+                返回待恢复聊天
+              </button>
+            ) : chatDraft && chatDraft !== draftHandoff.text ? (
               <>
                 <p>当前聊天已有另一份草稿，尚未覆盖。</p>
                 <details>
@@ -1003,20 +1037,15 @@ function ChatWorkspace({
                 </details>
                 <button
                   disabled={busy || !chatDraftStorage.durable}
-                  onClick={() =>
-                    setDraftHandoff({ ...draftHandoff, text: chatDraft })
-                  }
+                  onClick={() => chooseHandoff(true)}
                 >
                   保留当前草稿
                 </button>
-                <button
-                  disabled={busy}
-                  onClick={() => setChatDraft(draftHandoff.text)}
-                >
+                <button disabled={busy} onClick={() => chooseHandoff(false)}>
                   使用此前草稿
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         )}
         {(!draftStorage.durable || !newDraftStorage.durable) && (
