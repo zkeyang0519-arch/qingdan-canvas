@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import OpeningCover from "./OpeningCover.jsx";
+import { enterApplication, isOpeningLocation } from "../navigation.js";
 import OpeningPreparation, {
   OpeningPreparationContext,
 } from "./OpeningPreparation.jsx";
@@ -37,13 +38,15 @@ class DestinationBoundary extends Component {
 }
 
 function CoverExperience({ children }) {
-  const [phase, setPhase] = useState("waiting");
+  const [phase, setPhase] = useState(() =>
+    isOpeningLocation() ? "waiting" : "entered",
+  );
   const [attempt, setAttempt] = useState(0);
   const [reports, setReports] = useState({});
   const [painted, setPainted] = useState(null);
   const [stalled, setStalled] = useState(false);
   const generation = useRef(0);
-  const entered = useRef(false);
+  const entered = useRef(phase === "entered");
   const [reduced, setReduced] = useState(
     () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false,
@@ -84,6 +87,15 @@ function CoverExperience({ children }) {
         ? "准备时间有点久，请检查网络后重试。"
         : "");
   const status = error ? "error" : ready ? "ready" : "loading";
+  const resetDestination = (showCover) => {
+    generation.current++;
+    entered.current = !showCover;
+    setReports({});
+    setPainted(null);
+    setStalled(false);
+    setPhase(showCover ? "waiting" : "entered");
+    setAttempt(generation.current);
+  };
   const retry = () => {
     // React.lazy retains pending and rejected imports across remounts. Those
     // resources require a fresh page; ordinary network retries stay here.
@@ -91,14 +103,20 @@ function CoverExperience({ children }) {
       location.reload();
       return;
     }
-    generation.current++;
-    entered.current = false;
-    setReports({});
-    setPainted(null);
-    setStalled(false);
-    setPhase("waiting");
-    setAttempt(generation.current);
+    resetDestination(true);
   };
+
+  useEffect(() => {
+    // A restored history entry must restore its content too. Remounting uses
+    // App's existing bootstrap/cleanup and invalidates the previous requests.
+    const restore = () => resetDestination(isOpeningLocation());
+    window.addEventListener("popstate", restore);
+    window.addEventListener("qingdan-session-changed", restore);
+    return () => {
+      window.removeEventListener("popstate", restore);
+      window.removeEventListener("qingdan-session-changed", restore);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!allReady || entered.current) return;
@@ -129,6 +147,7 @@ function CoverExperience({ children }) {
       return;
     }
     const finish = () => {
+      enterApplication();
       entered.current = true;
       setPhase("entered");
     };
@@ -189,7 +208,10 @@ function CoverExperience({ children }) {
           onRetry={retry}
           onEnter={() => {
             if (phase !== "waiting" || !ready) return;
-            if (reduced) entered.current = true;
+            if (reduced) {
+              enterApplication();
+              entered.current = true;
+            }
             setPhase(reduced ? "entered" : "entering");
           }}
         />
@@ -199,11 +221,7 @@ function CoverExperience({ children }) {
 }
 
 export default function OpeningGate({ children }) {
-  // An OAuth client has already initiated this dedicated authorization flow.
-  // Keep its original login/consent path free of the decorative entrance gate.
-  return window.location.pathname === "/mcp/consent" ? (
-    children
-  ) : (
-    <CoverExperience>{children}</CoverExperience>
-  );
+  // Only the landing URL owns a cover. Application and consent routes begin
+  // entered, while sharing history restoration if the user later navigates.
+  return <CoverExperience>{children}</CoverExperience>;
 }

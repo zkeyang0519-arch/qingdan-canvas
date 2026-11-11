@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ArrowUpRight, RotateCcw } from "lucide-react";
+import { APP_PATH } from "../navigation.js";
 
 const tiles = [
   {
@@ -272,7 +273,7 @@ export default function OpeningCover({
         {failed ? error : "你的下一步，从一个想法开始。"}
       </p>
       {failed && new URLSearchParams(location.search).has("room") && (
-        <a className="opening-home" href="/">
+        <a className="opening-home" href={APP_PATH}>
           返回首页
         </a>
       )}
