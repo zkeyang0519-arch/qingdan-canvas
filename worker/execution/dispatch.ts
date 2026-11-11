@@ -213,7 +213,7 @@ export class ExecutionDispatch {
       const value = parse(queueControlSchema, input.input);
       const r = await this.run(p, value.runId);
       await this.reserve(p, "queue:" + value.requestId, value);
-      return json(await this.queue().control(r, value));
+      return json(await this.queue().control(r, value, r.commands.find(c=>c.receipt.commandId===r.view.commandId)?.settled));
     }
     if (action === "tool")
       return json(
@@ -708,7 +708,7 @@ export class ExecutionDispatch {
       const r=await this.nativeRun(d,value.runId);
       if(value.phase==="inspect"&&r.commands.find(c=>c.receipt.commandId===r.view.commandId)?.payload.type==="cancel_run")return {decision:"cancel"};
       const command=r.commands.find(c=>c.receipt.commandId===value.commandId);
-      check(isManaged(r)&&command?.envelope&&command.payload.type!=="cancel_run"&&value.commandId===r.view.commandId&&command.envelope.leaseEpoch===value.leaseEpoch,"恢复请求没有原派单与租约。",409);
+      check(isManaged(r)&&command?.envelope&&!command.settled&&command.payload.type!=="cancel_run"&&value.commandId===r.view.commandId&&command.envelope.leaseEpoch===value.leaseEpoch,"恢复请求没有可恢复的原派单与租约。",409);
       const ticket=await this.queue().recovery(r,value);
       if(!ticket)return {decision:"wait"};
       if(value.phase==="inspect")return {decision:"inspect",recoveryId:ticket.recoveryId};
@@ -1064,6 +1064,7 @@ export class ExecutionDispatch {
     // Retiring delivery is not proof of stopping. It prevents any delayed stored
     // ACK from authorizing execution while the sole native consumer inspects it.
     for(const command of r.commands)command.settled=true;
+    if(r.queueState)delete r.queueState.recovery;
     if(!cancelling)r.view.status="reconciliation_required";
     r.view.updatedAt=new Date().toISOString();
     const stored:ReconciliationTicket={ticket,principal:r.principal,snapshotDigest,expiredLease:!!lease&&lease.expires_at<=Date.now()};

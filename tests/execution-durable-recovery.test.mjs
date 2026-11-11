@@ -206,3 +206,50 @@ test("a live uncertain lease only permits read-only inspection until the lease i
   assert.equal((await f.native("reconcile", f.confirmation(live.ticket))).http, 409);
   assert.equal((await f.native("reconcile", f.confirmation(absent.ticket))).settled, true);
 });
+
+async function pausedRecovery(t) {
+  const f = await fixture(t, "managed", "checkpoint");
+  assert.equal((await f.native("ack", { commandId: f.commandId, status: "stored" })).http, 200);
+  assert.equal((await f.native("ack", { commandId: f.commandId, status: "applied" })).http, 200);
+  assert.equal((await f.fixture("control", { input: { bindingId: "binding", bindingRevision: 1, runId: f.runId, requestId: "pause-checkpoint", expectedRevision: 1, action: "pause" } })).http, 200);
+  assert.equal((await f.native("batch-gate", { runId: f.runId, commandId: f.commandId, fromIndex: 0, completedTurnId: "turn0", reportRevision: 1 })).decision, "wait");
+  assert.equal((await f.state()).run.queueState.phase, "paused");
+  await f.sql("UPDATE agent_workspace_leases SET expires_at=? WHERE runner_id='runner'", Date.now() - 60000);
+  assert.equal((await f.native("report", { runId: f.runId, commandId: f.commandId, revision: 2, status: "reconciliation_required", threadId: "thread", turnId: "turn0", terminal: false, stopConfirmed: false })).http, 200);
+  const recover = { bindingId: "binding", bindingRevision: 1, runId: f.runId, requestId: "recover-checkpoint", expectedRevision: (await f.state()).run.view.queue.revision, action: "recover" };
+  const accepted = await f.fixture("control", { input: recover });
+  assert.equal(accepted.http, 200, JSON.stringify(accepted));
+  const leaseInput = { runId: f.runId, commandId: f.commandId, threadId: "thread", completedTurnId: "turn0", leaseEpoch: 1 };
+  const old = await f.native("recover-lease", { ...leaseInput, phase: "inspect" });
+  assert.equal(old.decision, "inspect", JSON.stringify(old));
+  return { f, recover, accepted, leaseInput, old, lease: await f.lease() };
+}
+
+test("sealed checkpoint rejects old native recovery after DO restart without renewing D1", async t => {
+  const { f, leaseInput, old, lease } = await pausedRecovery(t);
+  await f.fixture("inject", { fault: "inspect-after" });
+  assert.equal((await f.inspect()).http, 500, "stop ticket committed but its response was lost");
+  await f.restart();
+  const { ticket } = await f.inspect();
+  assert.equal(ticket.action, "stop");
+  assert.equal((await f.native("recover-lease", { ...leaseInput, phase: "inspect" })).http, 409);
+  assert.equal((await f.native("recover-lease", { ...leaseInput, phase: "confirm", recoveryId: old.recoveryId })).http, 409);
+  const { run } = await f.state();
+  assert.equal(run.commands.find(command => command.receipt.commandId === run.view.commandId).settled, true);
+  assert.equal(run.queueState.recovery, undefined, "ticket invalidation shares the stop inspection commit");
+  assert.deepEqual(await f.lease(), lease);
+  assert.equal((await f.native("reconcile", f.confirmation(ticket, "native_stopped"))).settled, true);
+  assert.deepEqual(await f.lease(), lease);
+});
+
+test("sealed checkpoint refuses new UI recovery while replaying an old receipt without recreating tickets", async t => {
+  const { f, recover, accepted, lease } = await pausedRecovery(t);
+  const { ticket } = await f.inspect();
+  await f.restart();
+  const input = { ...recover, requestId: "new-recover-after-stop", expectedRevision: (await f.state()).run.view.queue.revision };
+  assert.equal((await f.fixture("control", { input })).http, 409);
+  assert.deepEqual(await f.fixture("control", { input: recover }), accepted);
+  assert.equal((await f.state()).run.queueState.recovery, undefined);
+  assert.deepEqual(await f.lease(), lease);
+  assert.equal((await f.native("reconcile", f.confirmation(ticket, "native_stopped"))).settled, true);
+});

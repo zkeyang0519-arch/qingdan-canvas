@@ -20,9 +20,10 @@ export class RecoveryHub extends DurableObject<any> {
             const run = entries.find(([name]) => name.startsWith("exec:run:"))?.[1];
             const control = entries.some(([name]) => name.startsWith("exec:queue-control:"));
             const confirm = entries.some(([name]) => name.startsWith("exec:reconcile-receipt:"));
+            const inspect = entries.some(([name]) => name.startsWith("exec:reconcile-ticket:"));
             const permit = run && Object.keys(run.queueState?.permits ?? {}).length > 0;
             const consumed = run && (run.queueState?.repairs["0"] ?? 0) > 0;
-            const match = fault === "control-before" && control || fault === "control-after" && run?.queueState?.pauseRequested || fault === "repair-before" && permit || fault === "repair-after" && consumed || fault?.startsWith("confirm-") && confirm;
+            const match = fault === "control-before" && control || fault === "control-after" && run?.queueState?.pauseRequested || fault === "repair-before" && permit || fault === "repair-after" && consumed || fault?.startsWith("confirm-") && confirm || fault === "inspect-after" && inspect;
             if (match) {
               await base.delete("fixture:fault");
               if (fault!.endsWith("after")) await (base.put as any)(key, value);
@@ -55,7 +56,8 @@ export class RecoveryHub extends DurableObject<any> {
           const { input: command } = await invoke("intent", { bindingId: "binding", bindingRevision: 1, requestId: crypto.randomUUID(), kind: input.kind === "summary" ? "summary" : "task", ...(input.kind === "managed" ? { items: [{ instruction: "one" }, { instruction: "two" }] } : { instruction: "synthetic task" }) }) as any;
           await dispatch.tool(principal, "codex_create_run", command);
           const run: any = await base.get("exec:run:" + command.runId);
-          if (input.mode === "queue") {
+          const checkpoint = input.mode === "checkpoint";
+          if (input.mode === "queue" || checkpoint) {
             run.snapshot.batch.items.forEach((item: any, i: number) => item.acceptance = [{ id: "check" + i, kind: "artifact", description: "result", required: true, relativePath: i + ".txt", predicate: { type: "exists" } }]);
             run.snapshot.payloadHash = await hash({ ...run.snapshot, payloadHash: undefined });
             run.commands[0].payload.payloadHash = run.snapshot.payloadHash;
@@ -64,12 +66,12 @@ export class RecoveryHub extends DurableObject<any> {
             run.view.queue.turnId = "turn0";
             await base.put({
               [`exec:queue-proof:${command.runId}:turn0:turn.completed`]: { type: "turn.completed", threadId: "thread", turnId: "turn0", payload: { status: "completed", outcome: { runId: command.runId, taskId: run.view.batch.items[0].taskId, outcome: "done" } } },
-              [`exec:queue-proof:${command.runId}:turn0:verification.completed`]: { type: "verification.completed", threadId: "thread", turnId: "turn0", payload: { results: [{ criterionId: "check0", status: "failed", failureKind: "predicate", evidenceRefs: ["synthetic:artifact"], outputHash: "a".repeat(64) }] } },
+              [`exec:queue-proof:${command.runId}:turn0:verification.completed`]: { type: "verification.completed", threadId: "thread", turnId: "turn0", payload: { results: [{ criterionId: "check0", status: checkpoint ? "passed" : "failed", ...(!checkpoint ? { failureKind: "predicate" } : {}), evidenceRefs: ["synthetic:artifact"], outputHash: "a".repeat(64) }] } },
             });
           }
           const envelope = await materialize(run.commands[0], 1, 1, 1);
-          if (input.mode !== "queue") envelope.expiresAt = new Date(Date.now() - 60000).toISOString();
-          const expiresAt = Date.now() + (input.mode === "queue" ? 600000 : -60000);
+          if (input.mode !== "queue" && !checkpoint) envelope.expiresAt = new Date(Date.now() - 60000).toISOString();
+          const expiresAt = Date.now() + (input.mode === "queue" || checkpoint ? 600000 : -60000);
           await this.env.DB.prepare("INSERT INTO agent_workspace_leases(runner_id,workspace_id,run_id,lease_epoch,expires_at) VALUES(?,?,?,?,?)").bind("runner", "workspace", command.runId, 1, expiresAt).run();
           await base.put({ ["exec:run:" + command.runId]: run, ["exec:command-run:" + envelope.commandId]: command.runId, "exec:active": command.runId });
           return Response.json({ runId: command.runId, commandId: envelope.commandId, snapshotHash: run.snapshot.payloadHash, expiresAt });

@@ -91,7 +91,7 @@ export class BatchQueue {
     } else if(!terminal(q.phase)&&q.phase!=="cancel_requested")q.phase=q.pauseRequested?"pause_requested":"running";
     if(persist)await this.save(r);else this.prepare(r);
   }
-  async control(r:QueueRun,input:QueueControl) {
+  async control(r:QueueRun,input:QueueControl,currentCommandSettled=false) {
     const q=this.state(r),key=`exec:queue-control:${r.principal.ownerId}:${input.requestId}`,digest=await hash({principal:r.principal,input});
     check(input.bindingId===r.principal.bindingId&&input.bindingRevision===r.principal.bindingRevision,"绑定已更改。",409);
     const old=await this.storage.get<{hash:string;queue:QueueView}>(key);
@@ -102,6 +102,7 @@ export class BatchQueue {
     if(input.action==="resume") {check(q.phase==="paused"&&r.view.status!=="reconciliation_required","只有已核对连接的暂停批次可以继续。",409);q.pauseRequested=false;q.phase="verifying";delete q.reason;delete q.recovery;}
     if(input.action==="confirm") {check(q.phase==="waiting_human"&&input.expectedTurnId===r.view.turnId&&!!input.expectedTurnId,"待确认的验收轮次已更改。",409);q.human[input.expectedTurnId]=true;q.phase="verifying";delete q.reason;}
     if(input.action==="recover") {
+      check(!currentCommandSettled,"原派单已封存，不能恢复执行授权。",409);
       check(q.phase==="blocked"||q.phase==="finalizing"||q.phase==="paused","此批次不需要重新核对。",409);
       if(q.phase==="paused") {
         await this.assertRecoveryCheckpoint(r);
