@@ -24,6 +24,8 @@ for (const name of [
   "MouseEvent",
   "Event",
   "getComputedStyle",
+  "innerWidth",
+  "innerHeight",
 ])
   globalThis[name] = dom.window[name];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -48,7 +50,7 @@ const output = await mkdtemp(new URL("../.tmp/order-ui-", import.meta.url));
 await build({
   stdin: {
     contents:
-      'export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, makeBlock } from "./src/canvas/model.js";',
+      'export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, makeBlock, restoreTrash } from "./src/canvas/model.js";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url)),
     loader: "jsx",
   },
@@ -79,6 +81,7 @@ const {
   createWorkspace,
   createObject,
   makeBlock,
+  restoreTrash,
 } = await import(pathToFileURL(path.join(output, "ui.mjs")));
 after(async () => {
   dom.window.close();
@@ -139,6 +142,7 @@ async function mount(t, { accountId } = {}) {
       setReadOnly,
       setAccount,
       state: () => current.current,
+      api: () => apiRef.current,
     });
     return React.createElement(
       TodoToolsProvider,
@@ -173,6 +177,300 @@ async function click(element) {
   assert.ok(element);
   await act(async () => element.click());
 }
+
+async function mountProjects(t) {
+  const fixture = await mount(t);
+  const { controls, note } = fixture;
+  const boardId = note.boardId;
+  const delivery = {
+    ...createObject(boardId, "frame"),
+    id: "delivery",
+    title: "投递",
+  };
+  const personal = {
+    ...createObject(boardId, "frame"),
+    id: "personal",
+    title: "个人计划",
+  };
+  const image = {
+    ...createObject(boardId, "image"),
+    id: "delivery-image",
+    parentId: delivery.id,
+  };
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      objects: [delivery, personal, { ...note, parentId: delivery.id }, image],
+      preferences: {
+        ...state.preferences,
+        views: { [boardId]: { arranged: { pageId: delivery.id } } },
+      },
+    })),
+  );
+  return { ...fixture, boardId, delivery, personal, image };
+}
+
+function labeledButton(label, scope = document) {
+  const button = [...scope.querySelectorAll("button")].find(
+    (item) =>
+      item.getAttribute("aria-label") === label ||
+      item.textContent.trim() === label,
+  );
+  assert.ok(button, `找不到按钮：${label}`);
+  return button;
+}
+
+async function projectAction(title, action) {
+  await click(labeledButton(`项目标签操作：${title}`));
+  await click(labeledButton(action, document.querySelector('[role="menu"]')));
+}
+
+test("标签菜单可以重命名未选中的项目，待办和当前标签保持对应", async (t) => {
+  const { host, controls, note } = await mountProjects(t);
+  await projectAction("个人计划", "重命名");
+  const input = host.querySelector('[aria-label="灵感板名称"]');
+  assert.equal(document.activeElement, input);
+  assert.equal(input.value, "个人计划");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, "  生活计划  ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click(labeledButton("保存名称", host));
+  assert.equal(
+    controls.state().objects.find((o) => o.id === "personal").title,
+    "生活计划",
+  );
+  assert.equal(
+    host
+      .querySelector('[role="tab"][aria-selected="true"]')
+      .getAttribute("aria-label"),
+    "投递",
+  );
+  assert.ok(host.querySelector('[role="tab"][aria-label="生活计划"]'));
+  assert.deepEqual(
+    controls.state().objects.find((o) => o.id === note.id).blocks,
+    note.blocks,
+  );
+  assert.deepEqual(order(host), ["none", "late", "early"]);
+});
+
+test("删除标签先确认，标签与待办图片一起移入回收站并能整组恢复", async (t) => {
+  const { host, controls, note, image } = await mountProjects(t);
+  const before = controls.state();
+  await projectAction("投递", "删除标签");
+  assert.match(
+    host.querySelector('[role="dialog"]').textContent,
+    /待办.*图片.*一起移入回收站/,
+  );
+  assert.strictEqual(controls.state(), before);
+  await click(labeledButton("取消", host));
+  assert.strictEqual(controls.state(), before);
+  await projectAction("投递", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  const state = controls.state();
+  assert.equal(
+    state.objects.some((o) => o.id === "delivery"),
+    false,
+  );
+  assert.deepEqual(
+    state.objects.map((o) => o.id),
+    ["personal"],
+  );
+  assert.deepEqual(
+    state.trash[0].objects.find((o) => o.id === note.id).blocks,
+    note.blocks,
+  );
+  assert.deepEqual(
+    state.trash[0].objects.map((o) => o.id),
+    ["delivery", note.id, image.id],
+  );
+  assert.equal(
+    host
+      .querySelector('[role="tab"][aria-selected="true"]')
+      .getAttribute("aria-label"),
+    "个人计划",
+  );
+  assert.deepEqual(order(host), []);
+  assert.equal(host.querySelector('[data-task-id="done"]'), null);
+  await act(async () =>
+    controls.update((s) => restoreTrash(s, state.trash[0].id)),
+  );
+  assert.equal(
+    controls.state().objects.find((o) => o.id === note.id).parentId,
+    "delivery",
+  );
+  assert.equal(
+    controls.state().objects.find((o) => o.id === image.id).parentId,
+    "delivery",
+  );
+  assert.deepEqual(
+    controls.state().objects.find((o) => o.id === note.id).blocks,
+    note.blocks,
+  );
+  assert.equal(controls.state().trash.length, 0);
+  await click(labeledButton("投递", host));
+  assert.deepEqual(order(host), ["none", "late", "early"]);
+  assert.ok(host.querySelector('[data-task-id="done"]'));
+  await projectAction("投递", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  await projectAction("个人计划", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.equal(host.querySelectorAll('[role="tab"]').length, 1);
+  assert.equal(controls.state().objects.length, 0);
+  assert.equal(
+    host.querySelector('[role="tab"]').getAttribute("aria-label"),
+    "未分组",
+  );
+});
+
+test("只读和锁定标签禁止操作，确认期间锁定或删除也不会改动内容", async (t) => {
+  const { host, controls } = await mountProjects(t);
+  await act(async () => controls.setReadOnly(true));
+  assert.equal(labeledButton("项目标签操作：投递").disabled, true);
+  await act(async () => controls.setReadOnly(false));
+  await projectAction("投递", "删除标签");
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      objects: state.objects.map((o) =>
+        o.id === "delivery" ? { ...o, locked: true } : o,
+      ),
+    })),
+  );
+  const locked = controls.state();
+  assert.equal(
+    labeledButton("删除标签", host.querySelector('[role="dialog"]')).disabled,
+    true,
+  );
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.strictEqual(controls.state(), locked);
+  await click(labeledButton("取消", host));
+  assert.equal(labeledButton("项目标签操作：投递").disabled, true);
+  await projectAction("个人计划", "重命名");
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      objects: state.objects.filter((o) => o.id !== "personal"),
+    })),
+  );
+  assert.equal(labeledButton("保存名称", host).disabled, true);
+});
+
+test("标签键盘切换与菜单 Escape 关闭可用，未分组没有标签操作", async (t) => {
+  const { host } = await mountProjects(t);
+  const first = host.querySelector('[role="tab"][aria-label="投递"]');
+  await act(async () => {
+    first.focus();
+    first.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+    );
+  });
+  assert.equal(document.activeElement.getAttribute("aria-label"), "个人计划");
+  await click(labeledButton("项目标签操作：投递"));
+  const trigger = labeledButton("项目标签操作：个人计划");
+  trigger.focus();
+  await click(trigger);
+  await act(async () =>
+    document.activeElement.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  assert.equal(document.querySelector('[role="menu"]'), null);
+  assert.equal(document.activeElement, trigger);
+  assert.equal(host.querySelector('[aria-label="项目标签操作：未分组"]'), null);
+});
+
+test("项目标签菜单向画布快捷键报告阻挡状态，关闭后恢复", async (t) => {
+  const { controls } = await mountProjects(t);
+  assert.ok(!controls.api().isBlocked());
+  await click(labeledButton("项目标签操作：投递"));
+  assert.equal(controls.api().isBlocked(), true);
+  await act(async () =>
+    document.activeElement.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  assert.ok(!controls.api().isBlocked());
+});
+
+test("删除标签将旧的嵌套分组一起归入回收站，恢复后保留原层级", async (t) => {
+  const { host, controls, note, image, boardId } = await mountProjects(t);
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      objects: [
+        ...state.objects.map((o) =>
+          [note.id, image.id].includes(o.id) ? { ...o, parentId: "nested" } : o,
+        ),
+        {
+          ...createObject(boardId, "frame"),
+          id: "nested",
+          parentId: "delivery",
+          title: "子分组",
+        },
+      ],
+    })),
+  );
+  await projectAction("投递", "删除标签");
+  assert.match(
+    host.querySelector('[role="dialog"]').textContent,
+    /子分组.*一起移入回收站/,
+  );
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.deepEqual(
+    controls.state().objects.map((o) => o.id),
+    ["personal"],
+  );
+  const batch = controls.state().trash[0];
+  assert.deepEqual(
+    batch.objects.map((o) => o.id).sort(),
+    ["delivery", image.id, "nested", note.id].sort(),
+  );
+  await act(async () => controls.update((s) => restoreTrash(s, batch.id)));
+  assert.equal(
+    controls.state().objects.find((o) => o.id === "nested").parentId,
+    "delivery",
+  );
+  assert.equal(
+    controls.state().objects.find((o) => o.id === note.id).parentId,
+    "nested",
+  );
+  await click(labeledButton("投递", host));
+  assert.deepEqual(order(host), ["none", "late", "early"]);
+});
+
+test("确认删除期间内容被锁定时保留整组，解锁后可一起删除", async (t) => {
+  const { host, controls, image } = await mountProjects(t);
+  await projectAction("投递", "删除标签");
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) =>
+        o.id === image.id ? { ...o, locked: true } : o,
+      ),
+    })),
+  );
+  const locked = controls.state();
+  const dialog = host.querySelector('[role="dialog"]');
+  assert.match(dialog.textContent, /锁定内容.*解锁/);
+  assert.equal(labeledButton("删除标签", dialog).disabled, true);
+  await click(labeledButton("删除标签", dialog));
+  assert.strictEqual(controls.state(), locked);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) => ({ ...o, locked: false })),
+    })),
+  );
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.deepEqual(
+    controls.state().objects.map((o) => o.id),
+    ["personal"],
+  );
+});
 
 test("常用清单从账号读取，每次一键添加生成独立新待办且保留模板", async (t) => {
   const requests = [];
