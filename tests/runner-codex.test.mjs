@@ -1420,6 +1420,14 @@ if (api) {
     assert.equal(adapter.getRun("run-a").terminal, true);
   });
 
+  test("normal standalone completion stops background terminals before another run can use the workspace", async (t) => {
+    const f = await fixture(t, "batch-background"), adapter = await f.open();
+    await adapter.startFreshRun(await f.snapshot());
+    await adapter.waitForRun("run-a", 4000);
+    assert.deepEqual((await f.state()).threads[0].terminals, []);
+    assert.equal((await adapter.startFreshRun(await f.snapshot("run-b"))).status, "started");
+  });
+
   test("cancellation terminates only its thread's paginated background terminals before releasing the workspace", async (t) => {
     const f = await fixture(t, "background-cancel"),
       adapter = await f.open();

@@ -157,6 +157,7 @@ export class RunnerExecutor {
   private capturedAt = 0;
   private contextQueue: Promise<unknown> = Promise.resolve();
   private releaseConsumer: () => void;
+  private interruptAttempts = new Map<string, { key: string; adapter: CodexAdapter }>();
 
   constructor(private o: Options) {
     this.now = o.now ?? Date.now;
@@ -1070,9 +1071,27 @@ export class RunnerExecutor {
       return;
     }
     const key = `${run.runId}:${run.activeTurnId}:${cancelCommandId ?? "safety-stop"}`;
-    if (this.o.store.interruptOnce(key)) {
-      await this.adapter.cancelRun(run.runId);
-      await this.adapter
+    const adapter = this.adapter;
+    const firstIntent = this.o.store.interruptOnce(key);
+    const previous = this.interruptAttempts.get(run.runId);
+    if (firstIntent || previous?.key !== key || previous.adapter !== adapter) {
+      // The durable marker is intent, not proof the RPC reached Codex. In
+      // particular old interruptOnce rows must not suppress recovery forever.
+      const recovered = await adapter.reconcileRun(run.runId);
+      const current = this.o.runs.getRun(run.runId);
+      if (!current || terminal(current)) return;
+      if (
+        recovered.status === "reconciliation_required" ||
+        this.adapter !== adapter || !adapter.available ||
+        current.threadId !== run.threadId || current.activeTurnId !== run.activeTurnId ||
+        current.pendingRequestId
+      ) return;
+      const receipt = await adapter.cancelRun(run.runId);
+      // Suppress repeated accepted interrupts only for this live connection.
+      // An ambiguous send or a new connection rechecks the exact target again.
+      if (receipt.status !== "reconciliation_required")
+        this.interruptAttempts.set(run.runId, { key, adapter });
+      await adapter
         .waitForRun(run.runId, this.o.codex?.shutdownTimeoutMs ?? 1500)
         .catch(() => {});
     }
@@ -1089,16 +1108,17 @@ export class RunnerExecutor {
   private report(
     held: HeldRun,
     entry: JournalEntry,
+    stopError?: string,
   ): Omit<NativeReport, "revision"> | undefined {
     if (["staged", "dispatching", "superseded"].includes(entry.phase)) return;
     const run = this.o.runs.getRun(held.runId);
     const command = entry.envelope.payload;
-    const stopped = terminal(run) || !run;
+    const stopped = !stopError && (terminal(run) || !run);
     let status: NativeReport["status"];
     if (command.type === "cancel_run" && stopped) status = "cancelled";
     else if (entry.phase === "rejected" && stopped) status = "failed";
     else if (
-      run?.status === "reconciliation_required" ||
+      stopError || run?.status === "reconciliation_required" ||
       (!stopped &&
         (run?.cancelRequested || !run?.activeTurnId) &&
         entry.phase === "uncertain")
@@ -1108,7 +1128,7 @@ export class RunnerExecutor {
     else if (run.status === "cancel_requested") status = "running";
     else status = run.status as NativeReport["status"];
     const error =
-      run?.resultError ?? (status === "verifying" ? undefined : entry.error);
+      stopError ?? run?.resultError ?? (status === "verifying" ? undefined : entry.error);
     return {
       runId: held.runId,
       commandId: entry.envelope.commandId,
@@ -1132,10 +1152,25 @@ export class RunnerExecutor {
       this.o.store.transition(entry, { acked: true });
     }
     if (entry) {
-      const report = this.report(held, entry);
+      const run = this.o.runs.getRun(held.runId);
+      let stopError: string | undefined;
+      if (terminal(run) && run?.threadId && run.activeTurnId) {
+        try {
+          // A replaced workspace must still allow the already attached native
+          // thread to be stopped; only new dispatch needs directory resolution.
+          const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
+          await adapter.confirmRunStopped(held.runId);
+        } catch (error) {
+          stopError = String(error);
+        }
+      }
+      const report = this.report(held, entry, stopError);
       if (report) this.o.store.saveReport(report);
       const pending = this.o.store.run(held.runId);
       if (pending?.report && !pending.reportSent) {
+        // Old versions may have saved this report before inspecting terminals.
+        // Keep its immutable receipt for retry, but never deliver a false stop.
+        if (pending.report.stopConfirmed && !report?.stopConfirmed) return false;
         const receipt = result.parse(
           await t.executionRequest("report", pending.report),
         );
@@ -1162,6 +1197,11 @@ export class RunnerExecutor {
     return false;
   }
   private async release(held: HeldRun, t?: ExecutionTransport) {
+    const run = this.o.runs.getRun(held.runId);
+    if (run?.threadId && run.activeTurnId) {
+      const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
+      await adapter.confirmRunStopped(held.runId);
+    }
     if (held.phase === "releasing") {
       if (this.o.device.lease(held.runId)) {
         if (!t) return;
@@ -1178,6 +1218,7 @@ export class RunnerExecutor {
     );
     this.o.store.clearHold(held);
     this.attached.delete(held.runId);
+    this.interruptAttempts.delete(held.runId);
   }
   private async flushEvents(
     t: ExecutionTransport,

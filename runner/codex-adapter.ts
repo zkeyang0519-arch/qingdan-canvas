@@ -95,7 +95,7 @@ export class CodexAdapter {
   private requests = new Map<string, PendingRequest>();
   private itemMetadata = new Map<string, NativeItemMetadata>();
   private attachedThreads = new Set<string>();
-  private cancellationCleanups = new Map<string, Promise<void>>();
+  private completionCleanups = new Map<string, Promise<void>>();
   private completionReads = new Map<string, Promise<void>>();
   private desktopRefreshes = new Map<string, Promise<void>>();
   private closed = false;
@@ -682,22 +682,6 @@ export class CodexAdapter {
       }
       return;
     }
-    if (
-      run.cancelRequested &&
-      (turn.status === "interrupted" || !!run.batch) &&
-      !cleanupConfirmed
-    ) {
-      if (!this.cancellationCleanups.has(runId)) {
-        const cleanup = stopThreadTerminals(this.client, run.threadId!)
-          .then(() => this.complete(runId, turn, true, historyConfirmed))
-          .catch((error) => {
-            this.uncertain(runId, String(error));
-          })
-          .finally(() => this.cancellationCleanups.delete(runId));
-        this.cancellationCleanups.set(runId, cleanup);
-      }
-      return;
-    }
     const messages = (turn.items ?? []).filter(
       (item): item is Extract<ThreadItem, { type: "agentMessage" }> =>
         item.type === "agentMessage" && item.phase !== "commentary",
@@ -748,6 +732,22 @@ export class CodexAdapter {
       turn.status,
       cancelled,
     );
+    // A terminal model turn does not prove that its background commands have
+    // stopped. Keep the local workspace active until both facts are verified.
+    // Between-item checkpoints retain their lease and may retain background
+    // commands; their final release goes through finishManagedBatch instead.
+    if (batchPatch.terminal !== false && !cleanupConfirmed) {
+      if (!this.completionCleanups.has(runId)) {
+        const cleanup = this.confirmRunStopped(runId)
+          .then(() => this.complete(runId, turn, true, historyConfirmed))
+          .catch((error) => {
+            this.uncertain(runId, String(error));
+          })
+          .finally(() => this.completionCleanups.delete(runId));
+        this.completionCleanups.set(runId, cleanup);
+      }
+      return;
+    }
     const status = cancelled
       ? "cancelled"
       : turn.status !== "completed"
@@ -1196,7 +1196,7 @@ export class CodexAdapter {
     await guard("turn");
     // Confirm inherited background terminals have stopped before releasing the
     // native workspace lease; a completed model turn alone is not that proof.
-    await stopThreadTerminals(this.client, run.threadId);
+    await this.confirmRunStopped(runId, () => guard("turn"));
     await guard("turn");
     const current = this.getRun(runId);
     if (
@@ -1371,7 +1371,7 @@ export class CodexAdapter {
         status: "cancel_requested",
       });
       try {
-        await stopThreadTerminals(this.client, run.threadId!);
+        await this.confirmRunStopped(runId);
       } catch (error) {
         this.uncertain(runId, String(error));
         return {
@@ -1551,7 +1551,7 @@ export class CodexAdapter {
           turn.items = await this.items(run.threadId, turn.id);
         this.complete(runId, turn);
         await this.completionReads.get(turn.id);
-        await this.cancellationCleanups.get(runId);
+        await this.completionCleanups.get(runId);
       } else {
         await this.client.request("thread/resume", {
           threadId: run.threadId,
@@ -1588,6 +1588,7 @@ export class CodexAdapter {
       // A live completion can be resolving its receipt while this independent
       // history query fails. Let that authoritative result settle first.
       if (run.activeTurnId) await this.completionReads.get(run.activeTurnId);
+      await this.completionCleanups.get(runId);
       const current = this.getRun(runId);
       if (current.terminal) return { runId, status: "completed" };
       if (
@@ -1606,6 +1607,49 @@ export class CodexAdapter {
         reason: String(error),
       };
     }
+  }
+  async confirmRunStopped(runId: string, guard?: () => Promise<void>) {
+    const run = this.getRun(runId);
+    const unchanged = () => {
+      const current = this.getRun(runId);
+      if (
+        !this.available || !run.threadId || !run.activeTurnId ||
+        current.threadId !== run.threadId || current.activeTurnId !== run.activeTurnId ||
+        current.pendingRequestId
+      )
+        throw new RunnerError("RECONCILIATION_REQUIRED", "原轮次或 Codex 连接已改变，尚未确认停止。");
+    };
+    const checkHistory = async () => {
+      unchanged();
+      const history = await this.readThread(run.threadId!, run.snapshot.workspaceId);
+      unchanged();
+      const matches = history.turns.filter(turn => turn.id === run.activeTurnId);
+      if (
+        matches.length !== 1 ||
+        !["completed", "failed", "interrupted"].includes(matches[0].status) ||
+        history.turns.some(turn => turn.status === "inProgress")
+      )
+        throw new RunnerError("RECONCILIATION_REQUIRED", "原会话仍有活动或不确定轮次，尚未确认停止。");
+      await guard?.();
+      unchanged();
+    };
+    await checkHistory();
+    // After restart this thread must be loaded before terminal inspection.
+    // This attaches the mapped thread only; it never starts a model turn.
+    if (!this.attachedThreads.has(run.threadId!)) {
+      await this.client.request("thread/resume", {
+        threadId: run.threadId!, cwd: run.root, approvalPolicy: "on-request",
+        approvalsReviewer: this.permissions(run.snapshot).reviewer,
+        sandbox: this.permissions(run.snapshot).sandbox, excludeTurns: true,
+        ...(run.resultChannel === "tool"
+          ? { developerInstructions: runInstructions(run.snapshot.kind) }
+          : {}),
+      });
+      await checkHistory();
+      this.attachedThreads.add(run.threadId!);
+    }
+    await stopThreadTerminals(this.client, run.threadId!);
+    await checkHistory();
   }
   async confirmPausedCheckpoint(runId: string, guard: () => Promise<void>) {
     const run=this.getRun(runId);
@@ -1779,7 +1823,7 @@ export class CodexAdapter {
           await this.reconcileRun(run.runId);
       }
     await this.client.close();
-    await Promise.allSettled(this.cancellationCleanups.values());
+    await Promise.allSettled(this.completionCleanups.values());
     if (options?.waitDesktop !== false)
       await Promise.allSettled(this.desktopRefreshes.values());
     this.closed = true;

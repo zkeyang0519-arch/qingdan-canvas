@@ -268,6 +268,8 @@ export class ExecutionStore {
     });
   }
   interruptOnce(key: string) {
+    // This legacy row records stop intent only. The executor must reconcile
+    // the target after a new connection; insertion is not a delivery receipt.
     return !!this.db
       .prepare("INSERT OR IGNORE INTO interrupts VALUES (?)")
       .run(key).changes;
