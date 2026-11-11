@@ -1051,8 +1051,13 @@ export class ExecutionDispatch {
       await this.cleanupTerminal(r);
       return {decision:"settled",runId:r.view.runId,workspaceId:r.view.workspaceId,leaseEpoch:input.leaseEpoch};
     }
-    check(r.commands.slice(r.commands.indexOf(original)+1).every(c=>c.payload.type==="cancel_run"),"存在新的执行命令，请先请求停止再核对。",409);
-    const cancelling=r.commands.at(-1)?.payload.type==="cancel_run";
+    const head=r.commands.at(-1);
+    const cancelling=head?.receipt.commandId===r.view.commandId&&head.payload.type==="cancel_run";
+    // Cancellation can retire a queued continuation before it ever receives an
+    // envelope. It cannot erase an issued delivery or accepted execution facts.
+    check(r.commands.slice(r.commands.indexOf(original)+1).every(c=>c.payload.type==="cancel_run"||(
+      cancelling&&c.payload.type==="continue_run"&&c.settled===true&&c.envelope===null&&c.ack===null&&r.reportCommandId!==c.receipt.commandId
+    )),"存在新的执行命令，请先请求停止再核对。",409);
     check(cancelling||r.view.status==="reconciliation_required"||!lease||lease.expires_at<=Date.now()||((!original.ack||original.ack.status==="stored")&&Date.parse(original.envelope.expiresAt)<=Date.now()),"运行仍有有效执行授权，无需终结核对。",409);
     const stop=cancelling||!lease||lease.expires_at<=Date.now();
     const candidate:Omit<ExecutionReconcileTicket,"recoveryId">={runId:r.view.runId,workspaceId:r.view.workspaceId,originalCommandId:original.receipt.commandId,currentCommandId:r.view.commandId,leaseEpoch:input.leaseEpoch,snapshotHash:r.snapshot.payloadHash,reportRevision:r.view.reportRevision,threadId:r.view.threadId,turnId:r.view.turnId,action:stop?"stop":"inspect_only"};

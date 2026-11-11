@@ -214,3 +214,36 @@ test("user reconnect settles a known turn when an old pending report is supersed
   assert.deepEqual((await f.nativeState()).threads[0].terminals, []);
   assert.equal(f.packets.find(p => p.action === "reconcile" && p.input.phase === "confirm").input.proof.kind, "native_stopped");
 });
+
+test("cancelled undispatched continuation settles through user reconnect without native continuation or lease renewal", async t => {
+  const f = await recoveryHarness(t, { mode: "background-cancel" });
+  const created = await f.create();
+  f.loseReply((action, input) => action === "report" && input.status === "running");
+  await f.until(() => !f.online);
+  const firstReport = f.packets.find(p => p.action === "report").input;
+  const continued = await f.dispatch.tool(f.principal, "codex_continue_run", { runId: f.runId, requestId: crypto.randomUUID(), expectedTurnId: firstReport.turnId, mode: "steer", message: "undelivered change" });
+  const cancelled = await f.dispatch.tool(f.principal, "codex_cancel_run", { runId: f.runId, requestId: crypto.randomUUID() });
+  await f.expireLease();
+  assert.deepEqual(await f.native("poll", {}), { offers: [], deliveries: [] });
+  assert.ok(!f.journal.command(continued.commandId));
+  // Simulate the native disconnect's persisted uncertainty while retaining the
+  // pending original report. Recovery itself uses the public device reconnect.
+  f.runs.patchRun(f.runId, { status: "reconciliation_required" });
+  await f.reconnect();
+  await f.until(() => !f.executor.hasHold);
+  const confirmation = f.packets.find(p => p.action === "reconcile" && p.input.phase === "confirm");
+  assert.equal(confirmation.input.proof.kind, "native_stopped");
+  assert.equal(confirmation.input.proof.journal.commandId, created.commandId);
+  assert.equal(confirmation.input.report.commandId, cancelled.commandId);
+  assert.equal(confirmation.result.settled, true);
+  const view = await f.view(), native = await f.nativeState();
+  assert.equal(view.status, "cancelled");
+  assert.equal(view.terminal && view.stopConfirmed, true);
+  assert.equal(native.calls.filter(call => call.method === "turn/start").length, 1);
+  assert.equal(native.calls.filter(call => call.method === "turn/steer").length, 0);
+  assert.deepEqual(native.threads[0].terminals, []);
+  assert.equal(f.controller.store.leases().length, 0);
+  assert.equal(await f.storage.get("fixture:lease:" + f.runId), undefined);
+  assert.equal(await f.storage.get("exec:queue-workspace:" + f.workspaceId), undefined);
+  assert.equal(f.packets.filter(p => p.action === "recover-lease").length, 0);
+});

@@ -109,6 +109,8 @@ function fixture({ managed = false } = {}) {
           async first() {
             if (sql.includes("agent_execution_requests"))
               return reservations.get(args.join(":"));
+            if (sql.includes("agent_workspace_leases"))
+              return structuredClone(leases.find(lease => lease.workspace_id === args[1] && (args.length < 3 || lease.run_id === args[2])) ?? null);
             if (sql.includes("agent_bindings")) return binding;
             if (sql.includes("agent_devices")) return device;
             throw Error(sql);
@@ -262,6 +264,86 @@ const report = {
   terminal: true,
   stopConfirmed: true,
 };
+
+async function cancelledContinuation(mode = "steer", delivered = false) {
+  const f = fixture();
+  await f.native("context", { contexts: [{ workspaceId: "workspace", capturedAt: new Date().toISOString(), gitBaseline: { commit: null, branch: null, dirty: false }, threads: [] }] });
+  const { input } = await f.intent({ requestId: "intent", bindingId: "binding", bindingRevision: 1, kind: "task", instruction: "synthetic task" });
+  const created = await f.dispatch.tool(principal, "codex_create_run", input);
+  const lease = { run_id: input.runId, workspace_id: "workspace", lease_epoch: 1, expires_at: Date.now() + 60000 };
+  f.lease([lease]);
+  assert.equal((await f.native("poll", {})).deliveries[0].envelope.commandId, created.commandId);
+  for (const status of ["stored", "applied"]) await f.native("ack", { commandId: created.commandId, status });
+  await f.native("report", { ...report, runId: input.runId, commandId: created.commandId, status: mode === "reply" ? "verifying" : "running", terminal: mode === "reply", stopConfirmed: mode === "reply" });
+  const continued = await f.dispatch.tool(principal, "codex_continue_run", { requestId: "continue", runId: input.runId, expectedTurnId: report.turnId, mode, message: "continue" });
+  if (delivered) {
+    lease.lease_epoch++;
+    f.lease([lease]);
+    assert.equal((await f.native("poll", {})).deliveries[0].envelope.commandId, continued.commandId);
+  }
+  const cancelled = await f.dispatch.tool(principal, "codex_cancel_run", { requestId: "cancel", runId: input.runId });
+  f.lease([{ ...lease, expires_at: Date.now() - 60000 }]);
+  const run = () => f.storage.get("exec:run:" + input.runId);
+  const inspect = leaseEpoch => f.native("reconcile", { phase: "inspect", runId: input.runId, workspaceId: "workspace", leaseEpoch });
+  const confirmation = ticket => ({ phase: "confirm", runId: input.runId, recoveryId: ticket.recoveryId, requestId: "confirm-" + ticket.recoveryId,
+    proof: { kind: "native_stopped", consumerHeld: true, claim: { runId: input.runId, workspaceId: "workspace", leaseEpoch: ticket.leaseEpoch, lockToken: "original-lock" }, journal: { commandId: ticket.originalCommandId, snapshotHash: ticket.snapshotHash, sealed: true }, threadId: report.threadId, turnId: report.turnId, turnsStopped: true, backgroundTerminalsStopped: true },
+    report: { ...report, runId: input.runId, commandId: ticket.currentCommandId, revision: ticket.reportRevision + 1, status: "cancelled" } });
+  return { ...f, runId: input.runId, created, continued, cancelled, run, inspect, confirmation };
+}
+
+for (const mode of ["steer", "reply"]) test(`cancelled undispatched continuation permits expired-lease stop reconciliation: ${mode}`, async () => {
+  const f = await cancelledContinuation(mode);
+  let run = await f.run();
+  assert.deepEqual(run.commands.map(command => [command.payload.type, !!command.envelope, !!command.settled]), [["create_run", true, true], ["continue_run", false, true], ["cancel_run", false, false]]);
+  assert.deepEqual(await f.native("poll", {}), { offers: [], deliveries: [] });
+  assert.deepEqual(await f.native("report", { ...report, runId: f.runId, commandId: f.created.commandId, revision: 2, status: "cancelled" }), { ok: true, ignored: true }, "ordinary old-command reports still cannot settle a newer head");
+  const { ticket } = await f.inspect(1);
+  assert.equal(ticket.action, "stop");
+  assert.equal(ticket.originalCommandId, f.created.commandId);
+  assert.equal(ticket.currentCommandId, f.cancelled.commandId);
+  const confirm = f.confirmation(ticket);
+  const wrongClaim = structuredClone(confirm);
+  wrongClaim.proof.claim.leaseEpoch++;
+  await assert.rejects(f.native("reconcile", wrongClaim), { status: 409 });
+  const wrongJournal = structuredClone(confirm);
+  wrongJournal.proof.journal.commandId = f.continued.commandId;
+  await assert.rejects(f.native("reconcile", wrongJournal), { status: 409 });
+  const settled = await f.native("reconcile", confirm);
+  assert.equal(settled.settled, true);
+  assert.deepEqual(await f.native("reconcile", confirm), settled);
+  run = await f.run();
+  assert.equal(run.view.status, "cancelled");
+  assert.equal(run.view.terminal && run.view.stopConfirmed, true);
+  assert.equal(run.commands[1].envelope, null);
+  assert.equal(run.commands[1].ack, null);
+  assert.equal(await f.storage.get("exec:active"), undefined);
+});
+
+for (const condition of ["unsealed", "acknowledged", "reported", "changed-head"]) test(`cancelled undispatched continuation rejects inconsistent ${condition} evidence`, async () => {
+  const f = await cancelledContinuation();
+  const run = await f.run(), continued = run.commands[1];
+  // Contradictory records are deliberate guard probes, not claimed public flows.
+  if (condition === "unsealed") continued.settled = false;
+  if (condition === "acknowledged") continued.ack = { commandId: f.continued.commandId, status: "stored" };
+  if (condition === "reported") run.reportCommandId = f.continued.commandId;
+  if (condition === "changed-head") run.view.commandId = f.continued.commandId;
+  await f.storage.put("exec:run:" + f.runId, run);
+  await assert.rejects(f.inspect(1), { status: 409 });
+  assert.equal((await f.storage.list({ prefix: "exec:reconcile-ticket:" })).size, 0);
+  assert.equal((await f.run()).view.stopConfirmed, false);
+});
+
+test("cancelled undispatched continuation exception never skips an actually issued reply or its lease", async () => {
+  const f = await cancelledContinuation("reply", true);
+  await assert.rejects(f.inspect(1), { status: 409 });
+  const { ticket } = await f.inspect(2);
+  assert.equal(ticket.originalCommandId, f.continued.commandId);
+  assert.equal(ticket.currentCommandId, f.cancelled.commandId);
+  const staleProof = f.confirmation(ticket);
+  staleProof.proof.journal.commandId = f.created.commandId;
+  await assert.rejects(f.native("reconcile", staleProof), { status: 409 });
+  assert.equal((await f.run()).view.stopConfirmed, false);
+});
 
 test("managed dispatch persists ordered permits, pause CAS, writeback retry, final stop and directory reservation", async () => {
   const f=fixture({managed:true});
