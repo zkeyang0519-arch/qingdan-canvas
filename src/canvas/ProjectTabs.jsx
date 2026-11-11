@@ -10,7 +10,7 @@ import { FileText, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 import ContextMenu from "./ContextMenu.jsx";
 
 export default function ProjectTabs({
-  pages,
+  pages: allPages,
   page,
   onChoose,
   onCreate,
@@ -22,6 +22,10 @@ export default function ProjectTabs({
   readOnly,
   panelId,
 }) {
+  // Keep the model's blank input page available, without showing an empty tab.
+  const pages = allPages.filter(
+    (project) => project.group || project.objects.length,
+  );
   const prefix = useId(),
     list = useRef(null);
   const closeMenu = useCallback(() => onMenuChange(null), [onMenuChange]);
@@ -97,33 +101,31 @@ export default function ProjectTabs({
                   {pending}
                 </span>
               </button>
-              {project.group && (
-                <button
-                  type="button"
-                  className="project-tab-menu"
-                  aria-label={`项目标签操作：${project.title}`}
-                  aria-haspopup="menu"
-                  aria-expanded={menuPage?.id === project.id}
-                  title="标签操作"
-                  disabled={readOnly || !canEdit(project)}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.currentTarget.focus({ preventScroll: true });
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    onMenuChange(
-                      menu?.pageId === project.id
-                        ? null
-                        : {
-                            pageId: project.id,
-                            anchor: { x: rect.left, y: rect.bottom + 6 },
-                            trigger: event.currentTarget,
-                          },
-                    );
-                  }}
-                >
-                  <MoreHorizontal size={16} aria-hidden="true" />
-                </button>
-              )}
+              <button
+                type="button"
+                className="project-tab-menu"
+                aria-label={`项目标签操作：${project.title}`}
+                aria-haspopup="menu"
+                aria-expanded={menuPage?.id === project.id}
+                title="标签操作"
+                disabled={readOnly || !canEdit(project)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  onMenuChange(
+                    menu?.pageId === project.id
+                      ? null
+                      : {
+                          pageId: project.id,
+                          anchor: { x: rect.left, y: rect.bottom + 6 },
+                          trigger: event.currentTarget,
+                        },
+                  );
+                }}
+              >
+                <MoreHorizontal size={16} aria-hidden="true" />
+              </button>
             </div>
           );
         })}
@@ -137,7 +139,7 @@ export default function ProjectTabs({
       >
         <Plus size={18} />
       </button>
-      {menuPage?.group &&
+      {menuPage &&
         createPortal(
           <ContextMenu
             anchor={menu.anchor}

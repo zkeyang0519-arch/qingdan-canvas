@@ -3,6 +3,8 @@ import {
   createInspirationBoard,
   patchObjects,
   movableIds,
+  groupObjects,
+  deleteObjects,
   takeOutObject,
   now,
 } from "./model.js";
@@ -131,6 +133,44 @@ export function writablePage(state, boardId, pageId) {
     (!page.group || !effectivelyLocked(state.objects, page.group.id))
     ? page
     : null;
+}
+
+function pageObjectIds(page) {
+  return page?.group ? [page.group.id] : page?.objects.map((o) => o.id) || [];
+}
+
+export function canDeleteChecklistPage(state, boardId, pageId) {
+  const page = writablePage(state, boardId, pageId);
+  const ids = pageObjectIds(page);
+  const movable = movableIds(state, ids);
+  return ids.length > 0 && ids.every((key) => movable.has(key));
+}
+
+export function deleteChecklistPage(state, boardId, pageId) {
+  if (!canDeleteChecklistPage(state, boardId, pageId)) return state;
+  return deleteObjects(
+    state,
+    pageObjectIds(writablePage(state, boardId, pageId)),
+    true,
+  );
+}
+
+export function renameChecklistPage(state, boardId, pageId, title) {
+  const name = title.trim().slice(0, 80);
+  const page = writablePage(state, boardId, pageId);
+  if (!name || !page) return state;
+  if (page.group) return patchObjects(state, { [page.id]: { title: name } });
+  // A virtual page has no shared name to change. Group its existing roots so
+  // the new label persists for every collaborator without moving its contents.
+  if (!canDeleteChecklistPage(state, boardId, pageId)) return state;
+  const grouped = groupObjects(state, pageObjectIds(page));
+  if (grouped === state) return state;
+  const group = grouped.objects.at(-1);
+  const next = patchObjects(grouped, { [group.id]: { title: name } });
+  const current = panePages(state, boardId);
+  return current.page?.id === pageId
+    ? choosePanePage(next, boardId, current.active, group.id)
+    : next;
 }
 
 function insertionPoint(state, boardId, page) {
