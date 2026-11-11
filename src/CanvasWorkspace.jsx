@@ -708,6 +708,7 @@ export default function CanvasWorkspace({
               </button>
               <button
                 className="primary share-button"
+                aria-label="邀请协作"
                 disabled={room.role !== "owner"}
                 title={
                   room.role === "owner"
@@ -717,7 +718,9 @@ export default function CanvasWorkspace({
                 onClick={() => void shareNow()}
               >
                 <Share2 size={16} />
-                邀请协作
+                <span className="share-label" aria-hidden="true">
+                  邀请<span className="share-label-detail">协作</span>
+                </span>
               </button>
             </div>
           </nav>
