@@ -50,7 +50,7 @@ const output = await mkdtemp(new URL("../.tmp/order-ui-", import.meta.url));
 await build({
   stdin: {
     contents:
-      'export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, makeBlock } from "./src/canvas/model.js";',
+      'export { default as ArrangedWorkspace } from "./src/canvas/ArrangedWorkspace.jsx"; export { TodoToolsProvider } from "./src/canvas/TodoTools.jsx"; export { createWorkspace, createObject, makeBlock, restoreTrash } from "./src/canvas/model.js";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url)),
     loader: "jsx",
   },
@@ -81,6 +81,7 @@ const {
   createWorkspace,
   createObject,
   makeBlock,
+  restoreTrash,
 } = await import(pathToFileURL(path.join(output, "ui.mjs")));
 after(async () => {
   dom.window.close();
@@ -256,11 +257,14 @@ test("标签菜单可以重命名未选中的项目，待办和当前标签保�
   assert.deepEqual(order(host), ["none", "late", "early"]);
 });
 
-test("删除标签先确认，保留待办和图片并显示未分组，空标签也可删除", async (t) => {
+test("删除标签先确认，标签与待办图片一起移入回收站并能整组恢复", async (t) => {
   const { host, controls, note, image } = await mountProjects(t);
   const before = controls.state();
   await projectAction("投递", "删除标签");
-  assert.match(host.querySelector('[role="dialog"]').textContent, /未分组/);
+  assert.match(
+    host.querySelector('[role="dialog"]').textContent,
+    /待办.*图片.*一起移入回收站/,
+  );
   assert.strictEqual(controls.state(), before);
   await click(labeledButton("取消", host));
   assert.strictEqual(controls.state(), before);
@@ -271,28 +275,55 @@ test("删除标签先确认，保留待办和图片并显示未分组，空标�
     state.objects.some((o) => o.id === "delivery"),
     false,
   );
-  assert.equal(state.objects.find((o) => o.id === note.id).parentId, null);
-  assert.equal(state.objects.find((o) => o.id === image.id).parentId, null);
   assert.deepEqual(
-    state.objects.find((o) => o.id === note.id).blocks,
+    state.objects.map((o) => o.id),
+    ["personal"],
+  );
+  assert.deepEqual(
+    state.trash[0].objects.find((o) => o.id === note.id).blocks,
     note.blocks,
   );
   assert.deepEqual(
     state.trash[0].objects.map((o) => o.id),
-    ["delivery"],
+    ["delivery", note.id, image.id],
   );
   assert.equal(
     host
       .querySelector('[role="tab"][aria-selected="true"]')
       .getAttribute("aria-label"),
-    "未分组",
+    "个人计划",
   );
+  assert.deepEqual(order(host), []);
+  assert.equal(host.querySelector('[data-task-id="done"]'), null);
+  await act(async () =>
+    controls.update((s) => restoreTrash(s, state.trash[0].id)),
+  );
+  assert.equal(
+    controls.state().objects.find((o) => o.id === note.id).parentId,
+    "delivery",
+  );
+  assert.equal(
+    controls.state().objects.find((o) => o.id === image.id).parentId,
+    "delivery",
+  );
+  assert.deepEqual(
+    controls.state().objects.find((o) => o.id === note.id).blocks,
+    note.blocks,
+  );
+  assert.equal(controls.state().trash.length, 0);
+  await click(labeledButton("投递", host));
   assert.deepEqual(order(host), ["none", "late", "early"]);
   assert.ok(host.querySelector('[data-task-id="done"]'));
+  await projectAction("投递", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
   await projectAction("个人计划", "删除标签");
   await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
   assert.equal(host.querySelectorAll('[role="tab"]').length, 1);
-  assert.equal(controls.state().objects.length, 2);
+  assert.equal(controls.state().objects.length, 0);
+  assert.equal(
+    host.querySelector('[role="tab"]').getAttribute("aria-label"),
+    "未分组",
+  );
 });
 
 test("只读和锁定标签禁止操作，确认期间锁定或删除也不会改动内容", async (t) => {
@@ -365,7 +396,7 @@ test("项目标签菜单向画布快捷键报告阻挡状态，关闭后恢复",
   assert.ok(!controls.api().isBlocked());
 });
 
-test("删除旧的嵌套标签时说明并保留子分组，切换到保留内容", async (t) => {
+test("删除标签将旧的嵌套分组一起归入回收站，恢复后保留原层级", async (t) => {
   const { host, controls, note, image, boardId } = await mountProjects(t);
   await act(async () =>
     controls.update((state) => ({
@@ -386,24 +417,59 @@ test("删除旧的嵌套标签时说明并保留子分组，切换到保留内�
   await projectAction("投递", "删除标签");
   assert.match(
     host.querySelector('[role="dialog"]').textContent,
-    /子分组.*独立标签/,
+    /子分组.*一起移入回收站/,
   );
   await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.deepEqual(
+    controls.state().objects.map((o) => o.id),
+    ["personal"],
+  );
+  const batch = controls.state().trash[0];
+  assert.deepEqual(
+    batch.objects.map((o) => o.id).sort(),
+    ["delivery", image.id, "nested", note.id].sort(),
+  );
+  await act(async () => controls.update((s) => restoreTrash(s, batch.id)));
   assert.equal(
     controls.state().objects.find((o) => o.id === "nested").parentId,
-    null,
+    "delivery",
   );
   assert.equal(
     controls.state().objects.find((o) => o.id === note.id).parentId,
     "nested",
   );
-  assert.equal(
-    host
-      .querySelector('[role="tab"][aria-selected="true"]')
-      .getAttribute("aria-label"),
-    "子分组",
-  );
+  await click(labeledButton("投递", host));
   assert.deepEqual(order(host), ["none", "late", "early"]);
+});
+
+test("确认删除期间内容被锁定时保留整组，解锁后可一起删除", async (t) => {
+  const { host, controls, image } = await mountProjects(t);
+  await projectAction("投递", "删除标签");
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) =>
+        o.id === image.id ? { ...o, locked: true } : o,
+      ),
+    })),
+  );
+  const locked = controls.state();
+  const dialog = host.querySelector('[role="dialog"]');
+  assert.match(dialog.textContent, /锁定内容.*解锁/);
+  assert.equal(labeledButton("删除标签", dialog).disabled, true);
+  await click(labeledButton("删除标签", dialog));
+  assert.strictEqual(controls.state(), locked);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) => ({ ...o, locked: false })),
+    })),
+  );
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.deepEqual(
+    controls.state().objects.map((o) => o.id),
+    ["personal"],
+  );
 });
 
 test("常用清单从账号读取，每次一键添加生成独立新待办且保留模板", async (t) => {

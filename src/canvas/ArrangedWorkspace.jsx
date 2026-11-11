@@ -31,6 +31,7 @@ import {
   deleteObjects,
   id,
   makeBlock,
+  movableIds,
   objectLabel,
   patchObjects,
 } from "./model.js";
@@ -965,9 +966,10 @@ export default function ArrangedWorkspace({
     !blocked &&
     !workspace.readOnly &&
     (dialog?.type === "create" || !!dialogPage?.group);
-  const childGroup = state.objects.find(
-    (object) => object.type === "frame" && object.parentId === dialog?.pageId,
-  );
+  const canDeletePage =
+    dialogEditable &&
+    !!dialogPage?.group &&
+    movableIds(state, [dialogPage.id]).has(dialogPage.id);
   const [quickTaskLibraryOpen, setQuickTaskLibraryOpen] = useState(false);
   const quickTaskLibrary = useQuickTasks(libraryKey, quickTaskLibraryOpen);
   const modalDialog = dialog && dialog.type !== "deadline";
@@ -1102,23 +1104,12 @@ export default function ArrangedWorkspace({
       setDialog({ side, type: "rename", pageId: page.id });
     });
   const removePage = () => {
-    if (!dialogEditable) return;
+    if (!canDeletePage) return;
     onExit();
     update((s) => {
       const page = writablePage(s, boardId, dialog.pageId);
-      if (!page?.group) return s;
-      const current = panePages(s, boardId).page;
-      const next = deleteObjects(s, [page.group.id]);
-      if (current?.id !== page.id) return next;
-      const nextPages = panePages(next, boardId).pages;
-      const destination =
-        nextPages.find((p) => p.id === "ungrouped") ||
-        nextPages.find((p) =>
-          s.objects.some(
-            (object) => object.id === p.id && object.parentId === page.id,
-          ),
-        );
-      return choosePanePage(next, boardId, "left", destination?.id);
+      if (!page?.group || !movableIds(s, [page.id]).has(page.id)) return s;
+      return deleteObjects(s, [page.group.id], true);
     });
     setSelected({ side: "left", keys: [] });
     setDialog(null);
@@ -1789,14 +1780,14 @@ export default function ArrangedWorkspace({
       {dialog?.type === "delete" && (
         <Modal title="删除标签" onClose={() => setDialog(null)}>
           <p>
-            删除「{dialogPage?.title || "此标签"}
-            」后，
-            {childGroup
-              ? "子分组会作为独立标签保留，其余待办和图片归入「未分组」。"
-              : "其中的待办和图片将归入「未分组」。"}
+            「{dialogPage?.title || "此标签"}
+            」标签及其中的待办、图片和子分组将一起移入回收站，可在此浏览器的回收站恢复。
           </p>
           {!dialogEditable && (
             <p role="status">当前标签无法修改，请关闭后重试。</p>
+          )}
+          {dialogEditable && !canDeletePage && (
+            <p role="status">标签内有锁定内容，请先解锁后再删除。</p>
           )}
           <div className="modal-actions">
             <button className="button" onClick={() => setDialog(null)}>
@@ -1804,7 +1795,7 @@ export default function ArrangedWorkspace({
             </button>
             <button
               className="button danger-button"
-              disabled={!dialogEditable}
+              disabled={!canDeletePage}
               onClick={removePage}
             >
               删除标签
