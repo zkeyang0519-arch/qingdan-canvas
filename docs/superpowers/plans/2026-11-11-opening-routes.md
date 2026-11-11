@@ -26,7 +26,7 @@
 
 ### Task 1: Separate entry and application navigation
 
-**Files:** Create `src/navigation.js`; modify `src/opening/OpeningGate.jsx`, `src/opening/OpeningCover.jsx`, `src/App.jsx`, `src/CanvasWorkspace.jsx`, `src/api.js`, `src/auth/AuthScreen.jsx`, `src/auth/McpConsent.jsx`, `README.md`; update `tests/opening-cover-ui.test.mjs`, `tests/account-navigation.test.mjs` and `tests/mcp-ui.test.mjs`.
+**Files:** Create `src/navigation.js`; modify `src/opening/OpeningGate.jsx`, `src/opening/OpeningCover.jsx`, `src/App.jsx`, `src/CanvasWorkspace.jsx`, `src/api.js`, `src/auth/AuthScreen.jsx`, `src/auth/McpConsent.jsx`, `README.md`; update `tests/opening-cover-ui.test.mjs`, `tests/account-navigation.test.mjs`, `tests/account-recovery-ui.test.mjs` and `tests/mcp-ui.test.mjs`.
 
 **Interfaces:** `APP_PATH = "/app"`, `isOpeningLocation(url = location) -> boolean`, `appRoomPath(id) -> string`, `normalizeLegacyRoomLocation()`, `enterApplication()`.
 
@@ -38,13 +38,15 @@
   Expected: matching content/address, no cover inside `/app`, no duplicate startup on entry, no runtime exceptions.
 - [x] Run `npm test`, `npm run check`, `npm run deploy:check`, `git diff --check`.
   Expected: all pass. Full-task test command: `npm test`.
-- [ ] Commit and request one fresh read-only whole-change review. Fix material findings in one RED→GREEN pass, then push and merge the verified head.
+- [x] Commit and request one fresh read-only whole-change review. Fix material findings in one RED→GREEN pass.
+- [ ] Push and merge the verified head.
 - [ ] Verify main contains the tested tree and the automatic production build/served assets are updated.
 
 ## Verification record
 
 - RED: the route regressions failed against the prior global gate; a separate consent-history regression failed before sharing the destination history lifecycle.
-- GREEN: focused opening/account/consent tests pass 45/45; full `npm test` passes 494/494; TypeScript check, production deployment dry run and whitespace check pass.
+- GREEN: final focused opening/account/consent tests pass 49/49; full `npm test` passes 498/498; TypeScript check, production deployment dry run and whitespace check pass.
 - Isolated Edge with production assets: native keyboard entry keeps the prepared home and session request count; home, canvas and arranged reloads never mount a cover; native back/forward restores content and mode; a delayed obsolete room response cannot change the restored route.
 - Old invitation normalization preserves its encoded query/hash before login, consumes the invitation once, and skips the cover on refresh. Native create/join/list navigation, 375px layout, reduced motion and direct consent login pass with zero runtime exceptions.
-- Final review and integration evidence are recorded in the local task ledger and pull request after the implementation commit.
+- Review correction: four regressions reproduced delayed create/join 401 expiry and stale successful login/logout after history restoration. Epoch guards prevent stale expiry; a same-tab session-change event revalidates the active destination after cookie-changing success without changing its address. Registration shares this lifecycle and still never invokes the unmounted form's callback. Native Edge verifies delayed login/logout after Back as well.
+- Final review and integration evidence are recorded in the local task ledger and pull request.

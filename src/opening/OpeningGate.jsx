@@ -111,7 +111,11 @@ function CoverExperience({ children }) {
     // App's existing bootstrap/cleanup and invalidates the previous requests.
     const restore = () => resetDestination(isOpeningLocation());
     window.addEventListener("popstate", restore);
-    return () => window.removeEventListener("popstate", restore);
+    window.addEventListener("qingdan-session-changed", restore);
+    return () => {
+      window.removeEventListener("popstate", restore);
+      window.removeEventListener("qingdan-session-changed", restore);
+    };
   }, []);
 
   useLayoutEffect(() => {

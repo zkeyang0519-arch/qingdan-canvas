@@ -181,7 +181,10 @@ export default function App() {
   const logout = async () => {
     const started = epoch.current;
     await api("/api/auth/logout", { method: "POST", body: {} });
-    if (started !== epoch.current) return;
+    if (started !== epoch.current) {
+      announceAccountChange({ refreshCurrent: true });
+      return;
+    }
     epoch.current++;
     roomWrites.current.clear();
     identity.current = null;
@@ -215,6 +218,7 @@ export default function App() {
       const result = await api("/api/rooms", {
         method: "POST",
         body: { name: roomName },
+        isCurrentSession: () => started === epoch.current,
       });
       if (started !== epoch.current) return;
       setInvite(inviteLink(result.room.id, result.invite));
@@ -241,6 +245,7 @@ export default function App() {
       await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
         method: "POST",
         body: { invite: token },
+        isCurrentSession: () => started === epoch.current,
       });
       if (started !== epoch.current) return;
       await enter(id);

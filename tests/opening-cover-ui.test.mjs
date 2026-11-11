@@ -164,7 +164,7 @@ function apiFixture(t, { loggedIn = false, intercept } = {}) {
   const requests = [];
   t.mock.method(globalThis, "fetch", async (url, options = {}) => {
     requests.push({ url, options });
-    const delayed = intercept?.(url, requests);
+    const delayed = intercept?.(url, requests, options);
     if (delayed) return delayed;
     if (url === "/api/session")
       return Response.json({
@@ -219,6 +219,19 @@ const paint = async () => {
     });
 };
 const click = (element) => act(async () => element.click());
+const fill = (element, value) =>
+  act(async () => {
+    const prototype =
+      element.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+const submit = (form) =>
+  act(async () =>
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
 const coverStatus = (host) =>
   host.querySelector(".opening-cover")?.dataset.status;
 const paths = (requests) => requests.map((item) => item.url);
@@ -843,4 +856,92 @@ test("从专用授权页恢复应用历史也会更新内容，全程不显示�
   await restoreHistory("/app");
   assert.ok(host.querySelector(".home"));
   assert.ok(!host.querySelector(".cloud-canvas"));
+});
+
+for (const action of ["create", "join"])
+  test(`历史恢复后旧 ${action} 请求的迟到 401 不会退出新页面的有效登录`, async (t) => {
+    const response = deferred();
+    const requests = apiFixture(t, {
+      loggedIn: true,
+      intercept: (url, _all, options) =>
+        options.method === "POST" &&
+        (url === "/api/rooms" || url.endsWith("/join")) &&
+        response.promise,
+    });
+    const { host } = await mount(t, { url: "/app" });
+    await click(
+      [...host.querySelectorAll(".home-actions button")].find((button) =>
+        button.textContent.includes(action === "create" ? "新建画布" : "加入画布"),
+      ),
+    );
+    if (action === "join")
+      await fill(
+        host.querySelector("textarea"),
+        "http://localhost/app?room=opening-room#invite=delayed",
+      );
+    await submit(host.querySelector("[role=dialog] form"));
+    assert.equal(requests.filter(({ options }) => options.method === "POST").length, 1);
+    await restoreHistory("/app?source=restored");
+    assert.ok(host.querySelector(".room-card"));
+    await act(async () =>
+      response.resolve(Response.json({ error: "旧请求已失效" }, { status: 401 })),
+    );
+    assert.ok(host.querySelector(".room-card"), "新页面已确认有效的会话不能被旧请求清除");
+    assert.equal(location.pathname + location.search, "/app?source=restored");
+    assert.ok(!enter(host));
+  });
+
+test("后退至封面后旧登录成功会重新准备当前页面，不改地址或自动进入", async (t) => {
+  const response = deferred();
+  let loggedIn = false;
+  apiFixture(t, {
+    intercept: (url) => {
+      if (url === "/api/session") return Response.json({ user: loggedIn ? user : null });
+      if (url === "/api/auth/login") return response.promise;
+    },
+  });
+  const { host } = await mount(t, { reduced: true });
+  await paint();
+  await click(enter(host));
+  await fill(host.querySelector("input[autocomplete=username]"), "fixture_user");
+  await fill(host.querySelector("input[type=password]"), "fixture-password");
+  await submit(host.querySelector("form"));
+  await restoreHistory("/");
+  await paint();
+  assert.ok(host.querySelector("form"));
+  await act(async () => {
+    loggedIn = true;
+    response.resolve(Response.json({ user }));
+  });
+  await paint();
+  assert.equal(location.pathname, "/");
+  assert.equal(coverStatus(host), "ready");
+  assert.ok(host.querySelector(".room-card"), "已完成登录后应准备真实的协作空间");
+  await click(enter(host));
+  assert.equal(location.pathname, "/app");
+  assert.ok(!host.querySelector(".auth-page"));
+});
+
+test("历史恢复后旧退出请求完成会重新验证当前内页，不保留已失效的账号界面", async (t) => {
+  const response = deferred();
+  let loggedIn = true;
+  apiFixture(t, {
+    intercept: (url) => {
+      if (url === "/api/session") return Response.json({ user: loggedIn ? user : null });
+      if (url === "/api/auth/logout") return response.promise;
+    },
+  });
+  const { host } = await mount(t, { url: "/app" });
+  await click(host.querySelector(".profile-button"));
+  await click(host.querySelector(".logout-button"));
+  await restoreHistory("/app?source=restored");
+  assert.ok(host.querySelector(".room-card"));
+  await act(async () => {
+    loggedIn = false;
+    response.resolve(Response.json({ ok: true }));
+  });
+  assert.ok(host.querySelector(".auth-page"), "当前页面应反映服务器已经退出的会话");
+  assert.ok(!host.querySelector(".room-card"));
+  assert.equal(location.pathname + location.search, "/app?source=restored");
+  assert.ok(!enter(host));
 });

@@ -131,7 +131,10 @@ export default function AuthScreen({
           }),
         },
       });
-      if (!current(action)) return;
+      if (!current(action)) {
+        announceAccountChange({ refreshCurrent: true });
+        return;
+      }
       setPassword("");
       setConfirm("");
       setChallenge(null);

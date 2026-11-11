@@ -4,8 +4,12 @@ let activeAccount = null;
 export function setActiveAccount(id) {
   activeAccount = id;
 }
-export function announceAccountChange() {
+export function announceAccountChange({ refreshCurrent = false } = {}) {
   localStorage.setItem("qingdan.account-change", crypto.randomUUID());
+  // An unmounted auth form can still receive a response that changes cookies.
+  // Revalidate the active destination without restoring the old form's URL.
+  if (refreshCurrent)
+    window.dispatchEvent(new Event("qingdan-session-changed"));
 }
 export async function api(
   path,
