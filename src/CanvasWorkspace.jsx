@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   StickyNote,
@@ -26,10 +33,11 @@ import {
   Columns2,
   Pencil,
   Server,
+  Bot,
 } from "lucide-react";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
-import { setSurface } from "./canvas/arranged-model.js";
+import { setSurface, createChecklistPage } from "./canvas/arranged-model.js";
 import ContextMenu from "./canvas/ContextMenu.jsx";
 import { TodoToolsProvider } from "./canvas/TodoTools.jsx";
 import {
@@ -75,6 +83,12 @@ import { exportArchive, downloadBlob } from "./canvas/backup.js";
 import { useRoomWorkspace } from "./sync/useRoomWorkspace.js";
 import { api, inviteLink } from "./api.js";
 import OperationsCatalog from "./ops/OperationsCatalog.jsx";
+import { todoPages } from "./canvas/todoPages.js";
+import PendingBatchNotice, {
+  useObservedBatchTarget,
+} from "./agent/PendingBatchNotice.jsx";
+const AgentExperience = lazy(() => import("./agent/AgentExperience.jsx"));
+const AgentWorkspace = lazy(() => import("./agent/AgentWorkspace.jsx"));
 
 const contextIcons = {
   "new-note": StickyNote,
@@ -110,6 +124,9 @@ export default function CanvasWorkspace({
 }) {
   const workspace = useRoomWorkspace(room, user);
   const { state, update, readOnly } = workspace;
+  const [observedBatch, setObservedBatch, observedBatchStorage] =
+    useObservedBatchTarget(user.id, room.id);
+  const [agentStartAtBatch, setAgentStartAtBatch] = useState(false);
   const [selection, setSelection] = useState([]),
     [editing, setEditing] = useState(null);
   const [context, setContext] = useState(null),
@@ -146,9 +163,10 @@ export default function CanvasWorkspace({
   }, [workspace.end]);
   const view = state ? getView(state, room.id) : {};
   const arranged = view.surface === "arranged";
-  const switchSurface = (surface) => {
+  const agentMode = view.surface === "agent";
+  const switchSurface = (surface, { showBatch = false } = {}) => {
     if (composing.current) {
-      pendingMode.current = surface;
+      pendingMode.current = { surface, showBatch };
       return;
     }
     const apply = () => {
@@ -159,6 +177,8 @@ export default function CanvasWorkspace({
       setContext(null);
       setCollection(null);
       setMenuDialog(null);
+      setOperationsOpen(false);
+      setAgentStartAtBatch(surface === "agent" && showBatch);
       update((s) => setSurface(s, room.id, surface), {
         record: false,
         navigation: true,
@@ -166,6 +186,20 @@ export default function CanvasWorkspace({
     };
     if (arranged) canvas.current?.beforeNavigate(apply);
     else apply();
+  };
+  const createAgentProject = (title) => {
+    if (readOnly || !title?.trim()) return null;
+    let createdId = null;
+    update((current) => {
+      const next = createChecklistPage(current, room.id, title);
+      if (next !== current) createdId = next.objects.at(-1)?.id;
+      return next;
+    });
+    return workspace.current.current?.objects.some(
+      (object) => object.id === createdId,
+    )
+      ? createdId
+      : null;
   };
   const onView = (next) =>
     update(
@@ -279,6 +313,7 @@ export default function CanvasWorkspace({
     };
     onView({
       ...view,
+      ...(agentMode ? { surface: "canvas" } : {}),
       x: size.width / 2 - (object.x + object.width / 2) * view.scale,
       y: size.height / 2 - (object.y + object.height / 2) * view.scale,
     });
@@ -426,6 +461,7 @@ export default function CanvasWorkspace({
         return;
       }
       if (
+        agentMode ||
         panel ||
         menuDialog ||
         context ||
@@ -567,21 +603,21 @@ export default function CanvasWorkspace({
       />
       <TodoToolsProvider
         workspace={workspace}
-        scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
+        scope={`${room.id}:${agentMode ? "agent" : arranged ? "arranged" : "canvas"}`}
         beforeAction={exitEdit}
         onToast={showToast}
       >
         <div
-          className="app-shell cloud-canvas"
+          className={`app-shell cloud-canvas${agentMode ? " agent-mode" : ""}`}
           onCompositionStartCapture={() => {
             composing.current = true;
           }}
           onCompositionEndCapture={() => {
             composing.current = false;
             queueMicrotask(() => {
-              const surface = pendingMode.current;
+              const pending = pendingMode.current;
               pendingMode.current = null;
-              if (surface) switchSurface(surface);
+              if (pending) switchSurface(pending.surface, { showBatch: pending.showBatch });
             });
           }}
         >
@@ -653,7 +689,7 @@ export default function CanvasWorkspace({
               aria-label="工作区视图"
             >
               <button
-                aria-pressed={!arranged}
+                aria-pressed={!arranged && !agentMode}
                 onClick={() => switchSurface("canvas")}
               >
                 <Frame size={14} />
@@ -666,9 +702,36 @@ export default function CanvasWorkspace({
                 <Columns2 size={14} />
                 排列
               </button>
+              <button
+                aria-pressed={agentMode}
+                onClick={() => switchSurface("agent")}
+              >
+                <Bot size={14} />
+                Agent
+              </button>
             </div>
             <div className="nav-end">
-              <AuthorAvatarToggle />
+              {!agentMode && (
+                <>
+                  <button
+                    className="agent-nav-entry"
+                    aria-label="Agent 验证"
+                    aria-haspopup="dialog"
+                    onClick={() => {
+                      exitEdit();
+                      setOperationsOpen(false);
+                      setContext(null);
+                      setCollection(null);
+                      setPanel("agent");
+                      setAgentStartAtBatch(false);
+                    }}
+                  >
+                    <Bot size={17} />
+                    <span>Agent 验证</span>
+                  </button>
+                  <AuthorAvatarToggle />
+                </>
+              )}
               <div
                 className="presence"
                 aria-label={`${members.length} 位成员在线`}
@@ -742,13 +805,77 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
+          {observedBatchStorage.warning && (
+            <p
+              className="agent-error"
+              role="alert"
+              aria-label="批次提醒保存状态"
+            >
+              批次提醒的恢复位置未保存：{observedBatchStorage.warning}
+            </p>
+          )}
+          {panel === "agent" && (
+            <Suspense
+              fallback={
+                <div className="modal-backdrop" role="status">
+                  正在打开 Agent 验证…
+                </div>
+              }
+            >
+              <AgentExperience
+                roomId={room.id}
+                userId={user.id}
+                pages={todoPages(state, room.id)}
+                initialBatchTarget={observedBatch}
+                initialStep={agentStartAtBatch ? "batch" : "rules"}
+                onBatchTargetChange={setObservedBatch}
+                onClose={() => setPanel(null)}
+              />
+            </Suspense>
+          )}
+          {panel !== "agent" && !agentMode && observedBatch && (
+            <PendingBatchNotice
+              roomId={room.id}
+              userId={user.id}
+              target={observedBatch}
+              floating
+              onOpen={() => {
+                exitEdit();
+                setPanel(null);
+                switchSurface("agent", { showBatch: true });
+              }}
+            />
+          )}
           {operationsOpen && (
             <OperationsCatalog
               onClose={() => setOperationsOpen(false)}
               readOnly={readOnly}
             />
           )}
-          {arranged ? (
+          {agentMode ? (
+            <Suspense
+              fallback={
+                <div className="agent-loading" role="status">
+                  正在打开 Agent 工作区…
+                </div>
+              }
+            >
+              <AgentWorkspace
+                key={`${user.id}/${room.id}`}
+                roomId={room.id}
+                userId={user.id}
+                pages={todoPages(state, room.id)}
+                initialBatchTarget={observedBatch}
+                startAtBatch={agentStartAtBatch}
+                onBatchTargetChange={setObservedBatch}
+                onCreateProject={readOnly ? undefined : createAgentProject}
+                onOpenDiagnostics={() => {
+                  setAgentStartAtBatch(false);
+                  setPanel("agent");
+                }}
+              />
+            </Suspense>
+          ) : arranged ? (
             <ArrangedWorkspace
               workspace={workspace}
               boardId={room.id}
@@ -803,7 +930,7 @@ export default function CanvasWorkspace({
               hideCollection={operationsOpen}
             />
           )}
-          {!arranged && (
+          {!arranged && !agentMode && (
             <div className="canvas-toolbox" aria-label="画布工具">
               <button
                 disabled={readOnly}
@@ -861,7 +988,7 @@ export default function CanvasWorkspace({
               </button>
             </div>
           )}
-          {!arranged && (
+          {!arranged && !agentMode && (
             <div className="canvas-view-tools">
               <button
                 onClick={fit}

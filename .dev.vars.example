@@ -10,3 +10,13 @@ MCP_ENABLED="false"
 # PUBLIC_ORIGIN="https://canvas.example.com"
 # Comma-separated exact browser origins; native clients without Origin are allowed.
 MCP_ALLOWED_ORIGINS=""
+
+# Step 6: independent chat model. Set real keys only in ignored .dev.vars
+# locally or via Wrangler secrets for deployment; never expose them to the UI.
+CHAT_ENABLED="false"
+PROJECT_SUMMARY_ENABLED="false"
+BATCH_QUEUE_ENABLED="false"
+ROUTER_API_KEY=""
+ROUTER_BASE_URL="https://api.deepseek.com"
+ROUTER_MODEL="deepseek-flash"
+ROUTER_API_FORMAT="chat_completions"
