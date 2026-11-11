@@ -41,6 +41,11 @@ const source = {
   messageId: id,
 };
 const schemas = {
+  request: z.strictObject({
+    requestId: id,
+    bindingId: id,
+    bindingRevision: rev,
+  }),
   state: z
     .strictObject({
       bindingId: id.optional(),
@@ -326,6 +331,22 @@ export class AgentChatRouter extends DurableObject<Env> {
         "项目绑定已变化，请刷新后重试。",
         409,
       );
+      if (action === "request") {
+        const receipt = this.store.readSendRequest(
+          input.bindingId,
+          input.requestId,
+        );
+        if (!receipt) return json({ found: false });
+        const auth = this.authorization(receipt.message.id);
+        check(
+          auth?.identity.accountId === identity.accountId &&
+            canonicalJson(auth.principal) === canonicalJson(p),
+          "原请求的项目授权已变化。",
+          409,
+        );
+        // Receipt lookup is read-only, including while the summary node is down.
+        return json({ found: true, ...receipt });
+      }
       const project = ["state", "send", "remember", "save-tasks"].includes(
         action,
       )

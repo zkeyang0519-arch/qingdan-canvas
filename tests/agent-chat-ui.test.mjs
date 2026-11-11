@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { browserLocks } from "./fixtures/browser-locks.mjs";
 
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8788",
@@ -14,6 +15,15 @@ Object.assign(globalThis, {
   window: dom.window,
   document: dom.window.document,
   IS_REACT_ACT_ENVIRONMENT: true,
+});
+Object.defineProperty(globalThis, "navigator", {
+  value: dom.window.navigator,
+  configurable: true,
+});
+test.beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  navigator.locks = browserLocks();
 });
 const { createRoot } = await import("react-dom/client");
 const temp = mkdtempSync(resolve("node_modules/.cache/agent-chat-ui-"));
@@ -98,6 +108,7 @@ function fixture({ configured = true, bound = true, existing = false } = {}) {
   let sendStatus = "queued";
   let project;
   let failNew = false;
+  const sentRequests = new Map();
   const requestCloud = async (route, options = {}) => {
     calls.push({ route, ...options });
     if (route.startsWith("/api/agent/bindings?"))
@@ -107,7 +118,7 @@ function fixture({ configured = true, bound = true, existing = false } = {}) {
           : null,
       };
     if (route.startsWith("/api/agent/chat/state")) {
-      if (loseState) {
+      if (loseState && route.includes("bindingId=")) {
         loseState = false;
         throw Error("无法刷新聊天状态");
       }
@@ -131,6 +142,20 @@ function fixture({ configured = true, bound = true, existing = false } = {}) {
         hasMore: false,
         ...(project ? { project } : {}),
       });
+    }
+    if (route.startsWith("/api/agent/chat/request?")) {
+      const id = new URL(route, "https://fixture.test").searchParams.get(
+        "requestId",
+      );
+      const sent = sentRequests.get(id);
+      return sent
+        ? structuredClone({
+            found: true,
+            thread,
+            message: sent.message,
+            job: { ...job, chatId: thread.id, userMessageId: sent.message.id },
+          })
+        : { found: false };
     }
     if (route.endsWith("/new")) {
       newChat = { ...thread, id: "new-chat", title: "新聊天" };
@@ -157,7 +182,13 @@ function fixture({ configured = true, bound = true, existing = false } = {}) {
         memories: [],
       };
       messages = [message];
-      job = { id: `job-${++submissions}`, status: sendStatus };
+      job = {
+        id: `job-${++submissions}`,
+        status: sendStatus,
+        chatId: thread.id,
+        userMessageId: message.id,
+      };
+      sentRequests.set(options.body.requestId, { message });
       if (sendStatus === "succeeded") messages.push(structuredClone(assistant));
       return { thread, message, job };
     }

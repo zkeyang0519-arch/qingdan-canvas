@@ -432,6 +432,23 @@ export class ChatStore {
     this.rememberReceipt(requestId, payload, { jobId: job.id });
     return { thread: this.thread(bindingId, thread.id), message: user, job };
   }
+  readSendRequest(bindingId: string, requestId: string) {
+    const receipt = this.sql
+      .exec<{ payload: string; value: string }>(
+        "SELECT payload,value FROM agent_chat_receipts WHERE request_id=?",
+        requestId,
+      )
+      .toArray()[0];
+    if (!receipt) return null;
+    const payload = JSON.parse(receipt.payload);
+    check(payload.action === "beginMessage", "请求编号不属于发送消息。", 409);
+    check(payload.bindingId === bindingId, "请求不属于当前项目。", 403);
+    const job = this.getJob(JSON.parse(receipt.value).jobId);
+    check(job?.bindingId === bindingId, "原聊天任务不可用。", 409);
+    const message = this.readMessage(bindingId, job.chatId, job.userMessageId);
+    check(message?.role === "user", "原聊天消息不可用。", 409);
+    return { thread: this.thread(bindingId, job.chatId), message, job };
+  }
   getJob(jobId: string) {
     const row = this.sql
       .exec<ChatJob>(`SELECT ${sqlJob} FROM agent_chat_jobs WHERE id=?`, jobId)

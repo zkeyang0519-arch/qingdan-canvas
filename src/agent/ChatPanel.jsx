@@ -10,13 +10,30 @@ import { api } from "../api.js";
 import MemoryPanel, { memoryScopeName } from "./MemoryPanel.jsx";
 import { ProjectSummary } from "./ProjectSummaryPanel.jsx";
 import WorkspaceDrawer from "./WorkspaceDrawer.jsx";
-import { useWorkspaceDraft } from "./workspace-state.js";
+import {
+  useWorkspaceDraft,
+  useWorkspaceRequests,
+  workspaceScope,
+} from "./workspace-state.js";
 
 const chatApi = "/api/agent/chat";
 const queued = (job) => job?.status === "queued" || job?.status === "running";
 const bindingKey = (binding) =>
-  binding && JSON.stringify([binding.bindingId, binding.revision]);
-const pendingRequests = new Map();
+  binding &&
+  JSON.stringify([
+    binding.bindingId,
+    binding.revision,
+    binding.runnerId,
+    binding.workspaceId,
+  ]);
+const operationKey = (action, payload) => {
+  if (action === "send") return `send:${payload.chatId || "new"}`;
+  if (action === "new") return "new";
+  if (action === "save-tasks") return `save-tasks:${payload.messageId}`;
+  if (action === "remember")
+    return `remember:${payload.messageId}:${payload.index}`;
+  return `memory:${payload.id || JSON.stringify([payload.scope, payload.key])}`;
+};
 const proposalFields = [
   ["text", "待办内容", 32000],
   ["instruction", "执行要求", 32000],
@@ -218,18 +235,44 @@ function ChatWorkspace({
   onOpenSettings,
 }) {
   const bindingId = binding?.bindingId;
-  const [state, setState] = useState(null);
-  const [older, setOlder] = useState(null);
-  const [draft, setDraft] = useWorkspaceDraft(
-    JSON.stringify([
-      accountScope,
-      bindingKey(binding),
-      state?.thread?.id || "new",
-      "chat",
-    ]),
-    "",
-    embedded,
+  const requestScope = workspaceScope({
+    accountId: accountScope[0],
+    canvasId: accountScope[1],
+    sectionId: accountScope[2],
+    binding,
+  });
+  const requests = useWorkspaceRequests(requestScope);
+  const personalRequests = useWorkspaceRequests(
+    workspaceScope({ accountId: accountScope[0], canvasId: null }),
   );
+  const [state, setState] = useState(null);
+  const [personalState, setPersonalState] = useState(null);
+  const [memoryError, setMemoryError] = useState("");
+  const [received, setReceived] = useState({});
+  const [draftHandoff, setDraftHandoff] = useState(null);
+  const [older, setOlder] = useState(null);
+  const draftKey = (id) =>
+    JSON.stringify([accountScope, bindingKey(binding), id || "new", "chat"]);
+  const legacyDraft = (id) => ({
+    legacyKeys: [
+      `qingdan.agent-draft:${JSON.stringify([accountScope, binding && JSON.stringify([binding.bindingId, binding.revision]), id || "new", "chat"])}`,
+    ],
+  });
+  const [newDraft, setNewDraft, newDraftStorage] = useWorkspaceDraft(
+    draftKey(null),
+    "",
+    true,
+    legacyDraft(null),
+  );
+  const [chatDraft, setChatDraft, chatDraftStorage] = useWorkspaceDraft(
+    draftKey(state?.thread?.id),
+    "",
+    !!state?.thread?.id,
+    legacyDraft(state?.thread?.id),
+  );
+  const draft = state?.thread ? chatDraft : newDraft;
+  const setDraft = state?.thread ? setChatDraft : setNewDraft;
+  const draftStorage = state?.thread ? chatDraftStorage : newDraftStorage;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
@@ -244,6 +287,15 @@ function ChatWorkspace({
   const messageList = useRef(null);
   const lastVisible = useRef(null);
   const followingMessages = useRef(true);
+  const draftControl = useRef(null);
+  draftControl.current = {
+    chatId: state?.thread?.id || null,
+    setDraft,
+    newDraft,
+    setNewDraft,
+  };
+  const settling = useRef(new Set());
+  const memoryRead = useRef(0);
   const valid = useCallback(
     (version) => mounted.current && epoch.current === version,
     [],
@@ -272,11 +324,95 @@ function ChatWorkspace({
     snapshot.current = next;
     setState(next);
   }, []);
+  const refreshPersonal = useCallback(
+    async (version) => {
+      const serial = ++memoryRead.current;
+      try {
+        const next = await call(`${chatApi}/state`);
+        if (!valid(version) || serial !== memoryRead.current) return;
+        setPersonalState(next);
+        setMemoryError("");
+      } catch (err) {
+        if (valid(version) && serial === memoryRead.current)
+          setMemoryError(err.message);
+      }
+    },
+    [call, valid],
+  );
+  const clearOriginalDraft = useCallback((record, receipt) => {
+    const control = draftControl.current;
+    if (!record.request.body.chatId) {
+      if (control.newDraft.trim() === record.request.body.text)
+        control.setNewDraft("");
+      else if (control.newDraft && receipt)
+        setDraftHandoff({
+          requestId: record.requestId,
+          chatId: receipt.thread.id,
+          text: control.newDraft,
+          sourceText: control.newDraft,
+        });
+    } else if (control.chatId === record.request.body.chatId)
+      control.setDraft((current) =>
+        current.trim() === record.request.body.text ? "" : current,
+      );
+  }, []);
+  useEffect(() => {
+    if (!draftHandoff || state?.thread?.id !== draftHandoff.chatId) return;
+    if (!chatDraft) {
+      setChatDraft(draftHandoff.text);
+    } else if (chatDraft === draftHandoff.text && chatDraftStorage.durable) {
+      // Persist the destination first. A crash at either step leaves at least
+      // one copy and the original pending identity available for recovery.
+      if (newDraft === draftHandoff.sourceText) setNewDraft("");
+      else if (newDraftStorage.durable) setDraftHandoff(null);
+    }
+  }, [
+    draftHandoff,
+    state?.thread?.id,
+    chatDraft,
+    chatDraftStorage.durable,
+    newDraft,
+    newDraftStorage.durable,
+    setChatDraft,
+    setNewDraft,
+  ]);
   const refresh = useCallback(
     async (version) => {
       const latestBinding = await loadBinding();
       if (!valid(version) || bindingKey(latestBinding) !== bindingKey(binding))
         return;
+      // The request collection stays at binding scope even when a first send
+      // creates a chat. Restoration only reads the original server receipt.
+      for (const record of requests.getSnapshot().records) {
+        if (record.request.path !== `${chatApi}/send`) continue;
+        const params = new URLSearchParams({
+          bindingId,
+          bindingRevision: String(binding.revision),
+          requestId: record.requestId,
+        });
+        const receipt = await call(`${chatApi}/request?${params}`);
+        if (!valid(version)) return;
+        if (!receipt.found) continue;
+        if (
+          receipt.job?.userMessageId !== receipt.message?.id ||
+          receipt.job?.chatId !== receipt.thread?.id
+        )
+          throw Error("原请求回执不完整，请再次核对。");
+        try {
+          await requests.checkpoint(record.requestId, {
+            jobId: receipt.job.id,
+            chatId: receipt.thread.id,
+            status: receipt.job.status,
+          });
+        } catch {
+          /* Keep the original durable record; reads remain available. */
+        }
+        if (!valid(version)) return;
+        settling.current.delete(record.requestId);
+        setReceived((prior) => ({ ...prior, [record.requestId]: receipt }));
+        clearOriginalDraft(record, receipt);
+        if (!chatId.current) chatId.current = receipt.thread.id;
+      }
       let next = await read(chatId.current);
       if (!valid(version)) return;
       if (
@@ -293,7 +429,18 @@ function ChatWorkspace({
       setReadError("");
       setNeedFreshCandidates(false);
     },
-    [loadBinding, binding, bindingId, read, valid, apply],
+    [
+      loadBinding,
+      binding,
+      bindingId,
+      read,
+      valid,
+      apply,
+      call,
+      requests.getSnapshot,
+      requests.checkpoint,
+      clearOriginalDraft,
+    ],
   );
   const updateProject = useCallback(
     (project) => {
@@ -321,14 +468,60 @@ function ChatWorkspace({
     void refresh(version).catch((err) => {
       if (valid(version)) setReadError(err.message);
     });
+    void refreshPersonal(version);
     return () => {
       mounted.current = false;
       epoch.current++;
     };
-  }, [refresh, valid]);
+  }, [refresh, refreshPersonal, valid]);
 
   const job = state?.job;
   const pendingJob = queued(job);
+  const pendingSend = requests.records.some(
+    (record) =>
+      record.request.path === `${chatApi}/send` &&
+      (!(record.request.body.chatId || record.checkpoint?.chatId) ||
+        record.request.body.chatId === state?.thread?.id ||
+        record.checkpoint?.chatId === state?.thread?.id),
+  );
+  useEffect(() => {
+    for (const record of requests.records) {
+      const receipt = received[record.requestId];
+      if (
+        !receipt ||
+        receipt.thread.id !== state?.thread?.id ||
+        queued(receipt.job) ||
+        draftHandoff?.requestId === record.requestId ||
+        settling.current.has(record.requestId)
+      )
+        continue;
+      if (receipt.job.status === "succeeded") {
+        const sourceDraft = record.request.body.chatId ? draft : newDraft;
+        const sourceStorage = record.request.body.chatId
+          ? draftStorage
+          : newDraftStorage;
+        if (sourceDraft.trim() === record.request.body.text) {
+          clearOriginalDraft(record, receipt);
+          continue;
+        }
+        if (!sourceStorage.durable) continue;
+      }
+      settling.current.add(record.requestId);
+      // A failed model job still acknowledges the accepted send request.
+      void requests.resolve(record.requestId, "acknowledged").catch(() => {});
+    }
+  }, [
+    received,
+    state?.thread?.id,
+    requests.records,
+    requests.resolve,
+    clearOriginalDraft,
+    draftHandoff,
+    draft,
+    draftStorage.durable,
+    newDraft,
+    newDraftStorage.durable,
+  ]);
   useEffect(() => {
     if (!pendingJob) return;
     let reading = false;
@@ -381,42 +574,75 @@ function ChatWorkspace({
     }
   }
   async function write(action, payload, version) {
-    const latest = await loadBinding();
-    if (!valid(version) || bindingKey(latest) !== bindingKey(binding)) return;
-    const key = JSON.stringify([
-      accountScope,
-      bindingKey(binding),
-      action,
-      payload,
-    ]);
-    let requestId = pendingRequests.get(key);
-    if (!requestId) {
-      if (pendingRequests.size >= 100)
-        throw Error("待核对的操作较多，请先刷新并重试原操作。");
-      requestId = crypto.randomUUID();
-      pendingRequests.set(key, requestId);
+    const personal = action === "memory" && !payload.bindingId;
+    if (!personal) {
+      const latest = await loadBinding();
+      if (!valid(version) || bindingKey(latest) !== bindingKey(binding)) return;
     }
-    try {
-      const result = await call(`${chatApi}/${action}`, {
+    const store = personal ? personalRequests : requests;
+    const record = await store.prepare(
+      operationKey(action, payload),
+      (requestId) => ({
+        path: `${chatApi}/${action}`,
         method: "POST",
         body: {
           requestId,
           ...payload,
           ...(payload.bindingId ? { bindingRevision: binding.revision } : {}),
         },
+      }),
+    );
+    if (!valid(version)) return;
+    return dispatch(record, store, version);
+  }
+  async function dispatch(record, store, version) {
+    const result = await call(record.request.path, {
+      method: record.request.method,
+      body: record.request.body,
+    });
+    if (!valid(version)) return;
+    if (record.request.path === `${chatApi}/send`) {
+      await store.checkpoint(record.requestId, {
+        jobId: result.job.id,
+        chatId: result.thread.id,
+        status: result.job.status,
       });
-      pendingRequests.delete(key);
-      if (valid(version)) return result;
-    } catch (err) {
-      if (
-        action !== "new" &&
-        err.status >= 400 &&
-        err.status < 500 &&
-        ![408, 429].includes(err.status)
-      )
-        pendingRequests.delete(key);
-      throw err;
+      if (!valid(version)) return;
+      setReceived((prior) => ({ ...prior, [record.requestId]: result }));
+      clearOriginalDraft(record, result);
+    } else {
+      await store.resolve(record.requestId, "acknowledged");
     }
+    if (valid(version)) return result;
+  }
+  function retry(record, personal) {
+    return perform(async (version) => {
+      if (!personal) {
+        const latest = await loadBinding();
+        if (!valid(version) || bindingKey(latest) !== bindingKey(binding))
+          return;
+      }
+      const store = personal ? personalRequests : requests;
+      const prepared = await store.prepare(
+        record.operationKey,
+        () => record.request,
+      );
+      if (!valid(version)) return;
+      const result = await dispatch(prepared, store, version);
+      if (!result) return;
+      if (record.request.path === `${chatApi}/send`) {
+        chatId.current = result.thread.id;
+      } else if (record.request.path === `${chatApi}/new`) {
+        chatId.current = (result.thread ?? result).id;
+      } else if (
+        record.request.path === `${chatApi}/memory` ||
+        record.request.path === `${chatApi}/remember`
+      ) {
+        setNeedFreshCandidates(true);
+      }
+      await refreshPersonal(version);
+      await refresh(version);
+    });
   }
   function switchThread(thread, messages = [], job = null) {
     const prior = snapshot.current;
@@ -441,6 +667,7 @@ function ChatWorkspace({
     if (
       !text ||
       !bindingId ||
+      pendingSend ||
       pendingJob ||
       !state?.provider?.configured ||
       (state?.project && !state.project.ready)
@@ -475,7 +702,6 @@ function ChatWorkspace({
           ],
         });
       } else switchThread(result.thread, added, result.job);
-      setDraft("");
       if (result.job && !queued(result.job)) await refresh(version);
     });
   }
@@ -564,6 +790,7 @@ function ChatWorkspace({
     // A committed memory change may invalidate earlier proposals. Keep those
     // controls disabled until the server confirms which remain usable.
     setNeedFreshCandidates(true);
+    await refreshPersonal(version);
     try {
       await refresh(version);
     } catch (err) {
@@ -603,11 +830,24 @@ function ChatWorkspace({
       const result = await write("memory", payload, version);
       if (!result) return;
       const current = snapshot.current;
-      apply({
-        ...current,
-        memories: result.memories,
-        memoryEpoch: result.memoryEpoch,
-      });
+      if (!payload.bindingId) {
+        memoryRead.current++;
+        setPersonalState(result);
+        setMemoryError("");
+      }
+      if (current)
+        apply({
+          ...current,
+          memories: payload.bindingId
+            ? result.memories
+            : [
+                ...current.memories.filter(
+                  (memory) => memory.scope === "project",
+                ),
+                ...result.memories,
+              ],
+          memoryEpoch: result.memoryEpoch,
+        });
       setNotice(payload.action === "delete" ? "记忆已删除。" : "已保存记忆。");
       await refreshAfterMemory(version);
     });
@@ -648,23 +888,36 @@ function ChatWorkspace({
     ) : (
       <p className="agent-note">关联执行项目后，可以读取项目摘要。</p>
     );
-  const memory = state ? (
-    <MemoryPanel
-      {...{ bindingId, busy, embedded }}
-      memories={state.memories}
-      save={changeMemory}
-      remove={changeMemory}
-    />
-  ) : (
-    <p className="agent-note">正在读取记忆…</p>
-  );
+  const memory =
+    personalState || state ? (
+      <MemoryPanel
+        {...{ bindingId, busy, embedded }}
+        memories={[
+          ...(state?.memories || []).filter(
+            (memory) => memory.scope === "project",
+          ),
+          ...(
+            (personalState &&
+            (!state || personalState.memoryEpoch >= state.memoryEpoch)
+              ? personalState.memories
+              : state?.memories) || []
+          ).filter((memory) => memory.scope === "personal"),
+        ]}
+        save={changeMemory}
+        remove={changeMemory}
+      />
+    ) : (
+      <p className="agent-note">正在读取记忆…</p>
+    );
   return (
     <>
       {!embedded && bindingId && state?.project && summary}
       {embedded && (!bindingId || (state?.project && !state.project.ready)) && (
         <div className="agent-chat-context-bar">
           <span>
-            {bindingId ? "准备项目摘要后开始聊天" : "选择 Codex 会话，自动关联项目"}
+            {bindingId
+              ? "准备项目摘要后开始聊天"
+              : "选择 Codex 会话，自动关联项目"}
           </span>
           <button onClick={bindingId ? onOpenSummary : onOpenSettings}>
             {bindingId ? "查看摘要" : "选择 Codex 会话"}
@@ -726,6 +979,89 @@ function ChatWorkspace({
             {readError}
           </p>
         )}
+        {[
+          draftStorage.warning,
+          newDraftStorage.warning,
+          requests.warning,
+          personalRequests.warning,
+        ]
+          .filter((value, index, all) => value && all.indexOf(value) === index)
+          .map((warning) => (
+            <p className="agent-error" role="alert" key={warning}>
+              {warning}
+            </p>
+          ))}
+        {draftHandoff && (
+          <div className="agent-note" role="status">
+            <p>原草稿仍保留，确认保存后才会结束恢复。</p>
+            {chatDraft && chatDraft !== draftHandoff.text && (
+              <>
+                <p>当前聊天已有另一份草稿，尚未覆盖。</p>
+                <details>
+                  <summary>查看此前草稿</summary>
+                  <p className="agent-chat-copy">{draftHandoff.sourceText}</p>
+                </details>
+                <button
+                  disabled={busy || !chatDraftStorage.durable}
+                  onClick={() =>
+                    setDraftHandoff({ ...draftHandoff, text: chatDraft })
+                  }
+                >
+                  保留当前草稿
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => setChatDraft(draftHandoff.text)}
+                >
+                  使用此前草稿
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {(!draftStorage.durable || !newDraftStorage.durable) && (
+          <button
+            disabled={busy}
+            onClick={() => {
+              if (state?.thread) setChatDraft(chatDraft);
+              setNewDraft(newDraft);
+            }}
+          >
+            重试保存草稿
+          </button>
+        )}
+        {[
+          ...requests.records.map((record) => ({ record, personal: false })),
+          ...personalRequests.records.map((record) => ({
+            record,
+            personal: true,
+          })),
+        ].map(({ record, personal }) => (
+          <div className="agent-actions" key={record.requestId}>
+            <span className="agent-note">
+              {record.request.path === `${chatApi}/send`
+                ? "原消息已保留，可核对处理结果。"
+                : "原操作待核对，重试会使用原内容。"}
+            </span>
+            <button
+              disabled={busy}
+              onClick={() =>
+                perform(async (version) => {
+                  await refreshPersonal(version);
+                  await refresh(version);
+                })
+              }
+            >
+              核对原操作
+            </button>
+            <button
+              disabled={busy || !!received[record.requestId]}
+              onClick={() => retry(record, personal)}
+            >
+              重试原操作
+            </button>
+          </div>
+        ))}
         {notice && (
           <p className="agent-success" role="status">
             {notice}
@@ -842,6 +1178,7 @@ function ChatWorkspace({
               !bindingId ||
               !modelReady ||
               pendingJob ||
+              pendingSend ||
               !draft.trim() ||
               (state?.project && !state.project.ready)
             }
@@ -856,7 +1193,15 @@ function ChatWorkspace({
           )}
         </div>
       </section>
-      {!embedded && state && memory}
+      {memoryError && (
+        <p className="agent-error" role="alert">
+          {memoryError}
+          <button disabled={busy} onClick={() => perform(refreshPersonal)}>
+            重新读取个人记忆
+          </button>
+        </p>
+      )}
+      {!embedded && memory}
       {embedded && memoryOpen && (
         <WorkspaceDrawer title="记忆" onClose={onMemoryClose}>
           {memory}

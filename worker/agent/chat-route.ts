@@ -20,39 +20,46 @@ export async function chatRoute(
   );
   const action = url.pathname.slice("/api/agent/chat/".length);
   check(
-    ["state", "new", "send", "memory", "remember", "save-tasks"].includes(
-      action,
-    ),
+    [
+      "state",
+      "request",
+      "new",
+      "send",
+      "memory",
+      "remember",
+      "save-tasks",
+    ].includes(action),
     "聊天接口不存在。",
     404,
   );
+  const readOnly = action === "state" || action === "request";
   check(
-    (action === "state" && request.method === "GET") ||
-      (action !== "state" && request.method === "POST"),
+    (readOnly && request.method === "GET") ||
+      (!readOnly && request.method === "POST"),
     "方法不支持。",
     405,
   );
-  const input: Record<string, unknown> =
-    action === "state"
-      ? {
-          ...(url.searchParams.get("bindingId")
-            ? { bindingId: url.searchParams.get("bindingId") }
-            : {}),
-          ...(url.searchParams.get("chatId")
-            ? { chatId: url.searchParams.get("chatId") }
-            : {}),
-          ...(url.searchParams.get("bindingRevision")
-            ? {
-                bindingRevision: Number(
-                  url.searchParams.get("bindingRevision"),
-                ),
-              }
-            : {}),
-          ...(url.searchParams.get("beforeSequence")
-            ? { beforeSequence: Number(url.searchParams.get("beforeSequence")) }
-            : {}),
-        }
-      : await body(request, 200000);
+  const input: Record<string, unknown> = readOnly
+    ? {
+        ...(url.searchParams.get("requestId")
+          ? { requestId: url.searchParams.get("requestId") }
+          : {}),
+        ...(url.searchParams.get("bindingId")
+          ? { bindingId: url.searchParams.get("bindingId") }
+          : {}),
+        ...(url.searchParams.get("chatId")
+          ? { chatId: url.searchParams.get("chatId") }
+          : {}),
+        ...(url.searchParams.get("bindingRevision")
+          ? {
+              bindingRevision: Number(url.searchParams.get("bindingRevision")),
+            }
+          : {}),
+        ...(url.searchParams.get("beforeSequence")
+          ? { beforeSequence: Number(url.searchParams.get("beforeSequence")) }
+          : {}),
+      }
+    : await body(request, 200000);
   const principal =
     typeof input.bindingId === "string"
       ? await bindingPrincipal(env, user.id, input.bindingId)
