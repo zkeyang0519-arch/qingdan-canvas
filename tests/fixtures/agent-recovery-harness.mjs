@@ -42,7 +42,7 @@ class DurableRows {
   close() { this.db.close(); }
 }
 
-export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 900 } = {}) {
+export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 900, runnerId = "recovery-runner" } = {}) {
   await mkdir(path.join(root, ".tmp"), { recursive: true });
   const base = await mkdtemp(path.join(root, ".tmp/agent-recovery-"));
   const apiPath = path.join(base, "api.mjs");
@@ -55,7 +55,7 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
   const registry = new api.WorkspaceRegistry(initial, { locksDir: path.join(base, "locks") });
   const registered = await registry.register({ root: workspace });
   const workspaceId = registered.workspaceId;
-  const principal = { ownerId: "recovery-owner", runnerId: "recovery-runner", bindingId: "recovery-binding", bindingRevision: 1, authEpoch: 1 };
+  const principal = { ownerId: "recovery-owner", runnerId, bindingId: "recovery-binding", bindingRevision: 1, authEpoch: 1 };
   initial.saveConfig({ ...principal, deviceName: "Isolated recovery test", serverOrigin: "http://127.0.0.1:8788", enabled: true, pairingPending: false });
   initial.close();
   const items = [1, 2, 3].map(n => ({ taskId: `task-${n}`, text: `Task ${n}`, instruction: `Execute task ${n}`, acceptance: [{ id: `artifact-${n}`, kind: "artifact", description: `Artifact ${n} exists`, required: true, relativePath: `${n}.txt`, predicate: { type: "exists" } }], source: { taskRef: { canvasId: "recovery-canvas", noteId: "recovery-note", taskId: `task-${n}` }, generation: 1, specRevision: 1 } }));

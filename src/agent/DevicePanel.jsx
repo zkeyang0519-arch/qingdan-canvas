@@ -86,6 +86,7 @@ function DeviceScope({
   const [binding, setBinding] = useState(null);
   const [bindingReady, setBindingReady] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [resetTarget, setResetTarget] = useState(null);
   const mounted = useRef(false);
   const busyRef = useRef(false);
   const version = useRef(0);
@@ -273,6 +274,37 @@ function DeviceScope({
             {paired ? statusLabel[connection] : "尚未绑定"}
           </span>
         </div>
+        {local?.error && <p className="agent-error">{local.error}</p>}
+        {(resetTarget || (local?.runnerId && device?.status === "revoked")) && (
+          <div className="agent-actions">
+            <button
+              disabled={!canControl}
+              onClick={() => {
+                const target = resetTarget || local.runnerId;
+                setResetTarget(target);
+                return perform(async () => {
+                  await localAction("/reset", { expectedRunnerId: target });
+                  setResetTarget(null);
+                }, "已核实撤销并清除本机绑定，可以重新连接这台电脑。");
+              }}
+            >
+              核对并重置本机绑定
+            </button>
+            <p className="agent-note">
+              仅在旧设备已撤销且本地运行已确认停止后清理绑定，项目文件和执行历史会保留。
+            </p>
+          </div>
+        )}
+        {!paired && local?.runnerId && (
+          <button
+            disabled={!canControl}
+            onClick={() =>
+              perform(() => localAction("/reconnect"), "已请求恢复原设备配对。")
+            }
+          >
+            重试恢复连接
+          </button>
+        )}
         {paired ? (
           <>
             <details className="agent-connection-details">
@@ -286,7 +318,6 @@ function DeviceScope({
                 设备凭据保存在 Windows 凭据管理器
               </p>
             </details>
-            {local.error && <p className="agent-error">{local.error}</p>}
             <div className="agent-actions">
               <button
                 disabled={!canControl || connection === "revoked"}
@@ -327,10 +358,9 @@ function DeviceScope({
                     className="agent-danger-text"
                     onClick={() =>
                       perform(async () => {
-                        await cloudAction(
-                          `/api/agent/devices/${encodeURIComponent(local.runnerId)}/revoke`,
-                        );
-                        await localAction("/forget");
+                        await localAction("/forget", {
+                          expectedRunnerId: local.runnerId,
+                        });
                         setConfirmRevoke(false);
                       }, "已解除这台电脑的绑定。")
                     }

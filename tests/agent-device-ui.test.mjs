@@ -174,6 +174,64 @@ function fixture() {
   return { requestCloud, requestLocal, calls };
 }
 
+test("revoked device exposes authenticated reset with the old identity and retries a lost ACK", async () => {
+  const calls = [];
+  let attempts = 0;
+  let local = {
+    paired: true,
+    runnerId: "old-device",
+    ownerId: "alice",
+    deviceName: "PC",
+    enabled: true,
+    connectionStatus: "offline",
+    workspaces: [],
+    error: "credential unavailable",
+  };
+  const close = await mount({
+    requestCloud: async (route) =>
+      route.startsWith("/api/agent/bindings")
+        ? { binding: null }
+        : {
+            enabled: true,
+            devices: [
+              {
+                runnerId: "old-device",
+                ownerId: "alice",
+                status: "revoked",
+                authEpoch: 2,
+              },
+            ],
+          },
+    requestLocal: async (route, options) => {
+      if (route === "/reset") {
+        calls.push(options);
+        attempts++;
+        local = {
+          ...local,
+          paired: false,
+          runnerId: null,
+          connectionStatus: "unpaired",
+        };
+        if (attempts === 1) throw Error("response lost");
+      }
+      return local;
+    },
+  });
+  try {
+    await click(button("核对并重置本机绑定"));
+    assert.match(document.body.textContent, /response lost/);
+    await click(button("核对并重置本机绑定"));
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.accountId, "alice");
+      assert.deepEqual(call.body, { expectedRunnerId: "old-device" });
+    }
+    assert.match(document.body.textContent, /尚未绑定/);
+  } finally {
+    await close();
+  }
+});
+
 test("formal settings select the currently bound workspace and notify only a confirmed rebind", async () => {
   const workspaces = [
     { workspaceId: "first", name: "另一个目录" },
@@ -273,10 +331,14 @@ test("disconnect/reconnect and revocation show real returned states", async () =
     await click(button("解除绑定"));
     await click(button("确认解除绑定"));
     assert.match(document.body.textContent, /尚未绑定/);
-    assert.ok(
-      f.calls.findIndex((c) => c.route.endsWith("/revoke")) <
-        f.calls.findIndex((c) => c.route === "/forget"),
+    assert.equal(
+      f.calls.some((c) => c.route.endsWith("/revoke")),
+      false,
+      "the browser must not revoke before the local execution safety guard",
     );
+    assert.deepEqual(f.calls.find((c) => c.route === "/forget").body, {
+      expectedRunnerId: "device",
+    });
   } finally {
     await unmount();
   }

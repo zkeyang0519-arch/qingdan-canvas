@@ -168,6 +168,7 @@ export class RunnerExecutor {
   private reconciling?: Promise<void>;
   private timer?: NodeJS.Timeout;
   private paused = false;
+  private deviceResetGuard = false;
   private closed = false;
   private lastAuthCheck?: { at: number; epoch: number; commandId: string };
   private capturedAt = 0;
@@ -180,10 +181,10 @@ export class RunnerExecutor {
     this.releaseConsumer = o.store.acquireConsumer();
   }
   private get disabled() {
-    return this.paused || this.closed || this.o.enabled?.() === false;
+    return this.deviceResetGuard || this.paused || this.closed || this.o.enabled?.() === false;
   }
   start() {
-    if (this.closed) return;
+    if (this.closed || this.deviceResetGuard) return;
     this.paused = false;
     if (this.timer) return;
     this.timer = setInterval(() => {
@@ -193,7 +194,7 @@ export class RunnerExecutor {
     void this.tick();
   }
   tick() {
-    if (this.closed) return Promise.resolve();
+    if (this.closed || this.deviceResetGuard) return Promise.resolve();
     if (this.working) return this.working;
     this.working = this.step()
       .catch(() => {
@@ -205,12 +206,34 @@ export class RunnerExecutor {
     return this.working;
   }
   requestReconciliation() {
+    if (this.deviceResetGuard) return;
     const held = this.boundHold();
     if (!held || held.phase !== "claimed" || this.closed) return;
     // User reconnect may return before the socket comes online. Keep the
     // intent durable and fence late sends until the consumer handles it.
     this.o.store.requestReconciliation(held);
     void this.tick();
+  }
+  async withDeviceResetGuard<T>(work: () => Promise<T>): Promise<T> {
+    if (this.closed || this.deviceResetGuard)
+      throw new RunnerError("EXECUTOR_BUSY", "设备运行器正在关闭或核对重置。");
+    // Reject existing occupancy without stopping it as a side effect of reset.
+    if (this.hasHold) throw new RunnerError("WORKSPACE_BUSY", "请先停止并核对本地运行。");
+    const resume = this.timer !== undefined;
+    this.deviceResetGuard = true;
+    clearInterval(this.timer);
+    this.timer = undefined;
+    try {
+      await this.working;
+      await this.reconciling;
+      await this.contextQueue;
+      if (this.closed || this.hasHold)
+        throw new RunnerError("WORKSPACE_BUSY", "本地执行状态已变化，不能重置设备。");
+      return await work();
+    } finally {
+      this.deviceResetGuard = false;
+      if (resume && !this.closed && this.o.enabled?.() !== false) this.start();
+    }
   }
   async suspend() {
     this.paused = true;
@@ -1322,7 +1345,7 @@ export class RunnerExecutor {
   /** N6/manual reconnect can invoke this while an earlier thread/start is
    * pending. The durable fence is written before any network await. */
   reconcileHeldRun(): Promise<void> {
-    if (this.closed) return Promise.resolve();
+    if (this.closed || this.deviceResetGuard) return Promise.resolve();
     if (this.reconciling) return this.reconciling;
     const held = this.boundHold();
     this.reconciling = this.reconcileHeld().catch(error => {

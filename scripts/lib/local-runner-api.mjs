@@ -77,6 +77,75 @@ export function createLocalRunnerApi({
       throw reject(401, "登录账号已变化，请刷新页面。");
     const controller = getController();
     if (!controller) throw reject(503, "本机 Runner 正在准备，请稍后重试。");
+    const revocationEvidence = async (target, revoke = false) => {
+      if (
+        target.ownerId !== ownerId ||
+        target.serverOrigin !== sessionUrl.origin
+      )
+        throw reject(403, "原设备不属于当前登录账号或轻单服务。");
+      const headers = { cookie: req.headers.cookie, "x-qd-account": ownerId };
+      if (revoke) {
+        try {
+          await fetch(
+            new URL(
+              "/api/agent/devices/" +
+                encodeURIComponent(target.runnerId) +
+                "/revoke",
+              sessionUrl,
+            ),
+            {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body: "{}",
+              signal: AbortSignal.timeout(5000),
+              redirect: "error",
+            },
+          );
+        } catch {
+          // The revoke may have committed before its ACK was lost. Only the
+          // authenticated GET below can authorize local cleanup.
+        }
+      }
+      let response, data;
+      try {
+        response = await fetch(new URL("/api/agent/devices", sessionUrl), {
+          headers,
+          signal: AbortSignal.timeout(5000),
+          redirect: "error",
+          cache: "no-store",
+        });
+        if (!response.ok)
+          throw reject(
+            response.status === 401 ? 401 : 503,
+            "无法核实原设备的撤销状态。",
+          );
+        data = await response.json();
+      } catch (error) {
+        throw error.status
+          ? error
+          : reject(503, "设备服务暂时不可用，请稍后重新核对。");
+      }
+      const device =
+        Array.isArray(data?.devices) &&
+        data.devices.find(
+          (item) =>
+            item.runnerId === target.runnerId && item.ownerId === ownerId,
+        );
+      if (
+        !device ||
+        device.status !== "revoked" ||
+        !Number.isSafeInteger(device.authEpoch) ||
+        device.authEpoch <= target.authEpoch
+      )
+        throw reject(409, "请先在当前账号撤销原设备，再核对并重置本机绑定。");
+      return {
+        runnerId: device.runnerId,
+        ownerId: device.ownerId,
+        serverOrigin: sessionUrl.origin,
+        status: device.status,
+        authEpoch: device.authEpoch,
+      };
+    };
     const route = url.pathname.slice("/api/local-runner".length);
     try {
       if (req.method === "GET" && route === "/diagnostics" && getDiagnostics) {
@@ -172,11 +241,26 @@ export function createLocalRunnerApi({
           throw reject(400, "连接状态无效。");
         return await controller.setEnabled(ownerId, body.enabled);
       }
-      if (route === "/reconnect" || route === "/forget") {
+      if (route === "/reset") {
+        const body = await readBody(req, ["expectedRunnerId"]);
+        return await controller.reset(
+          ownerId,
+          stringField(body, "expectedRunnerId", 128),
+          (target) => revocationEvidence(target),
+        );
+      }
+      if (route === "/forget") {
+        const body = await readBody(req, ["expectedRunnerId"]);
+        if (!Object.hasOwn(body, "expectedRunnerId"))
+          return await controller.forget(ownerId);
+        return await controller.forget(ownerId, {
+          expectedRunnerId: stringField(body, "expectedRunnerId", 128),
+          revokeAndVerify: (target) => revocationEvidence(target, true),
+        });
+      }
+      if (route === "/reconnect") {
         await readBody(req, []);
-        return await controller[
-          route === "/reconnect" ? "reconnect" : "forget"
-        ](ownerId);
+        return await controller.reconnect(ownerId);
       }
       throw reject(404, "找不到本机 Runner 操作。");
     } catch (error) {

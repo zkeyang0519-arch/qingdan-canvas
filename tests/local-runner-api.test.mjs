@@ -302,3 +302,142 @@ test("local Runner controls authenticate the browser and never accept a caller-c
     await new Promise((resolve) => worker.close(resolve));
   }
 });
+
+test("device reset obtains revocation evidence from the fixed authenticated upstream", async (t) => {
+  let deviceStatus = "revoked",
+    deviceOwner = "alice",
+    status = 200,
+    requested = [];
+  const worker = createServer((req, res) => {
+    requested.push({
+      url: req.url,
+      cookie: req.headers.cookie,
+      account: req.headers["x-qd-account"],
+    });
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/api/session")
+      return res.end(
+        JSON.stringify({
+          user: {
+            id: req.headers.cookie === "qd_session=bob" ? "bob" : "alice",
+          },
+        }),
+      );
+    res.statusCode = status;
+    res.end(
+      JSON.stringify({
+        enabled: true,
+        devices: [
+          {
+            runnerId: "old-device",
+            ownerId: deviceOwner,
+            status: deviceStatus,
+            authEpoch: 2,
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise((resolve) => worker.listen(0, "127.0.0.1", resolve));
+  const upstream = "http://127.0.0.1:" + worker.address().port;
+  let targetOrigin = upstream;
+  const controller = {
+    async reset(ownerId, expectedRunnerId, verify) {
+      if (ownerId !== "alice")
+        throw Object.assign(Error("wrong owner"), { code: "OWNER_MISMATCH" });
+      assert.equal(expectedRunnerId, "old-device");
+      const proof = await verify({
+        runnerId: expectedRunnerId,
+        ownerId,
+        serverOrigin: targetOrigin,
+        authEpoch: 1,
+      });
+      assert.deepEqual(proof, {
+        runnerId: "old-device",
+        ownerId: "alice",
+        serverOrigin: upstream,
+        status: "revoked",
+        authEpoch: 2,
+      });
+      return { paired: false };
+    },
+  };
+  const server = createExperienceServer({
+    service: {},
+    upstream,
+    runnerApi: createLocalRunnerApi({
+      upstream,
+      getController: () => controller,
+    }),
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => worker.close(resolve));
+  });
+  const origin = "http://127.0.0.1:" + server.address().port;
+  const request = (body, headers = {}) =>
+    fetch(origin + "/api/local-runner/reset", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-qingdan-local": "1",
+        "x-qd-account": "alice",
+        cookie: "qd_session=alice",
+        origin,
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await request({ expectedRunnerId: "old-device" })).status, 200);
+  assert.deepEqual(requested.at(-1), {
+    url: "/api/agent/devices",
+    cookie: "qd_session=alice",
+    account: "alice",
+  });
+  for (const extra of [
+    { ownerId: "bob" },
+    { proof: { status: "revoked" } },
+    { upstream: "https://foreign.invalid" },
+    { revoked: true },
+  ])
+    assert.equal(
+      (await request({ expectedRunnerId: "old-device", ...extra })).status,
+      400,
+    );
+  assert.equal(
+    (
+      await request(
+        { expectedRunnerId: "old-device" },
+        { "x-qd-account": "bob" },
+      )
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await request(
+        { expectedRunnerId: "old-device" },
+        { "x-qd-account": "bob", cookie: "qd_session=bob" },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await request(
+        { expectedRunnerId: "old-device" },
+        { origin: "https://foreign.invalid" },
+      )
+    ).status,
+    403,
+  );
+  targetOrigin = "https://different-device-server.invalid";
+  assert.equal((await request({ expectedRunnerId: "old-device" })).status, 403);
+  targetOrigin = upstream;
+  status = 503;
+  assert.equal((await request({ expectedRunnerId: "old-device" })).status, 503);
+  status = 200;
+  deviceOwner = "bob";
+  assert.equal((await request({ expectedRunnerId: "old-device" })).status, 409);
+});
