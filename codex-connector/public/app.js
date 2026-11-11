@@ -12,6 +12,7 @@ let cursor = null,
   listSequence = 0,
   selection = 0,
   viewGeneration = 0,
+  pollSequence = 0,
   busy = false,
   lastStatus = null,
   stopped = false;
@@ -21,6 +22,27 @@ function notice(message, source = "operation") {
   const text = notices.transport || notices.connection || notices.operation;
   $("notice").hidden = !text;
   $("notice").textContent = text;
+}
+const connectionReadErrors = new Set([
+  "CODEX_EXITED",
+  "CODEX_TIMEOUT",
+  "CODEX_CLOSED",
+  "CODEX_NOT_CONNECTED",
+  "CODEX_START_FAILED",
+  "CODEX_PROTOCOL_ERROR",
+  "CONNECTION_CHANGED",
+  "CONNECTOR_CLOSED",
+  "LOCAL_AUTH_REQUIRED",
+  "LOCAL_TRANSPORT_ERROR",
+]);
+function noticeReadError(error) {
+  const isRead = ["/api/session", "/api/sessions"].includes(
+    error.route?.split("?")[0],
+  );
+  notice(
+    error.message,
+    isRead && connectionReadErrors.has(error.code) ? "connection" : "operation",
+  );
 }
 function readable(s) {
   return ["ready", "login_required"].includes(s?.status);
@@ -42,17 +64,29 @@ function invalidateProjects() {
   $("listMessage").textContent = "连接更新后重新读取会话。";
 }
 async function api(route, body) {
-  const res = await fetch(route, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      Authorization: "Bearer " + (token || ""),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  const data = await res.json();
-  if (!res.ok) throw Error(data.message || "读取失败，请重试。");
-  return data;
+  try {
+    const res = await fetch(route, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {
+        Authorization: "Bearer " + (token || ""),
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    const data = await res.json();
+    if (!res.ok)
+      throw Object.assign(Error(data.message || "读取失败，请重试。"), {
+        code: data.code || "HTTP_ERROR",
+        route,
+      });
+    return data;
+  } catch (error) {
+    if (error.route === route) throw error;
+    throw Object.assign(Error(error.message || "无法连接后台程序。"), {
+      code: "LOCAL_TRANSPORT_ERROR",
+      route,
+    });
+  }
 }
 function render(s) {
   if (
@@ -126,6 +160,7 @@ function setBusy(value) {
 }
 async function connect(body) {
   if (busy || stopped) return;
+  ++pollSequence;
   setBusy(true);
   notice("");
   notice("", "transport");
@@ -134,12 +169,14 @@ async function connect(body) {
   invalidateProjects();
   try {
     const s = await api(body ? "/api/config" : "/api/connect", body || {});
+    ++pollSequence;
     render(s);
     if (["ready", "login_required"].includes(s.status)) {
       notice("");
       await load(false);
     }
   } catch (e) {
+    ++pollSequence;
     notice(e.message);
     $("status").textContent = "连接检查未完成";
   } finally {
@@ -196,7 +233,7 @@ async function load(more = false) {
       : "没有找到会话。空列表不代表连接失败。";
   } catch (e) {
     if (seq === listSequence) {
-      notice(e.message);
+      noticeReadError(e);
       $("listMessage").textContent = rows.length
         ? "读取失败，以下为上次结果，可能已过期。"
         : "会话读取失败，可以重新检测连接。";
@@ -218,7 +255,7 @@ async function select(id, generation = viewGeneration) {
       : "此目录当前不存在，请在 Codex 中检查项目位置。";
   } catch (e) {
     if (seq === selection && generation === viewGeneration && !stopped)
-      notice(e.message);
+      noticeReadError(e);
   }
 }
 $("reconnect").addEventListener("click", () => connect());
@@ -268,16 +305,30 @@ $("quit").addEventListener("click", async () => {
 async function poll() {
   if (stopped || busy) return;
   const generation = viewGeneration;
+  const seq = ++pollSequence;
   try {
     const s = await api("/api/status");
-    if (stopped || busy || generation !== viewGeneration) return;
+    if (
+      stopped ||
+      busy ||
+      generation !== viewGeneration ||
+      seq !== pollSequence
+    )
+      return;
     const recovered =
       readable(s) && (!readable(lastStatus) || !sameConnection(lastStatus, s));
     notice("", "transport");
     render(s);
     if (recovered) await load();
   } catch {
-    if (!stopped && !busy && generation === viewGeneration) {
+    if (
+      !stopped &&
+      !busy &&
+      generation === viewGeneration &&
+      seq === pollSequence
+    ) {
+      lastStatus = null;
+      invalidateProjects();
       $("status").textContent = "无法连接后台程序";
       notice("连接器可能已退出，请重新打开程序。", "transport");
     }

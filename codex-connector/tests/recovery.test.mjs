@@ -151,7 +151,8 @@ test(
     const ready = (child) =>
       until(() => {
         assert.equal(child.errors, "", child.errors);
-        return child.output.trim() && JSON.parse(child.output.trim());
+        const newline = child.output.indexOf("\n");
+        return newline >= 0 && JSON.parse(child.output.slice(0, newline));
       });
     const runtime = () =>
       readFile(path.join(stateDir, "runtime.json"), "utf8").then(JSON.parse);

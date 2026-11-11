@@ -27,4 +27,7 @@ Connector.prototype.load = function () {
   return originalLoad.call(this);
 };
 const result = await launch(["--data-dir", process.argv[2]]);
-console.log(JSON.stringify({ ready: true, reused: result.reused }));
+const output = JSON.stringify({ ready: true, reused: result.reused });
+process.stdout.write(output.slice(0, 5));
+await new Promise((resolve) => setTimeout(resolve, 40));
+console.log(output.slice(5));

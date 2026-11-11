@@ -289,12 +289,14 @@ export class Connector {
     return this.read((c) => c.listSessions(query));
   }
   async readSession(id) {
-    const value = await this.read((c) => c.readSession(id));
-    let directoryExists = false;
-    try {
-      directoryExists = (await stat(value.cwd)).isDirectory();
-    } catch {}
-    return { ...value, directoryExists };
+    return this.read(async (c) => {
+      const value = await c.readSession(id);
+      let directoryExists = false;
+      try {
+        directoryExists = (await stat(value.cwd)).isDirectory();
+      } catch {}
+      return { ...value, directoryExists };
+    });
   }
   diagnostics() {
     return {

@@ -303,7 +303,10 @@ test("transport recovery preserves a business error from a failed user request",
   const { d, respond, poll, search } = await setup(t);
   respond((url) => {
     if (url.pathname === "/api/sessions")
-      return response({ message: "搜索内容最多 200 字。" }, false);
+      return response(
+        { code: "INVALID_INPUT", message: "搜索内容最多 200 字。" },
+        false,
+      );
   });
   await search("rejected");
   assert.match(d.getElementById("notice").textContent, /搜索内容最多/);
@@ -322,7 +325,10 @@ test("automatic connection recovery does not clear an unrelated business error",
   const { d, respond, poll, search } = await setup(t);
   respond((url) => {
     if (url.pathname === "/api/sessions")
-      return response({ message: "搜索内容最多 200 字。" }, false);
+      return response(
+        { code: "INVALID_INPUT", message: "搜索内容最多 200 字。" },
+        false,
+      );
   });
   await search("rejected");
   respond((url) => {
@@ -344,4 +350,150 @@ test("automatic connection recovery does not clear an unrelated business error",
   await poll();
   assert.equal(d.getElementById("status").textContent, "Codex 已连接");
   assert.match(d.getElementById("notice").textContent, /搜索内容最多/);
+});
+
+for (const route of ["/api/session", "/api/sessions"]) {
+  test(`${route} disconnect error clears after verified automatic recovery`, async (t) => {
+    const { w, d, respond, poll, search } = await setup(t);
+    respond((url) => {
+      if (url.pathname === route)
+        return response(
+          { code: "CODEX_EXITED", message: "旧连接已断开" },
+          false,
+        );
+    });
+    if (route === "/api/session") await w.eval('select("initial-1")');
+    else await search("old");
+    assert.match(d.getElementById("notice").textContent, /旧连接已断开/);
+    respond((url) => {
+      if (url.pathname === "/api/status")
+        return response({
+          ...ready,
+          status: "error",
+          error: { code: "CODEX_EXITED", message: "正在恢复连接" },
+        });
+    });
+    await poll();
+    respond((url) => {
+      if (url.pathname === "/api/status")
+        return response({
+          ...ready,
+          connection: { ...ready.connection, generation: 2 },
+        });
+      if (url.pathname === "/api/sessions") return response(newPage);
+    });
+    await poll();
+    assert.equal(d.getElementById("notice").hidden, true);
+    assert.match(d.getElementById("sessions").textContent, /新连接会话/);
+  });
+}
+
+for (const failure of ["network", "unauthorized"]) {
+  test(`latest ${failure} status failure invalidates project reads until same-generation recovery`, async (t) => {
+    const { w, d, calls, respond, poll } = await setup(t);
+    const old = Promise.withResolvers();
+    respond((url) => {
+      if (url.pathname === "/api/session") return old.promise;
+      if (url.pathname === "/api/status") {
+        if (failure === "network") throw Error("connection refused");
+        return response(
+          {
+            code: "LOCAL_AUTH_REQUIRED",
+            message: "访问凭证已失效，请重新打开连接器。",
+          },
+          false,
+        );
+      }
+    });
+    const pending = w.eval('select("initial-1")');
+    await poll();
+    old.resolve(response(project("old")));
+    await pending;
+    assert.equal(d.getElementById("project").hidden, true);
+    const readsBefore = calls.filter(
+      (c) => c.url.pathname === "/api/session",
+    ).length;
+    await w.eval('select("initial-1")');
+    assert.equal(
+      calls.filter((c) => c.url.pathname === "/api/session").length,
+      readsBefore,
+    );
+    respond((url) =>
+      url.pathname === "/api/sessions" ? response(newPage) : undefined,
+    );
+    await poll();
+    assert.equal(d.getElementById("status").textContent, "Codex 已连接");
+    assert.equal(d.getElementById("notice").hidden, true);
+    assert.match(d.getElementById("sessions").textContent, /新连接会话/);
+  });
+}
+
+test("an older status failure cannot replace a later successful poll", async (t) => {
+  const { d, respond, poll } = await setup(t);
+  const old = Promise.withResolvers(),
+    latest = Promise.withResolvers();
+  let count = 0;
+  respond((url) =>
+    url.pathname === "/api/status"
+      ? ++count === 1
+        ? old.promise
+        : latest.promise
+      : undefined,
+  );
+  const first = poll(),
+    second = poll();
+  latest.resolve(response(ready));
+  await second;
+  old.reject(Error("old network failure"));
+  await first;
+  assert.equal(d.getElementById("status").textContent, "Codex 已连接");
+  assert.equal(d.getElementById("notice").hidden, true);
+});
+
+test("an older successful poll cannot replace a later status failure", async (t) => {
+  const { d, respond, poll } = await setup(t);
+  const old = Promise.withResolvers(),
+    latest = Promise.withResolvers();
+  let count = 0;
+  respond((url) =>
+    url.pathname === "/api/status"
+      ? ++count === 1
+        ? old.promise
+        : latest.promise
+      : undefined,
+  );
+  const first = poll(),
+    second = poll();
+  latest.reject(Error("latest network failure"));
+  await second;
+  old.resolve(response(ready));
+  await first;
+  assert.equal(d.getElementById("status").textContent, "无法连接后台程序");
+  assert.equal(d.getElementById("notice").hidden, false);
+});
+
+test("manual reconnect blocks interval requests and fences a late preexisting poll failure", async (t) => {
+  const { d, calls, respond, poll } = await setup(t);
+  const old = Promise.withResolvers(),
+    connection = Promise.withResolvers();
+  respond((url) => {
+    if (url.pathname === "/api/status") return old.promise;
+    if (url.pathname === "/api/connect") return connection.promise;
+    if (url.pathname === "/api/sessions") return response(newPage);
+  });
+  const pending = poll();
+  d.getElementById("reconnect").click();
+  const count = calls.filter((c) => c.url.pathname === "/api/status").length;
+  await poll();
+  assert.equal(
+    calls.filter((c) => c.url.pathname === "/api/status").length,
+    count,
+  );
+  connection.resolve(response(ready));
+  await until(() => !d.getElementById("reconnect").disabled);
+  old.reject(Error("old network failure"));
+  await pending;
+  assert.equal(d.getElementById("status").textContent, "Codex 已连接");
+  assert.equal(d.getElementById("notice").hidden, true);
+  assert.match(d.getElementById("sessions").textContent, /新连接会话/);
 });
