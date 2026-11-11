@@ -202,9 +202,9 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
     disconnect() { transport.close(); },
     async reconnect() { await controller.reconnect(principal.ownerId); },
     native,
-    async control(action) {
+    async control(action, { requestId = crypto.randomUUID(), expectedRevision, expectedTurnId } = {}) {
       const view = await fixture.view();
-      return request("queue", { principal, input: { requestId: crypto.randomUUID(), bindingId: principal.bindingId, bindingRevision: 1, runId, action, expectedRevision: view.queue.revision } });
+      return request("queue", { principal, input: { requestId, bindingId: principal.bindingId, bindingRevision: 1, runId, action, expectedRevision: expectedRevision ?? view.queue.revision, ...(expectedTurnId ? { expectedTurnId } : {}) } });
     },
     async expireLease() {
       const lease = { ...controller.store.lease(runId), expiresAt: Date.now() - 1 };
@@ -254,9 +254,9 @@ export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 9
       }
       assert.fail(`recovery condition not reached; cloud errors=${JSON.stringify(errors.slice(-4))}; run=${JSON.stringify(fixture.runs.getRun(runId))}`);
     },
-    async create({ batch = true } = {}) {
+    async create({ batch = true, requestId = "recovery-submit" } = {}) {
       await controller.executionContext(principal.ownerId, workspaceId);
-      const intent = await request("intent", { principal, input: { requestId: "recovery-submit", bindingId: principal.bindingId, bindingRevision: 1, kind: "task", ...(batch ? { autoComplete: true, sourceTasks: items.map(item => ({ noteId: item.source.taskRef.noteId, taskId: item.taskId, generation: 1, specRevision: 1 })) } : { instruction: "Single task that permits a later reply" }) } });
+      const intent = await request("intent", { principal, input: { requestId, bindingId: principal.bindingId, bindingRevision: 1, kind: "task", ...(batch ? { autoComplete: true, sourceTasks: items.map(item => ({ noteId: item.source.taskRef.noteId, taskId: item.taskId, generation: 1, specRevision: 1 })) } : { instruction: "Single task that permits a later reply" }) } });
       runId = intent.input.runId;
       created = await dispatch.tool(principal, "codex_create_run", intent.input);
       return created;
