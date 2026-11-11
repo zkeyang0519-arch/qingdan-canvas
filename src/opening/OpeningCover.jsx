@@ -222,7 +222,7 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
       </div>
       <div className="opening-vignette" aria-hidden="true" />
       <div className="opening-topline" aria-hidden="true">
-        QINGDAN<span>一个装得下灵感的地方</span>
+        TODO<span>一个装得下灵感的地方</span>
       </div>
       <button
         ref={entry}
@@ -233,7 +233,7 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
         aria-label="打开我的空间，进入轻单"
       >
         <span className="opening-entry-copy">
-          <span className="opening-entry-top">QINGDAN</span>
+          <span className="opening-entry-top">TODO</span>
           <span className="opening-title">轻单</span>
           <span className="opening-subtitle">让灵感，有处安放。</span>
           <span className="opening-english">a place for your ideas.</span>

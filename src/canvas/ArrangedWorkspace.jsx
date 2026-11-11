@@ -28,10 +28,8 @@ import {
   blockText,
   collectObjects,
   createObject,
-  deleteObjects,
   id,
   makeBlock,
-  movableIds,
   objectLabel,
   patchObjects,
 } from "./model.js";
@@ -42,6 +40,9 @@ import {
   activatePane,
   choosePanePage,
   createChecklistPage,
+  canDeleteChecklistPage,
+  deleteChecklistPage,
+  renameChecklistPage,
   appendPageObjects,
   editPageBlock,
   insertPageBlocks,
@@ -965,11 +966,19 @@ export default function ArrangedWorkspace({
   const dialogEditable =
     !blocked &&
     !workspace.readOnly &&
-    (dialog?.type === "create" || !!dialogPage?.group);
+    (dialog?.type === "create" ||
+      !!dialogPage?.group ||
+      !!dialogPage?.objects.length);
   const canDeletePage =
     dialogEditable &&
-    !!dialogPage?.group &&
-    movableIds(state, [dialogPage.id]).has(dialogPage.id);
+    !!dialogPage &&
+    canDeleteChecklistPage(state, boardId, dialogPage.id);
+  const canRenamePage =
+    dialogEditable && (!!dialogPage?.group || canDeletePage);
+  const pageTitle =
+    resolved.page?.group || resolved.page?.objects.length
+      ? resolved.page.title
+      : "项目清单";
   const [quickTaskLibraryOpen, setQuickTaskLibraryOpen] = useState(false);
   const quickTaskLibrary = useQuickTasks(libraryKey, quickTaskLibraryOpen);
   const modalDialog = dialog && dialog.type !== "deadline";
@@ -1106,11 +1115,7 @@ export default function ArrangedWorkspace({
   const removePage = () => {
     if (!canDeletePage) return;
     onExit();
-    update((s) => {
-      const page = writablePage(s, boardId, dialog.pageId);
-      if (!page?.group || !movableIds(s, [page.id]).has(page.id)) return s;
-      return deleteObjects(s, [page.group.id], true);
-    });
+    update((s) => deleteChecklistPage(s, boardId, dialog.pageId));
     setSelected({ side: "left", keys: [] });
     setDialog(null);
   };
@@ -1521,9 +1526,7 @@ export default function ArrangedWorkspace({
       <div className="arranged-toolbar">
         <div className="arranged-project-heading">
           <Frame size={15} aria-hidden="true" />
-          <span title={resolved.page?.title}>
-            {resolved.page?.title || "项目清单"}
-          </span>
+          <span title={pageTitle}>{pageTitle}</span>
           {resolved.page?.group && (
             <>
               <button
@@ -1811,7 +1814,11 @@ export default function ArrangedWorkspace({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (!title.trim() || !dialogEditable) return;
+              if (
+                !title.trim() ||
+                !(dialog.type === "create" ? dialogEditable : canRenamePage)
+              )
+                return;
               onExit();
               if (dialog.type === "create") {
                 update((s) => createChecklistPage(s, boardId, title));
@@ -1819,15 +1826,21 @@ export default function ArrangedWorkspace({
                 if (created?.type === "frame") choose(dialog.side, created.id);
               } else
                 update((s) =>
-                  writablePage(s, boardId, dialog.pageId)?.group
-                    ? patchObjects(s, {
-                        [dialog.pageId]: { title: title.trim().slice(0, 80) },
-                      })
-                    : s,
+                  renameChecklistPage(s, boardId, dialog.pageId, title),
                 );
               setDialog(null);
             }}
           >
+            {dialog.type === "rename" && dialog.pageId === "ungrouped" && (
+              <p>重命名会将未分组内容整理为一个灵感板，保留内容和画布位置。</p>
+            )}
+            {dialog.type === "rename" && !canRenamePage && (
+              <p role="status">
+                {dialogEditable
+                  ? "标签内有锁定内容，请先解锁后再重命名。"
+                  : "当前标签无法修改，请关闭后重试。"}
+              </p>
+            )}
             <input
               className="text-field"
               autoFocus
@@ -1840,7 +1853,10 @@ export default function ArrangedWorkspace({
             <div className="modal-actions">
               <button
                 className="button primary"
-                disabled={!title.trim() || !dialogEditable}
+                disabled={
+                  !title.trim() ||
+                  !(dialog.type === "create" ? dialogEditable : canRenamePage)
+                }
                 type="submit"
               >
                 {dialog.type === "create" ? "创建灵感板" : "保存名称"}

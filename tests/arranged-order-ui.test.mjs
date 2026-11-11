@@ -318,11 +318,191 @@ test("删除标签先确认，标签与待办图片一起移入回收站并能�
   await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
   await projectAction("个人计划", "删除标签");
   await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
-  assert.equal(host.querySelectorAll('[role="tab"]').length, 1);
+  assert.equal(host.querySelectorAll('[role="tab"]').length, 0);
   assert.equal(controls.state().objects.length, 0);
+});
+
+async function setField(input, value) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(input),
+      "value",
+    ).set.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+test("未分组可确认删除与恢复，仅影响未归组内容", async (t) => {
+  const { host, controls, boardId } = await mountProjects(t);
+  const loose = {
+    ...createObject(boardId, "note"),
+    id: "legacy-note",
+    blocks: [makeBlock("旧版待办")],
+  };
+  const image = { ...createObject(boardId, "image"), id: "legacy-image" };
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: [...s.objects, loose, image],
+    })),
+  );
+  const before = controls.state();
+  await projectAction("未分组", "删除标签");
+  await click(labeledButton("取消", host));
+  assert.strictEqual(controls.state(), before);
+  await projectAction("未分组", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  const deleted = controls.state();
+  assert.deepEqual(
+    deleted.objects.map((o) => o.id),
+    before.objects.slice(0, -2).map((o) => o.id),
+  );
+  assert.deepEqual(
+    deleted.trash[0].objects.map((o) => o.id),
+    [loose.id, image.id],
+  );
+  assert.equal(host.querySelector('[role="tab"][aria-label="未分组"]'), null);
+  await act(async () =>
+    controls.update((s) => restoreTrash(s, deleted.trash[0].id)),
+  );
+  await click(labeledButton("未分组", host));
+  assert.ok(host.textContent.includes("旧版待办"));
+  assert.deepEqual(
+    controls.state().objects.find((o) => o.id === loose.id).blocks,
+    loose.blocks,
+  );
+});
+
+test("最后一个未分组删除后不留下空标签，仍可新增待办", async (t) => {
+  const { host, controls } = await mount(t);
+  await projectAction("未分组", "删除标签");
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.equal(host.querySelectorAll('[role="tab"]').length, 0);
+  assert.equal(controls.state().objects.length, 0);
+  await click(labeledButton("左侧添加待办", host));
+  const input = host.querySelector('[aria-label="左侧新待办内容"]');
+  await setField(input, "删空后继续记录");
+  await act(async () =>
+    input.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    ),
+  );
+  assert.ok(host.querySelector('[role="tab"][aria-label="未分组"]'));
+  assert.ok(host.textContent.includes("删空后继续记录"));
+  assert.equal(controls.state().objects.length, 1);
+});
+
+test("未分组重命名成为普通标签，保留内容位置并在重新载入后保留名称", async (t) => {
+  const { host, controls, note } = await mount(t);
+  await projectAction("未分组", "重命名");
+  assert.match(
+    host.querySelector('[role="dialog"]').textContent,
+    /整理.*灵感板/,
+  );
+  await setField(host.querySelector('[aria-label="灵感板名称"]'), "历史计划");
+  await click(labeledButton("保存名称", host));
+  const renamed = controls.state();
+  const group = renamed.objects.find((o) => o.type === "frame");
+  const savedNote = renamed.objects.find((o) => o.id === note.id);
+  assert.equal(group.title, "历史计划");
+  assert.equal(savedNote.parentId, group.id);
+  assert.deepEqual(savedNote.blocks, note.blocks);
+  assert.deepEqual(
+    [savedNote.x, savedNote.y, savedNote.width, savedNote.height],
+    [note.x, note.y, note.width, note.height],
+  );
   assert.equal(
-    host.querySelector('[role="tab"]').getAttribute("aria-label"),
-    "未分组",
+    host
+      .querySelector('[role="tab"][aria-selected="true"]')
+      .getAttribute("aria-label"),
+    "历史计划",
+  );
+  await act(async () =>
+    controls.update(() => JSON.parse(JSON.stringify(renamed))),
+  );
+  assert.equal(host.querySelectorAll('[role="tab"]').length, 1);
+  assert.ok(host.querySelector('[role="tab"][aria-label="历史计划"]'));
+  assert.deepEqual(order(host), ["none", "late", "early"]);
+});
+
+test("重命名未选中的未分组保留当前标签，内容被移走后不再允许保存", async (t) => {
+  const { host, controls, note } = await mountProjects(t);
+  const loose = {
+    ...note,
+    id: "loose",
+    parentId: null,
+    blocks: [makeBlock("未分组事项")],
+  };
+  await act(async () =>
+    controls.update((s) => ({ ...s, objects: [...s.objects, loose] })),
+  );
+  await projectAction("未分组", "重命名");
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) =>
+        o.id === loose.id ? { ...o, parentId: "delivery" } : o,
+      ),
+    })),
+  );
+  assert.equal(labeledButton("保存名称", host).disabled, true);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) =>
+        o.id === loose.id ? { ...o, parentId: null } : o,
+      ),
+    })),
+  );
+  await setField(host.querySelector('[aria-label="灵感板名称"]'), "旧版内容");
+  await click(labeledButton("保存名称", host));
+  assert.equal(
+    host
+      .querySelector('[role="tab"][aria-selected="true"]')
+      .getAttribute("aria-label"),
+    "投递",
+  );
+  await click(labeledButton("旧版内容", host));
+  assert.ok(host.textContent.includes("未分组事项"));
+});
+
+test("未分组遵守只读和确认期间的锁定保护，解锁后可删除", async (t) => {
+  const { host, controls, note } = await mount(t);
+  await act(async () => controls.setReadOnly(true));
+  assert.equal(labeledButton("项目标签操作：未分组").disabled, true);
+  await act(async () => controls.setReadOnly(false));
+  await projectAction("未分组", "重命名");
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) => ({ ...o, locked: true })),
+    })),
+  );
+  assert.equal(labeledButton("保存名称", host).disabled, true);
+  await act(async () =>
+    document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  await projectAction("未分组", "删除标签");
+  const before = controls.state();
+  assert.equal(
+    labeledButton("删除标签", host.querySelector('[role="dialog"]')).disabled,
+    true,
+  );
+  assert.match(host.querySelector('[role="dialog"]').textContent, /锁定内容/);
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.strictEqual(controls.state(), before);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((o) => ({ ...o, locked: false })),
+    })),
+  );
+  await click(labeledButton("删除标签", host.querySelector('[role="dialog"]')));
+  assert.equal(
+    controls.state().objects.some((o) => o.id === note.id),
+    false,
   );
 });
 
@@ -359,7 +539,7 @@ test("只读和锁定标签禁止操作，确认期间锁定或删除也不会�
   assert.equal(labeledButton("保存名称", host).disabled, true);
 });
 
-test("标签键盘切换与菜单 Escape 关闭可用，未分组没有标签操作", async (t) => {
+test("标签键盘切换与菜单 Escape 关闭可用", async (t) => {
   const { host } = await mountProjects(t);
   const first = host.querySelector('[role="tab"][aria-label="投递"]');
   await act(async () => {

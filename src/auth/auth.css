@@ -320,6 +320,9 @@
   max-height: 90dvh;
   overflow-y: auto;
 }
+.dialog:has(.profile-settings)::-webkit-scrollbar-track {
+  margin: 16px 0;
+}
 @media (max-width: 850px) {
   .auth-main {
     grid-template-columns: 1fr;
