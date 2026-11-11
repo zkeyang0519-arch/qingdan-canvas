@@ -74,7 +74,14 @@ export async function executionRoute(
   const principal = await bindingPrincipal(env, user.id, input.bindingId);
   if (p === "/api/agent/execution/checklist") {
     check(
-      ["list", "create", "save", "reorder"].includes(String(input.action)),
+      [
+        "list",
+        "create",
+        "save",
+        "reorder",
+        "receipt",
+        "abandon_request",
+      ].includes(String(input.action)),
       "清单操作无效。",
       400,
     );
@@ -86,7 +93,7 @@ export async function executionRoute(
   if (p === "/api/agent/execution/queue")
     return json(await callExecutionHub(env, principal, "queue", input));
   if (p === "/api/agent/execution/respond")
-    return json(await callExecutionHub(env,principal,"respond",input));
+    return json(await callExecutionHub(env, principal, "respond", input));
   if (p === "/api/agent/execution/tools") {
     const data = parse(executionToolsRequestSchema, input);
     return json(

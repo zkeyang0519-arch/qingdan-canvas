@@ -338,7 +338,11 @@ export class CanvasRoom extends DurableObject<Env> {
     // binding and device epoch at the final boundary before the local commit.
     await authorizeExecution(this.env, p);
     const result = this.ctx.storage.transactionSync(() => {
-      if ((input as { action?: unknown } | null)?.action !== "create_receipt")
+      if (
+        !["create_receipt", "receipt", "abandon_request"].includes(
+          String((input as { action?: unknown } | null)?.action),
+        )
+      )
         this.ensureRoom(room);
       return runAgentChecklist(
         {

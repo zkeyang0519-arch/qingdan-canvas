@@ -4,7 +4,23 @@ import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
 import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
 import { batchStatusLabel, batchItemLabel } from "./BatchPanel.jsx";
-import { useWorkspaceDraft } from "./workspace-state.js";
+import {
+  useWorkspaceDraft,
+  useWorkspaceRequests,
+  workspaceScope,
+} from "./workspace-state.js";
+import {
+  checklistPath,
+  exact,
+  operationKey,
+  legacyScope,
+  validDraft,
+  validEditor,
+  intentCheckpoint,
+  inspectChecklistRequest,
+  migrateChecklistRequests,
+  retireLegacyRequest,
+} from "./checklist-recovery.js";
 import {
   PermissionButton,
   usePermissionPreference,
@@ -343,22 +359,41 @@ function BoundChecklist({
   refreshToken,
 }) {
   const [view, setView] = useState(null);
-  const draftScope = JSON.stringify([
-    userId,
-    roomId,
-    page.id,
-    bindingKey(binding),
-  ]);
-  const [draft, setDraft] = useWorkspaceDraft(
+  const context = { userId, roomId, pageId: page.id, binding };
+  const draftScope = legacyScope(context);
+  const scope = workspaceScope({
+    accountId: userId,
+    canvasId: roomId,
+    sectionId: page.id,
+    binding,
+  });
+  const requests = useWorkspaceRequests(scope);
+  const [draft, setDraft, draftStorage] = useWorkspaceDraft(
     `${draftScope}:new-task`,
     emptyDraft,
-    embedded,
+    true,
+    { validate: validDraft },
   );
-  const [editing, setEditing] = useWorkspaceDraft(
+  const [editing, setEditing, editorStorage] = useWorkspaceDraft(
     `${draftScope}:edit-task`,
     null,
-    embedded,
+    true,
+    { validate: validEditor },
   );
+  const [preserved, setPreserved, preservedStorage] = useWorkspaceDraft(
+    `${draftScope}:preserved-edit`,
+    null,
+    true,
+    { validate: validEditor },
+  );
+  const [quarantined, setQuarantined, quarantineStorage] = useWorkspaceDraft(
+    `${draftScope}:legacy-quarantine`,
+    [],
+    true,
+    { validate: Array.isArray },
+  );
+  const [migrationWarning, setMigrationWarning] = useState("");
+  const [migrating, setMigrating] = useState(true);
   const [selected, setSelected] = useState(new Set());
   const [autoComplete, setAutoComplete] = useState(true);
   const [permissionProfile, setPermissionProfile] = usePermissionPreference(
@@ -368,48 +403,37 @@ function BoundChecklist({
   const [run, setRun] = useState(null);
   const [runs, setRuns] = useState([]);
   const [stopRequested, setStopRequested] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [operationBusy, setBusy] = useState(false);
+  const busy = operationBusy || migrating;
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const active = useRef(false);
   const epoch = useRef(0);
   const busyRef = useRef(false);
   const runId = useRef("");
-  const pendingKey = `qingdan.agent-checklist-requests:${draftScope}`;
-  const pending = useRef(null);
-  if (!pending.current) {
-    let entries = [];
-    if (embedded) {
-      try {
-        const saved = JSON.parse(window.sessionStorage.getItem(pendingKey));
-        if (Array.isArray(saved))
-          entries = saved.filter(
-            (entry) =>
-              Array.isArray(entry) &&
-              typeof entry[0] === "string" &&
-              typeof entry[1]?.requestId === "string",
-          );
-      } catch {
-        /* Browser storage is optional. */
-      }
-    }
-    pending.current = new Map(entries);
-  }
-  function savePending() {
-    if (!embedded) return;
-    try {
-      window.sessionStorage.setItem(
-        pendingKey,
-        JSON.stringify([...pending.current]),
-      );
-    } catch {
-      /* Keep the in-memory identity when storage is unavailable. */
-    }
-  }
-  function forgetPending(key) {
-    pending.current.delete(key);
-    savePending();
-  }
+  useEffect(() => {
+    let closed = false;
+    void migrateChecklistRequests(requests, context)
+      .then(({ quarantined: invalid, warning }) => {
+        if (closed) return;
+        if (invalid.length)
+          setQuarantined((previous) => [
+            ...new Map(
+              [...previous, ...invalid].map((item) => [exact(item), item]),
+            ).values(),
+          ]);
+        setMigrationWarning(warning);
+      })
+      .catch((err) => {
+        if (!closed) setMigrationWarning(err.message);
+      })
+      .finally(() => {
+        if (!closed) setMigrating(false);
+      });
+    return () => {
+      closed = true;
+    };
+  }, [scope, requests.adopt]);
   const valid = useCallback(
     (version) => active.current && epoch.current === version,
     [],
@@ -531,7 +555,7 @@ function BoundChecklist({
   }, [refreshToken, busy, refresh, valid]);
 
   async function perform(operation, verifyBinding = true) {
-    if (busyRef.current) return;
+    if (busyRef.current || migrating) return;
     busyRef.current = true;
     const version = ++epoch.current;
     setBusy(true);
@@ -551,23 +575,231 @@ function BoundChecklist({
       if (valid(version)) setBusy(false);
     }
   }
-  function requestKey(action, payload) {
-    const key = JSON.stringify([action, payload]);
-    if (!pending.current.has(key)) {
-      if (pending.current.size >= 100)
-        throw Error("待核对的操作较多，请先刷新清单。");
-      pending.current.set(key, { requestId: crypto.randomUUID(), input: null });
-      savePending();
+  function clearSubmittedDraft(record) {
+    const saved = record.checkpoint?.draft;
+    if (!saved || !["new", "edit"].includes(saved.kind)) return true;
+    const key = `qingdan.agent-draft:${draftScope}:${saved.kind === "new" ? "new-task" : "edit-task"}`;
+    try {
+      // A newer draft may already be persisted by another tab before its storage
+      // event is delivered here. Do not clear it using this tab's older render.
+      const stored = JSON.parse(window.localStorage.getItem(key));
+      if (exact(stored?.value) !== exact(saved.value)) return true;
+      const setter = saved.kind === "new" ? setDraft : setEditing;
+      const fallback = saved.kind === "new" ? emptyDraft : null;
+      setter((current) =>
+        exact(current) === exact(saved.value) ? fallback : current,
+      );
+      return (
+        exact(JSON.parse(window.localStorage.getItem(key))?.value) !==
+        exact(saved.value)
+      );
+    } catch {
+      return false;
     }
-    return [key, pending.current.get(key)];
+  }
+  async function resolveRecord(requestId, outcome) {
+    const record = requests
+      .getSnapshot()
+      .records.find((item) => item.requestId === requestId);
+    await requests.resolve(requestId, outcome);
+    if (record) retireLegacyRequest(requests, context, record);
+  }
+  async function wire(request) {
+    return callCloud(request.path, {
+      method: request.method,
+      body: request.body,
+    });
+  }
+  async function settleInspection(record, result, version) {
+    if (result.status === "absent") {
+      if (valid(version))
+        setMessage(
+          "尚未查到回执，结果仍未知。原操作已保留，可重试或明确封存清单操作。",
+        );
+      return;
+    }
+    if (
+      result.status !== "sealed" &&
+      !(result.status === "committed" && typeof result.operationId === "string")
+    )
+      throw Error("回执格式无效，原操作仍保留。");
+    if (!valid(version)) return;
+    if (result.status === "committed" && !clearSubmittedDraft(record))
+      throw Error("回执已确认，但草稿恢复信息未能更新；原请求仍保留。");
+    await resolveRecord(
+      record.requestId,
+      result.status === "sealed" ? "sealed" : "acknowledged",
+    );
+    if (!valid(version)) return;
+    setMessage(
+      result.status === "sealed"
+        ? "原操作已封存，迟到请求不会修改清单；草稿仍保留。"
+        : "已核对原保存回执。",
+    );
+    await refresh(version, true);
+  }
+  async function sendRecord(record, version) {
+    const info = inspectChecklistRequest(record, binding);
+    if (!valid(version)) return false;
+    if (info.request) {
+      if (record.checkpoint?.abandonRequest) {
+        const expected = {
+          path: checklistPath,
+          method: "POST",
+          body: {
+            bindingId: binding.bindingId,
+            action: "abandon_request",
+            request: info.request,
+          },
+        };
+        if (exact(expected) !== exact(record.checkpoint.abandonRequest))
+          throw Error("封存信息不符，仅可核对原操作。");
+        await settleInspection(
+          record,
+          await wire(record.checkpoint.abandonRequest),
+          version,
+        );
+        return false;
+      }
+      const next = await wire(record.request);
+      if (
+        typeof next.operationId !== "string" ||
+        next.canvasId !== roomId ||
+        next.sectionId !== page.id ||
+        !Array.isArray(next.tasks)
+      )
+        throw Error("清单回执无效，原操作仍保留。");
+      if (!valid(version)) return false;
+      if (!clearSubmittedDraft(record))
+        throw Error("保存已确认，但草稿恢复信息未能更新；原请求仍保留。");
+      await resolveRecord(record.requestId, "acknowledged");
+      if (!valid(version)) return false;
+      applyView(next);
+      setMessage("待办已保存。");
+      return true;
+    }
+    if (info.action === "dispatch") {
+      let checkpoint = record.checkpoint;
+      if (!checkpoint?.result) {
+        const local = await requestLocal("/status", {
+          accountId: userId,
+        }).catch(() => null);
+        if (!valid(version)) return false;
+        if (
+          local?.runnerId === binding.runnerId &&
+          local.connectionStatus === "online"
+        )
+          await requestLocal("/execution/context", {
+            method: "POST",
+            accountId: userId,
+            body: { workspaceId: binding.workspaceId },
+          });
+        if (!valid(version)) return false;
+        const result = await wire(record.request);
+        checkpoint = intentCheckpoint(result, record, binding);
+        await requests.checkpoint(record.requestId, checkpoint);
+      }
+      // Durable checkpoint precedes the second POST; the original intent stays unchanged.
+      if (!valid(version)) return false;
+      const response = await wire(checkpoint.nextRequest),
+        result = response.result;
+      if (
+        result?.runId !== checkpoint.result.input.runId ||
+        result.status !== "accepted"
+      )
+        throw Error("派单回执不符，原操作仍保留。");
+      if (!valid(version)) return false;
+      await resolveRecord(record.requestId, "acknowledged");
+      if (!valid(version)) return false;
+      runId.current = result.runId;
+      setRun(null);
+      setSelected(new Set());
+      setMessage("批次已提交。执行结果会在下方更新。");
+      await refresh(version, true);
+      if (valid(version))
+        onOpenBatch?.({
+          sectionId: page.id,
+          bindingId: binding.bindingId,
+          bindingRevision: binding.revision,
+          runId: result.runId,
+        });
+      return true;
+    }
+    const response = await wire(record.request),
+      id = record.request.body.arguments.runId;
+    if (response.result?.runId !== id || response.result.status !== "accepted")
+      throw Error("停止回执不符，原操作仍保留。");
+    if (!valid(version)) return false;
+    await resolveRecord(record.requestId, "acknowledged");
+    if (!valid(version)) return false;
+    setStopRequested(id);
+    await refresh(version);
+    return true;
+  }
+  async function retryRecord(record, version) {
+    const info = inspectChecklistRequest(record, binding);
+    const saved = await requests.prepare(
+      record.operationKey,
+      () => record.request,
+      { safeStop: info.action === "stop" },
+    );
+    return sendRecord(saved, version);
+  }
+  async function inspectRecord(record, version) {
+    const info = inspectChecklistRequest(record, binding);
+    if (info.request)
+      return settleInspection(
+        record,
+        await checklist("receipt", { request: info.request }),
+        version,
+      );
+    const id =
+      info.action === "stop"
+        ? record.request.body.arguments.runId
+        : record.checkpoint?.result?.input?.runId;
+    if (id) await tool("codex_get_run", { runId: id });
+    if (valid(version))
+      setMessage(
+        "已核对可读取的运行信息；运行状态不等于原请求回执，原操作仍保留。可显式重试原操作补收回执。",
+      );
+  }
+  async function abandonRecord(record, version) {
+    const { request } = inspectChecklistRequest(record, binding);
+    if (!request) throw Error("派单和停止操作不能在清单中封存。");
+    const abandonRequest = {
+      path: checklistPath,
+      method: "POST",
+      body: {
+        bindingId: binding.bindingId,
+        action: "abandon_request",
+        request,
+      },
+    };
+    const checkpoint = { ...record.checkpoint, abandonRequest };
+    // Reuse the existing slot, including when 100 unresolved requests fill the journal.
+    await requests.checkpoint(record.requestId, checkpoint);
+    if (valid(version)) await sendRecord({ ...record, checkpoint }, version);
   }
   async function mutate(action, payload, version) {
-    const [key, { requestId }] = requestKey(action, payload);
-    const next = await checklist(action, { requestId, ...payload });
-    if (!valid(version)) return false;
-    forgetPending(key);
-    applyView(next);
-    return true;
+    let record = await requests.prepare(
+      operationKey(action, payload),
+      (requestId) => ({
+        path: checklistPath,
+        method: "POST",
+        body: { bindingId: binding.bindingId, action, requestId, ...payload },
+      }),
+    );
+    if (!record.checkpoint && action !== "reorder") {
+      const checkpoint = {
+        draft:
+          action === "create"
+            ? { kind: "new", value: draft }
+            : { kind: "edit", value: editing },
+      };
+      await requests.checkpoint(record.requestId, checkpoint);
+      record = { ...record, checkpoint };
+    }
+    return sendRecord(record, version);
   }
   const tasks = view?.tasks || [];
   const unfinished = tasks.filter((task) => !task.done);
@@ -609,13 +841,11 @@ function BoundChecklist({
   async function saveNew(version) {
     const item = trimDraft(draft);
     if (!item.text) return;
-    if (await mutate("create", { tasks: [item] }, version)) {
-      setDraft(emptyDraft);
-      setMessage("待办已保存。");
-    }
+    await mutate("create", { tasks: [item] }, version);
   }
   async function saveExisting(version) {
-    if (!editingTask || editingTask.locked || editingTask.done) return;
+    if (!editingTask || editingTask.locked || editingTask.done || editingStale)
+      return;
     const { task, value } = editing;
     const { text, instruction, acceptance, acceptanceChecks } =
       trimDraft(value);
@@ -635,8 +865,7 @@ function BoundChecklist({
         version,
       )
     ) {
-      setEditing(null);
-      setMessage("待办已保存。");
+      // The exact submitted editor is cleared by sendRecord; later edits survive.
     }
   }
   async function dispatch(version) {
@@ -656,71 +885,45 @@ function BoundChecklist({
       autoComplete,
       executionPermissions: { profile: permissionProfile },
     };
-    const [key, receipt] = requestKey("dispatch", target);
-    if (!receipt.input) {
-      try {
-        const local = await requestLocal("/status", {
-          accountId: userId,
-        }).catch(() => null);
-        if (!valid(version)) return;
-        if (
-          local?.runnerId === binding.runnerId &&
-          local.connectionStatus === "online"
-        ) {
-          await requestLocal("/execution/context", {
-            method: "POST",
-            accountId: userId,
-            body: { workspaceId: binding.workspaceId },
-          });
-        }
-        if (!valid(version)) return;
-        const { input } = await post("intents", {
-          requestId: receipt.requestId,
-          ...target,
-        });
-        if (
-          input?.bindingId !== binding.bindingId ||
-          input.bindingRevision !== binding.revision ||
-          input.kind !== "task"
-        )
-          throw Error("项目关联已变化，请刷新后重新提交。");
-        receipt.input = input;
-        savePending();
-      } catch (err) {
-        forgetPending(key);
-        throw err;
-      }
-    }
-    if (!valid(version)) return;
-    const result = await tool("codex_create_run", receipt.input);
-    if (!valid(version)) return;
-    forgetPending(key);
-    runId.current = result.runId;
-    setRun(null);
-    setSelected(new Set());
-    setMessage("批次已提交。执行结果会在下方更新。");
-    await refresh(version, true);
-    if (valid(version))
-      onOpenBatch?.({
-        sectionId: page.id,
-        bindingId: binding.bindingId,
-        bindingRevision: binding.revision,
-        runId: result.runId,
-      });
+    const record = await requests.prepare(
+      operationKey("dispatch", target),
+      (requestId) => ({
+        path: `${executionApi}/intents`,
+        method: "POST",
+        body: { requestId, ...target },
+      }),
+    );
+    await sendRecord(record, version);
   }
   async function stop(version) {
     const id = run.runId;
-    const [key, { requestId }] = requestKey("stop", id);
-    await tool("codex_cancel_run", { runId: id, requestId });
-    if (!valid(version)) return;
-    forgetPending(key);
-    setStopRequested(id);
-    await refresh(version);
+    const record = await requests.prepare(
+      operationKey("stop", id),
+      (requestId) => ({
+        path: `${executionApi}/tools`,
+        method: "POST",
+        body: {
+          bindingId: binding.bindingId,
+          name: "codex_cancel_run",
+          arguments: { runId: id, requestId },
+        },
+      }),
+      { safeStop: true },
+    );
+    await sendRecord(record, version);
   }
   async function chooseRun(id, version) {
     runId.current = id;
     setRun(null);
     await readRun(id, version);
+  }
+  const editingStale = !!(
+    editingTask && taskVersion(editing.task) !== taskVersion(editingTask)
+  );
+  function reloadEditor() {
+    if (!editingTask || editingTask.locked || editingTask.done) return;
+    setPreserved(editing);
+    setEditing({ task: editingTask, value: draftFromTask(editingTask) });
   }
   const editor = editing && (
     <div className="agent-checklist-editor">
@@ -731,6 +934,20 @@ function BoundChecklist({
       ) : !editing.task.editableText ? (
         <p className="agent-note">可在画布中编辑此待办的正文。</p>
       ) : null}
+      {editingStale && (
+        <div role="status">
+          <p>
+            此待办已变化。旧草稿保留在下方；请比较最新内容，明确载入后重新编辑。
+          </p>
+          <pre>{JSON.stringify(draftFromTask(editingTask), null, 2)}</pre>
+          <button
+            disabled={busy || editingTask.locked || editingTask.done}
+            onClick={reloadEditor}
+          >
+            载入最新后重新编辑
+          </button>
+        </div>
+      )}
       <DraftFields
         label="编辑"
         value={editing.value}
@@ -743,6 +960,7 @@ function BoundChecklist({
           disabled={
             busy ||
             !editingTask ||
+            editingStale ||
             editingTask.done ||
             editingTask.locked ||
             (editing.task.editableText && !editing.value.text.trim())
@@ -784,6 +1002,107 @@ function BoundChecklist({
         <p className="agent-success" role="status">
           {message}
         </p>
+      )}
+      {(requests.warning ||
+        migrationWarning ||
+        draftStorage.warning ||
+        editorStorage.warning ||
+        preservedStorage.warning ||
+        quarantineStorage.warning) && (
+        <p role="alert" className="agent-error">
+          {requests.warning ||
+            migrationWarning ||
+            draftStorage.warning ||
+            editorStorage.warning ||
+            preservedStorage.warning ||
+            quarantineStorage.warning}
+        </p>
+      )}
+      {preserved && (
+        <details className="agent-checklist-editor">
+          <summary>保留的编辑草稿</summary>
+          <textarea
+            aria-label="保留的编辑草稿"
+            readOnly
+            value={JSON.stringify(preserved.value, null, 2)}
+            rows={5}
+          />
+        </details>
+      )}
+      {quarantined.length > 0 && (
+        <details className="agent-checklist-editor">
+          <summary>
+            旧操作信息不完整，仅供只读核对（{quarantined.length}）
+          </summary>
+          <textarea
+            aria-label="只读旧操作"
+            readOnly
+            value={JSON.stringify(quarantined, null, 2)}
+            rows={5}
+          />
+        </details>
+      )}
+      {requests.records.length > 0 && (
+        <section className="agent-checklist-editor" aria-label="待核对清单操作">
+          <p>
+            有 {requests.records.length}{" "}
+            个原操作待核对。未查到回执不代表未提交；放弃清单操作会请求服务端封存。派单和停止只能核对或重试。
+          </p>
+          {requests.records.map((record) => {
+            let info;
+            try {
+              info = inspectChecklistRequest(record, binding);
+            } catch {
+              /* Read-only quarantine. */
+            }
+            return (
+              <div key={record.requestId} className="agent-actions">
+                <span>
+                  {{
+                    create: "新增待办",
+                    save: "编辑待办",
+                    reorder: "清单排序",
+                    dispatch: "派单",
+                    stop: "停止",
+                  }[info?.action] || "操作信息不符，仅供核对"}{" "}
+                  · {record.requestId}
+                </span>
+                {info && (
+                  <>
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        perform((version) => inspectRecord(record, version))
+                      }
+                    >
+                      核对原操作
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() =>
+                        perform((version) => retryRecord(record, version))
+                      }
+                    >
+                      {record.checkpoint?.abandonRequest
+                        ? "重试封存"
+                        : "重试原操作"}
+                    </button>
+                    {info.request && !record.checkpoint?.abandonRequest && (
+                      <button
+                        disabled={busy}
+                        onClick={() =>
+                          perform((version) => abandonRecord(record, version))
+                        }
+                      >
+                        放弃原操作
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </section>
       )}
       {!view ? (
         <p className="agent-note">正在读取待办…</p>

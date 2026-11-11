@@ -1,5 +1,9 @@
 import test from "node:test";
-test.beforeEach(() => window.localStorage.clear());
+test.beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  navigator.locks = browserLocks();
+});
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
@@ -7,6 +11,7 @@ import { build } from "esbuild";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { browserLocks } from "./fixtures/browser-locks.mjs";
 
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8788",
@@ -170,7 +175,7 @@ function fixture() {
           bindingRevision: 1,
           kind: "task",
           snapshotId: "snapshot",
-          payloadHash: "hash",
+          payloadHash: "a".repeat(64),
         },
       };
     if (route.endsWith("/tools")) {
@@ -218,6 +223,14 @@ function fixture() {
     },
     addTask() {
       tasks.push(item("d", "聊天整理的新待办"));
+      sequence++;
+    },
+    advanceFirst() {
+      tasks[0] = {
+        ...tasks[0],
+        generation: tasks[0].generation + 1,
+        text: "远端新正文",
+      };
       sequence++;
     },
     lockSecondTask() {
@@ -820,3 +833,389 @@ for (const outcome of ["lost response", "project switch before response"]) {
     }
   });
 }
+
+const oldScope = JSON.stringify([
+  "alice",
+  "canvas",
+  "section",
+  JSON.stringify(["binding", 1, "runner", "workspace"]),
+]);
+const oldPendingKey = `qingdan.agent-checklist-requests:${oldScope}`;
+const requestRecords = () =>
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith("qingdan.agent-requests:v1:"))
+    .flatMap((key) => JSON.parse(localStorage.getItem(key)).records);
+
+for (const embedded of [false, true])
+  test(`recovery: full reopen retains draft and exact create identity in display mode ${embedded}`, async () => {
+    const f = fixture();
+    let close = await mount({ ...f, embedded });
+    try {
+      await edit("新待办", "重开后保留");
+      f.loseCreateReceipt();
+      await click(button("保存新待办"));
+      const original = f.calls.find((c) => c.body?.action === "create").body;
+      await close();
+      window.sessionStorage.clear();
+      close = await mount({ ...f, embedded });
+      assert.equal(field("新待办").value, "重开后保留");
+      assert.equal(
+        f.calls.filter((c) => c.body?.action === "create").length,
+        1,
+        "restore is read only",
+      );
+      await click(button("重试原操作"));
+      assert.deepEqual(
+        f.calls.filter((c) => c.body?.action === "create").at(-1).body,
+        original,
+      );
+      assert.equal(field("新待办").value, "");
+      assert.equal(requestRecords().length, 0);
+    } finally {
+      await close();
+    }
+  });
+
+test("recovery: legacy JSON Map keys carry the original payload, not the currently edited draft", async () => {
+  const payload = {
+    tasks: [
+      { text: "旧请求正文", instruction: "旧要求", acceptance: "旧验收" },
+    ],
+  };
+  window.sessionStorage.setItem(
+    oldPendingKey,
+    JSON.stringify([
+      [
+        JSON.stringify(["create", payload]),
+        { requestId: "old-create", input: null },
+      ],
+    ]),
+  );
+  const f = fixture(),
+    close = await mount(f);
+  try {
+    assert.equal(window.sessionStorage.getItem(oldPendingKey), null);
+    assert.equal(requestRecords()[0].requestId, "old-create");
+    await edit("新待办", "后来编辑的新草稿");
+    await click(button("重试原操作"));
+    assert.deepEqual(f.calls.find((c) => c.body?.action === "create").body, {
+      bindingId: "binding",
+      action: "create",
+      requestId: "old-create",
+      ...payload,
+    });
+    assert.equal(
+      field("新待办").value,
+      "后来编辑的新草稿",
+      "old ACK cannot clear new draft",
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: malformed legacy requests stay read-only rather than being rebuilt", async () => {
+  window.sessionStorage.setItem(
+    oldPendingKey,
+    JSON.stringify([
+      [
+        JSON.stringify(["create", {}]),
+        { requestId: "incomplete", input: null },
+      ],
+    ]),
+  );
+  const f = fixture(),
+    close = await mount(f);
+  try {
+    assert.match(document.body.textContent, /旧操作.*只读|旧操作.*不完整/);
+    assert.equal(button("重试原操作"), undefined);
+    assert.equal(requestRecords().length, 0);
+    assert.ok(window.sessionStorage.getItem(oldPendingKey));
+    assert.equal(
+      f.calls.some((c) => c.body?.action === "create"),
+      false,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: version conflict requires explicit reload and leaves the old draft copyable", async () => {
+  const f = fixture(),
+    close = await mount(f);
+  try {
+    await click(button("编辑待办：写说明"));
+    await edit("编辑执行要求", "本地未保存要求");
+    f.advanceFirst();
+    await click(button("刷新清单"));
+    assert.equal(field("编辑执行要求").value, "本地未保存要求");
+    assert.ok(button("保存待办").disabled);
+    await click(button("载入最新后重新编辑"));
+    assert.equal(field("编辑待办内容").value, "远端新正文");
+    assert.match(field("保留的编辑草稿").value, /本地未保存要求/);
+    await edit("编辑执行要求", "明确重新编辑");
+    await click(button("保存待办"));
+    assert.equal(
+      f.calls.find((c) => c.body?.action === "save").body.expectedGeneration,
+      4,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: intent result is checkpointed and only final create receipt resolves dispatch", async () => {
+  const f = fixture(),
+    original = f.requestCloud;
+  let fail = true,
+    close;
+  f.requestCloud = async (route, options) => {
+    if (options?.body?.name === "codex_create_run" && fail) {
+      fail = false;
+      throw Error("create ACK lost");
+    }
+    return original(route, options);
+  };
+  close = await mount(f);
+  try {
+    await click(field("选中待办：写说明"));
+    await click(button("提交所选待办"));
+    const [record] = requestRecords();
+    assert.ok(record);
+    assert.equal(record.request.path, "/api/agent/execution/intents");
+    assert.equal(
+      record.checkpoint.nextRequest.body.arguments.requestId,
+      record.requestId,
+    );
+    assert.deepEqual(
+      record.checkpoint.nextRequest.body.arguments,
+      record.checkpoint.result.input,
+    );
+    await close();
+    window.sessionStorage.clear();
+    close = await mount(f);
+    assert.equal(f.calls.filter((c) => c.route.endsWith("/intents")).length, 1);
+    await click(button("重试原操作"));
+    assert.equal(f.calls.filter((c) => c.route.endsWith("/intents")).length, 1);
+    assert.equal(requestRecords().length, 0);
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: absent is retained and explicit atomic sealing releases a full legacy journal", async () => {
+  const entries = Array.from({ length: 100 }, (_, i) => [
+    JSON.stringify([
+      "create",
+      { tasks: [{ text: `old ${i}`, instruction: "", acceptance: "" }] },
+    ]),
+    { requestId: `old-${i}`, input: null },
+  ]);
+  window.sessionStorage.setItem(oldPendingKey, JSON.stringify(entries));
+  const f = fixture(),
+    original = f.requestCloud;
+  f.requestCloud = async (route, options) =>
+    options?.body?.action === "receipt"
+      ? { status: "absent" }
+      : options?.body?.action === "abandon_request"
+        ? { status: "sealed" }
+        : original(route, options);
+  const close = await mount(f);
+  try {
+    assert.equal(requestRecords().length, 100);
+    await click(button("核对原操作"));
+    assert.equal(requestRecords().length, 100);
+    await click(button("放弃原操作"));
+    assert.equal(requestRecords().length, 99);
+    await edit("新待办", "解除积压后新建");
+    await click(button("保存新待办"));
+    assert.ok(f.calls.some((c) => c.body?.action === "create"));
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: a lost abandon ACK reopens with the exact seal request and never replays the original mutation", async () => {
+  const f = fixture(),
+    original = f.requestCloud,
+    sent = [];
+  let loseSeal = true,
+    close;
+  f.requestCloud = async (route, options) => {
+    if (options?.body?.action === "abandon_request") {
+      sent.push(structuredClone(options.body));
+      if (loseSeal) {
+        loseSeal = false;
+        throw Error("sealed ACK lost");
+      }
+      return { status: "sealed" };
+    }
+    return original(route, options);
+  };
+  close = await mount(f);
+  try {
+    await edit("新待办", "待封存原稿");
+    f.loseCreateReceipt();
+    await click(button("保存新待办"));
+    const originalBody = requestRecords()[0].request.body;
+    await click(button("放弃原操作"));
+    assert.deepEqual(requestRecords()[0].request.body, originalBody);
+    assert.deepEqual(
+      requestRecords()[0].checkpoint.abandonRequest.body,
+      sent[0],
+    );
+    await close();
+    window.sessionStorage.clear();
+    close = await mount(f);
+    assert.equal(sent.length, 1, "restore must not send a seal or a mutation");
+    await click(button("重试封存"));
+    assert.deepEqual(sent[1], sent[0]);
+    assert.equal(requestRecords().length, 0);
+    assert.equal(field("新待办").value, "待封存原稿");
+    assert.equal(f.calls.filter((c) => c.body?.action === "create").length, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: failing to persist an intent checkpoint prevents the second execution POST", async () => {
+  const f = fixture(),
+    originalSet = window.Storage.prototype.setItem;
+  let deny = true;
+  const close = await mount(f);
+  try {
+    window.Storage.prototype.setItem = function (key, value) {
+      if (
+        deny &&
+        key.startsWith("qingdan.agent-requests:") &&
+        value.includes('"nextRequest"')
+      )
+        throw Error("checkpoint disk full");
+      return originalSet.call(this, key, value);
+    };
+    await click(field("选中待办：写说明"));
+    await click(button("提交所选待办"));
+    assert.equal(
+      f.calls.filter((c) => c.body?.name === "codex_create_run").length,
+      0,
+    );
+    assert.equal(requestRecords().length, 1);
+    assert.equal(requestRecords()[0].checkpoint, null);
+    const originalBody = requestRecords()[0].request.body;
+    deny = false;
+    await click(button("重试原操作"));
+    assert.deepEqual(
+      f.calls.filter((c) => c.route.endsWith("/intents")).map((c) => c.body),
+      [originalBody, originalBody],
+    );
+    assert.equal(
+      f.calls.filter((c) => c.body?.name === "codex_create_run").length,
+      1,
+    );
+    assert.equal(requestRecords().length, 0);
+  } finally {
+    window.Storage.prototype.setItem = originalSet;
+    await close();
+  }
+});
+
+for (const kind of ["new", "edit"])
+  test(`recovery: late ACK cannot clear a later persisted ${kind} draft`, async () => {
+    const f = fixture(),
+      request = f.requestCloud;
+    let release;
+    const gate = new Promise((done) => {
+      release = done;
+    });
+    f.requestCloud = async (route, options) => {
+      const result = await request(route, options);
+      if (options?.body?.action === (kind === "new" ? "create" : "save"))
+        await gate;
+      return result;
+    };
+    const close = await mount(f);
+    try {
+      if (kind === "new") {
+        await edit("新待办", "原稿");
+        await click(button("保存新待办"));
+      } else {
+        await click(button("编辑待办：写说明"));
+        await edit("编辑执行要求", "原要求");
+        await click(button("保存待办"));
+      }
+      const key = `qingdan.agent-draft:${oldScope}:${kind === "new" ? "new-task" : "edit-task"}`;
+      const stored = JSON.parse(localStorage.getItem(key));
+      if (kind === "new") stored.value.text = "后来写的新草稿";
+      else stored.value.value.instruction = "后来写的新要求";
+      await act(async () => {
+        localStorage.setItem(key, JSON.stringify(stored));
+        window.dispatchEvent(new window.StorageEvent("storage", { key }));
+      });
+      await act(async () => {
+        release();
+        await gate;
+      });
+      assert.equal(
+        field(kind === "new" ? "新待办" : "编辑执行要求").value,
+        kind === "new" ? "后来写的新草稿" : "后来写的新要求",
+      );
+      assert.deepEqual(JSON.parse(localStorage.getItem(key)), stored);
+    } finally {
+      release();
+      await close();
+    }
+  });
+
+test("recovery: generic HTTP rejection and source reads never discard the original request", async () => {
+  const f = fixture(),
+    original = f.requestCloud;
+  f.requestCloud = async (route, options) => {
+    if (options?.body?.action === "create")
+      throw Object.assign(Error("generic 409"), { status: 409 });
+    if (options?.body?.action === "receipt") return { status: "absent" };
+    return original(route, options);
+  };
+  const close = await mount(f);
+  try {
+    await edit("新待办", "冲突仍未知");
+    await click(button("保存新待办"));
+    const before = requestRecords();
+    await click(button("刷新清单"));
+    await click(button("核对原操作"));
+    assert.deepEqual(requestRecords(), before);
+  } finally {
+    await close();
+  }
+});
+
+test("recovery: a volatile legacy stop retires its old session entry after durable promotion and ACK", async () => {
+  navigator.locks = undefined;
+  window.sessionStorage.setItem(
+    oldPendingKey,
+    JSON.stringify([
+      [
+        JSON.stringify(["stop", "run"]),
+        { requestId: "original-stop", input: null },
+      ],
+    ]),
+  );
+  const f = fixture();
+  let close = await mount(f);
+  try {
+    assert.ok(window.sessionStorage.getItem(oldPendingKey));
+    navigator.locks = browserLocks();
+    await click(button("重试原操作"));
+    assert.equal(
+      f.calls.find((c) => c.body?.name === "codex_cancel_run").body.arguments
+        .requestId,
+      "original-stop",
+    );
+    assert.equal(window.sessionStorage.getItem(oldPendingKey), null);
+    await close();
+    close = await mount(f);
+    assert.equal(requestRecords().length, 0);
+    assert.equal(button("重试原操作"), undefined);
+  } finally {
+    await close();
+  }
+});

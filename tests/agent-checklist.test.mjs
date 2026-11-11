@@ -97,6 +97,123 @@ const create = {
     { text: "第二项", instruction: "完成第二项", acceptance: "核对第二项" },
   ],
 };
+test("recovery receipts normalize the exact request without writes; absence permits a later commit", async (t) => {
+  const f = await fixture(t);
+  const before = f.writes();
+  assert.deepEqual(f.call({ action: "receipt", request: create }), {
+    status: "absent",
+  });
+  assert.equal(f.writes(), before);
+  const saved = f.call(create);
+  const after = f.writes();
+  assert.deepEqual(
+    f.call({
+      action: "receipt",
+      request: {
+        ...create,
+        tasks: create.tasks.map((task) => ({
+          ...task,
+          text: ` ${task.text} `,
+        })),
+      },
+    }),
+    {
+      status: "committed",
+      operationId: saved.operationId,
+      createdTasks: saved.createdTasks,
+    },
+  );
+  assert.equal(f.writes(), after);
+  assert.throws(
+    () =>
+      f.call({
+        action: "receipt",
+        request: { ...create, tasks: [create.tasks[0]] },
+      }),
+    { status: 409 },
+  );
+});
+
+test("sealing exact mutations is idempotent, blocks late writes, and cannot replace a success receipt", async (t) => {
+  const f = await fixture(t);
+  const sealed = f.call({ action: "abandon_request", request: create });
+  assert.deepEqual(sealed, { status: "sealed" });
+  const writes = f.writes();
+  assert.deepEqual(
+    f.call({ action: "abandon_request", request: create }),
+    sealed,
+  );
+  assert.deepEqual(f.call({ action: "receipt", request: create }), sealed);
+  assert.equal(f.writes(), writes);
+  assert.throws(() => f.call(create), { status: 409 });
+  assert.equal(f.call({ action: "list" }).tasks.length, 0);
+  assert.throws(
+    () =>
+      f.call({
+        action: "abandon_request",
+        request: { ...create, tasks: [create.tasks[0]] },
+      }),
+    { status: 409 },
+  );
+  const live = { ...create, requestId: "live" };
+  const saved = f.call(live);
+  assert.deepEqual(f.call({ action: "abandon_request", request: live }), {
+    status: "committed",
+    operationId: saved.operationId,
+    createdTasks: saved.createdTasks,
+  });
+  assert.throws(
+    () =>
+      f.call({
+        action: "abandon_request",
+        request: { action: "finalize", requestId: "unsafe" },
+      }),
+    { status: 400 },
+  );
+});
+
+test("save/reorder receipts survive removal of source tasks and protect their exact versions", async (t) => {
+  const f = await fixture(t);
+  const initial = f.call(create),
+    task = initial.tasks[0];
+  const save = {
+    action: "save",
+    requestId: "save-recovery",
+    noteId: task.noteId,
+    taskId: task.taskId,
+    expectedGeneration: task.generation,
+    expectedSpecRevision: task.specRevision,
+    instruction: "new",
+    acceptance: "check",
+  };
+  const saved = f.call(save);
+  const reorder = {
+    action: "reorder",
+    requestId: "reorder-recovery",
+    expectedSequence: saved.sequence,
+    order: [...saved.tasks]
+      .reverse()
+      .map(({ noteId, taskId }) => ({ noteId, taskId })),
+  };
+  const sorted = f.call(reorder);
+  f.noteChange(task.noteId, () => null);
+  assert.deepEqual(f.call({ action: "receipt", request: save }), {
+    status: "committed",
+    operationId: saved.operationId,
+  });
+  assert.deepEqual(f.call({ action: "abandon_request", request: reorder }), {
+    status: "committed",
+    operationId: sorted.operationId,
+  });
+  assert.throws(
+    () =>
+      f.call({
+        action: "receipt",
+        request: { ...save, expectedSpecRevision: task.specRevision + 1 },
+      }),
+    { status: 409 },
+  );
+});
 const ref = ({ noteId, taskId, generation, specRevision }) => ({
   noteId,
   taskId,

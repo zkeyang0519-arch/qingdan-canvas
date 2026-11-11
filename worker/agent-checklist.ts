@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { todoPages } from "../src/canvas/todoPages.js";
 import type { AcceptanceCriterion } from "../shared/agent/contracts";
-import { acceptanceCriterionSchema } from "../shared/agent/schemas";
+import {
+  checklistCreateTasksSchema as createTasks,
+  checklistMutationSchema as mutationSchema,
+} from "../shared/agent/checklist";
 import { planCanvasCommand } from "./canvas-commands";
 import { check } from "./http";
 import type { CommandContext, NoteData, TaskBlock } from "./mcp/contracts";
@@ -18,61 +21,22 @@ const revision = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const generation = revision.min(1);
 const taskFields = { noteId: id, taskId: id };
 const expectedTask = { ...taskFields, generation, specRevision: revision };
-const specFields = {
-  instruction: z.string().trim().max(32000),
-  acceptance: z.string().trim().max(4000),
-  acceptanceChecks: z
-    .array(acceptanceCriterionSchema)
-    .max(50)
-    .refine(
-      (items) => new Set(items.map((item) => item.id)).size === items.length,
-      "Duplicate acceptance identifiers",
-    )
-    .refine(
-      (items) => items.length === 0 || items.some((item) => item.required),
-      "A required check is needed",
-    )
-    .optional(),
-};
-const text = z.string().trim().min(1).max(32000);
-const createTasks = z
-  .array(z.strictObject({ text, ...specFields }))
-  .min(1)
-  .max(50);
 const createReceiptSchema = z.strictObject({
   operationId: id,
   createdTasks: z.array(z.strictObject(taskFields)).min(1).max(50),
 });
 const inputSchema = z.discriminatedUnion("action", [
+  ...mutationSchema.options,
   z.strictObject({ action: z.literal("list") }),
   z.strictObject({
     action: z.literal("create_receipt"),
     requestId: id,
     tasks: createTasks,
   }),
-  z
-    .strictObject({
-      action: z.literal("create"),
-      requestId: id,
-      tasks: createTasks,
-      targetNoteId: id.optional(),
-      expectedNoteRevision: generation.optional(),
-    })
-    .refine((v) => !!v.targetNoteId === (v.expectedNoteRevision !== undefined)),
+  z.strictObject({ action: z.literal("receipt"), request: mutationSchema }),
   z.strictObject({
-    action: z.literal("save"),
-    requestId: id,
-    ...taskFields,
-    expectedGeneration: generation,
-    expectedSpecRevision: revision,
-    text: text.optional(),
-    ...specFields,
-  }),
-  z.strictObject({
-    action: z.literal("reorder"),
-    requestId: id,
-    expectedSequence: revision,
-    order: z.array(z.strictObject(taskFields)).min(1).max(200),
+    action: z.literal("abandon_request"),
+    request: mutationSchema,
   }),
   z.strictObject({
     action: z.literal("snapshot"),
@@ -127,7 +91,10 @@ export function initializeAgentChecklist(
     PRIMARY KEY(note_id,task_id));
     CREATE TABLE IF NOT EXISTS agent_checklist_receipts(
     owner_id TEXT NOT NULL, binding_id TEXT NOT NULL, request_id TEXT NOT NULL,
-    payload TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(owner_id,binding_id,request_id));`);
+    payload TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(owner_id,binding_id,request_id));
+    CREATE TABLE IF NOT EXISTS agent_checklist_seals(
+    owner_id TEXT NOT NULL, binding_id TEXT NOT NULL, request_id TEXT NOT NULL,
+    payload TEXT NOT NULL, PRIMARY KEY(owner_id,binding_id,request_id));`);
   if (
     !sql
       .exec(
@@ -219,6 +186,45 @@ export function runAgentChecklist(
         requestId,
       )
       .toArray()[0];
+  const findSeal = (requestId: string) =>
+    c.sql
+      .exec<{ payload: string }>(
+        "SELECT payload FROM agent_checklist_seals WHERE owner_id=? AND binding_id=? AND request_id=?",
+        c.accountId,
+        c.bindingId,
+        requestId,
+      )
+      .toArray()[0];
+  // Inspect/seal before looking up the source group. A deleted source does not
+  // erase the immutable outcome; absence alone never prevents a late commit.
+  if (input.action === "receipt" || input.action === "abandon_request") {
+    const original = input.request,
+      payload = canonicalJson(original);
+    const receipt = findReceipt(original.requestId);
+    if (receipt) {
+      check(receipt.payload === payload, "请求编号已用于不同内容。", 409);
+      return {
+        value: { status: "committed", ...JSON.parse(receipt.value) },
+        rows: [],
+      };
+    }
+    const seal = findSeal(original.requestId);
+    if (seal) {
+      check(seal.payload === payload, "请求编号已用于不同内容。", 409);
+      return { value: { status: "sealed" }, rows: [] };
+    }
+    if (input.action === "receipt")
+      return { value: { status: "absent" }, rows: [] };
+    // The caller owns one transaction spanning this check and the tombstone.
+    c.sql.exec(
+      "INSERT INTO agent_checklist_seals(owner_id,binding_id,request_id,payload) VALUES(?,?,?,?)",
+      c.accountId,
+      c.bindingId,
+      original.requestId,
+      payload,
+    );
+    return { value: { status: "sealed" }, rows: [] };
+  }
   if (input.action === "create_receipt") {
     const receipt = findReceipt(input.requestId);
     if (!receipt) return { value: { found: false }, rows: [] };
@@ -235,6 +241,17 @@ export function runAgentChecklist(
     const created = createReceiptSchema.safeParse(JSON.parse(receipt.value));
     check(created.success, "创建回执缺少待办编号。", 409);
     return { value: { found: true, ...created.data }, rows: [] };
+  }
+  if ("requestId" in input) {
+    const seal = findSeal(input.requestId);
+    if (seal) {
+      check(
+        seal.payload === canonicalJson(input),
+        "请求编号已用于不同内容。",
+        409,
+      );
+      check(false, "此操作已封存，未修改清单。请核对后发起新操作。", 409);
+    }
   }
   const all = c.rows();
   const allById = new Map(all.map((row) => [row.id, row]));
