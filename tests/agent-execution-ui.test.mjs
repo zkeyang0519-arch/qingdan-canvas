@@ -648,6 +648,49 @@ test("completed turn can be continued and stays attached to its original chat", 
     await unmount();
   }
 });
+
+for (const recoveryOnly of [true, false])
+  test(`terminal summary followup is ${recoveryOnly ? "blocked in recovery view" : "available in ordinary view"}`, async () => {
+    const f = fixture();
+    f.setRun({
+      runId: "historical-summary",
+      kind: "summary",
+      status: "verifying",
+      threadId: "summary-thread",
+      turnId: "summary-turn",
+      terminal: true,
+      stopConfirmed: true,
+    });
+    const unmount = await mount({
+      ...f,
+      recoveryOnly,
+      initialPageId: "section",
+      initialRunId: "historical-summary",
+    });
+    try {
+      await edit("补充说明", "继续原总结");
+      // Click the actual rendered control: recovery mode must produce no command.
+      await act(async () => button("发送补充说明").click());
+      const followups = f.calls.filter(
+        (call) => call.options?.body?.name === "codex_continue_run",
+      );
+      assert.equal(followups.length, recoveryOnly ? 0 : 1);
+      assert.equal(
+        document.querySelector('[aria-label="补充说明"]').disabled,
+        recoveryOnly,
+      );
+      if (recoveryOnly) assert.equal(button("发送补充说明").disabled, true);
+      else {
+        assert.equal(followups[0].options.body.arguments.mode, "reply");
+        assert.equal(
+          followups[0].options.body.arguments.runId,
+          "historical-summary",
+        );
+      }
+    } finally {
+      await unmount();
+    }
+  });
 test("stale intent target is rejected before MCP create", async () => {
   const f = fixture(),
     unmount = await mount(f);

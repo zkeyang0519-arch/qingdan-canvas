@@ -461,7 +461,7 @@ export default function ExecutionPanel({
   }
   async function sendFollowup(version) {
     const run = detail?.run;
-    if (!run?.turnId) return;
+    if (recoveryOnly || !run?.turnId) return;
     const mode = run.terminal ? "reply" : "steer";
     const key = JSON.stringify([run.runId, followup.trim()]);
     if (followPending.current?.key !== key)
@@ -577,6 +577,7 @@ export default function ExecutionPanel({
     completion?.payload?.outcome?.summary ||
     completion?.payload?.summary?.overview;
   const canFollow =
+    !recoveryOnly &&
     run?.turnId &&
     !finished &&
     ![
@@ -960,13 +961,15 @@ export default function ExecutionPanel({
                     发送补充说明
                   </button>
                   <span className="agent-note">
-                    {finished || cancelled
-                      ? "新的工作可提交新批次。"
-                      : paused
-                        ? "补充后重做当前项，完成后继续后续待办。"
-                        : run.terminal
-                          ? "继续原会话的新一轮"
-                          : "补充到正在执行的这一轮"}
+                    {recoveryOnly
+                      ? "恢复视图仅查看和停止；新的总结请返回项目摘要发起。"
+                      : finished || cancelled
+                        ? "新的工作可提交新批次。"
+                        : paused
+                          ? "补充后重做当前项，完成后继续后续待办。"
+                          : run.terminal
+                            ? "继续原会话的新一轮"
+                            : "补充到正在执行的这一轮"}
                   </span>
                 </div>
               </div>
