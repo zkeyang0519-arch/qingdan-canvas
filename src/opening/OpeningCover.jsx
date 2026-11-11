@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, RotateCcw } from "lucide-react";
 
 const tiles = [
   {
@@ -147,11 +147,25 @@ function TileContent({ tile }) {
   );
 }
 
-export default function OpeningCover({ entering, reducedMotion, onEnter }) {
+export default function OpeningCover({
+  entering,
+  reducedMotion,
+  status,
+  error,
+  onEnter,
+  onRetry,
+}) {
   const cover = useRef(null);
   const entry = useRef(null);
   const frame = useRef(0);
   const pointer = useRef({ x: 0, y: 0 });
+  const preparing = status === "loading";
+  const failed = status === "error";
+  const label = preparing
+    ? "正在准备你的空间…"
+    : failed
+      ? "准备失败，点击重试"
+      : "打开我的空间";
 
   useEffect(() => {
     const resize = () => {
@@ -200,8 +214,9 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
       ref={cover}
       className="opening-cover"
       data-entering={entering}
+      data-status={status}
       aria-label="轻单开场"
-      aria-busy={entering}
+      aria-busy={preparing || entering}
       onPointerMove={movePointer}
       onPointerLeave={resetPointer}
     >
@@ -228,9 +243,11 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
         ref={entry}
         className="opening-entry"
         type="button"
-        onClick={onEnter}
-        disabled={entering}
-        aria-label="打开我的空间，进入轻单"
+        onClick={failed ? onRetry : onEnter}
+        disabled={entering || preparing}
+        aria-label={
+          preparing ? label : failed ? "重新准备轻单" : "打开我的空间，进入轻单"
+        }
       >
         <span className="opening-entry-copy">
           <span className="opening-entry-top">TODO</span>
@@ -238,14 +255,27 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
           <span className="opening-subtitle">让灵感，有处安放。</span>
           <span className="opening-english">a place for your ideas.</span>
           <span className="opening-entry-bottom">
-            <span>打开我的空间</span>
+            <span>{label}</span>
             <span className="opening-arrow">
-              <ArrowUpRight size={19} aria-hidden="true" />
+              {preparing ? (
+                <span className="opening-spinner" aria-hidden="true" />
+              ) : failed ? (
+                <RotateCcw size={18} aria-hidden="true" />
+              ) : (
+                <ArrowUpRight size={19} aria-hidden="true" />
+              )}
             </span>
           </span>
         </span>
       </button>
-      <p className="opening-bottomline">你的下一步，从一个想法开始。</p>
+      <p className="opening-bottomline">
+        {failed ? error : "你的下一步，从一个想法开始。"}
+      </p>
+      {failed && new URLSearchParams(location.search).has("room") && (
+        <a className="opening-home" href="/">
+          返回首页
+        </a>
+      )}
       <a
         className="opening-credit"
         href="https://github.com/codrops/IntroGridMotionTransition"
@@ -255,7 +285,13 @@ export default function OpeningCover({ entering, reducedMotion, onEnter }) {
         图片 · Codrops
       </a>
       <span className="opening-announcement" role="status">
-        {entering ? "正在打开轻单" : ""}
+        {entering
+          ? "正在打开轻单"
+          : failed
+            ? error
+            : preparing
+              ? label
+              : "空间已准备好，可以进入"}
       </span>
     </main>
   );

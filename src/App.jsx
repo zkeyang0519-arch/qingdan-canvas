@@ -21,6 +21,7 @@ import AuthScreen from "./auth/AuthScreen.jsx";
 import ProfileSettings from "./auth/ProfileSettings.jsx";
 import McpConsent from "./auth/McpConsent.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
+import OpeningPreparation from "./opening/OpeningPreparation.jsx";
 import "./auth/auth.css";
 
 export default function App() {
@@ -52,14 +53,18 @@ export default function App() {
   const refresh = async () => {
     const started = epoch.current;
     const before = new Map(roomWrites.current);
-    const result = await api("/api/rooms");
+    const result = await api("/api/rooms", {
+      isCurrentSession: () => started === epoch.current,
+    });
     if (started === epoch.current)
       setRooms(result.rooms.map((item) => mergeRoomRead(item, before)));
   };
   const enter = async (id) => {
     const started = epoch.current;
     const before = new Map(roomWrites.current);
-    const result = await api(`/api/rooms/${id}`);
+    const result = await api(`/api/rooms/${id}`, {
+      isCurrentSession: () => started === epoch.current,
+    });
     if (started !== epoch.current) return;
     setRoom(mergeRoomRead(result.room, before));
     history.replaceState(null, "", `/?room=${id}`);
@@ -84,6 +89,7 @@ export default function App() {
         await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
           method: "POST",
           body: { invite: token },
+          isCurrentSession: () => started === epoch.current,
         });
         if (started !== epoch.current) return;
         history.replaceState(null, "", `/?room=${encodeURIComponent(id)}`);
@@ -99,15 +105,19 @@ export default function App() {
   };
   useEffect(() => {
     let cancelled = false;
+    let preparing = true;
     void (async () => {
       try {
-        const result = await api("/api/session");
+        const result = await api("/api/session", {
+          isCurrentSession: () => !cancelled,
+        });
         if (cancelled) return;
         setSession(result);
         if (result.user) await authenticated(result);
       } catch (err) {
         if (!cancelled) setConnectionError(err.message);
       } finally {
+        preparing = false;
         if (!cancelled) {
           setInitializing(false);
           setBusy(false);
@@ -133,9 +143,12 @@ export default function App() {
       }
     };
     const focus = async () => {
+      if (cancelled || preparing) return;
       const started = epoch.current;
       try {
-        const result = await api("/api/session");
+        const result = await api("/api/session", {
+          isCurrentSession: () => !cancelled && started === epoch.current,
+        });
         if (
           !cancelled &&
           started === epoch.current &&
@@ -153,6 +166,7 @@ export default function App() {
     window.addEventListener("focus", focus);
     return () => {
       cancelled = true;
+      epoch.current++;
       window.removeEventListener("storage", switched);
       window.removeEventListener("qingdan-session-expired", expired);
       window.removeEventListener("focus", focus);
@@ -249,19 +263,26 @@ export default function App() {
   };
   if (initializing)
     return (
-      <div className="loading-screen">
-        <LoaderCircle className="spin" />
-        <p>正在连接轻单…</p>
-      </div>
+      <OpeningPreparation status="loading">
+        <div className="loading-screen">
+          <LoaderCircle className="spin" />
+          <p>正在连接轻单…</p>
+        </div>
+      </OpeningPreparation>
     );
   if (!session?.user)
     return (
-      <AuthScreen
-        legacyRoomCount={session?.legacyRoomCount}
-        onAuthenticated={authenticated}
-        connectionError={connectionError}
-        onRetry={() => location.reload()}
-      />
+      <OpeningPreparation
+        status={connectionError ? "error" : "ready"}
+        error={connectionError}
+      >
+        <AuthScreen
+          legacyRoomCount={session?.legacyRoomCount}
+          onAuthenticated={authenticated}
+          connectionError={connectionError}
+          onRetry={() => location.reload()}
+        />
+      </OpeningPreparation>
     );
   if (consentRoute)
     return (
@@ -297,6 +318,10 @@ export default function App() {
     );
   return (
     <div className="home">
+      <OpeningPreparation
+        status={busy ? "loading" : error ? "error" : "ready"}
+        error={error}
+      />
       <header className="home-nav">
         <a className="brand" href="/">
           <span className="brand-mark" />

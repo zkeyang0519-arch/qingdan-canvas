@@ -8,6 +8,7 @@ import React, {
   lazy,
   Suspense,
 } from "react";
+import OpeningPreparation from "../opening/OpeningPreparation.jsx";
 import {
   Archive,
   Check,
@@ -1653,7 +1654,13 @@ export default function ArrangedWorkspace({
           id={panelId}
           aria-label={resolved.page?.title || "项目月历"}
         >
-          <Suspense fallback={<p role="status">正在加载月历…</p>}>
+          <Suspense
+            fallback={
+              <OpeningPreparation id="calendar" status="loading" reloadOnRetry>
+                <p role="status">正在加载月历…</p>
+              </OpeningPreparation>
+            }
+          >
             <DeadlineCalendar
               key={resolved.page?.id || "empty"}
               page={resolved.page}
