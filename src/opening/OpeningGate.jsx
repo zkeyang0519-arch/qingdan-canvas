@@ -23,6 +23,7 @@ class DestinationBoundary extends Component {
         id="render-error"
         status="error"
         error="页面暂时无法打开，请重试。"
+        reloadOnRetry
       >
         <div className="loading-screen" role="alert">
           <p>页面暂时无法打开，请重试。</p>
@@ -55,7 +56,8 @@ function CoverExperience({ children }) {
         if (
           value
             ? previous[id]?.status === value.status &&
-              previous[id]?.error === value.error
+              previous[id]?.error === value.error &&
+              previous[id]?.reloadOnRetry === value.reloadOnRetry
             : !previous[id]
         )
           return previous;
@@ -83,9 +85,9 @@ function CoverExperience({ children }) {
         : "");
   const status = error ? "error" : ready ? "ready" : "loading";
   const retry = () => {
-    // React.lazy and the module loader retain a rejected import. A fresh page
-    // is required to retry a failed chunk; ordinary network retries stay here.
-    if (reports["render-error"]) {
+    // React.lazy retains pending and rejected imports across remounts. Those
+    // resources require a fresh page; ordinary network retries stay here.
+    if (Object.values(reports).some((item) => item.reloadOnRetry)) {
       location.reload();
       return;
     }

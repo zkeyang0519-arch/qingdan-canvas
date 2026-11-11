@@ -67,13 +67,16 @@ export function useRoomWorkspace(room, user) {
       if (assets.current.has(assetId)) continue;
       try {
         let blob = await db.current.get("assets", `${room.id}/${assetId}`);
+        if (e.closed) return;
         if (!blob) {
           const response = await fetch(
             `/api/rooms/${room.id}/assets/${assetId}`,
             { headers: { "X-QD-Account": user.id } },
           );
+          if (e.closed) return;
           if (!response.ok) throw new Error("图片加载失败，点击重试。");
           blob = await response.blob();
+          if (e.closed) return;
           await db.current.put("assets", `${room.id}/${assetId}`, blob);
         }
         if (e.closed) return;
@@ -335,6 +338,7 @@ export function useRoomWorkspace(room, user) {
           syncState,
         );
         await hydrate();
+        if (e.closed) return;
         connect();
         e.heartbeat = setInterval(() => {
           const ws = socket.current;

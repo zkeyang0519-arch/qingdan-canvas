@@ -8,13 +8,14 @@ export default function OpeningPreparation({
   id = "page",
   status,
   error = "",
+  reloadOnRetry = false,
   children,
 }) {
   const report = useContext(OpeningPreparationContext);
   useLayoutEffect(() => {
     if (!report) return;
-    report(id, { status, error });
+    report(id, { status, error, reloadOnRetry });
     return () => report(id, null);
-  }, [report, id, status, error]);
+  }, [report, id, status, error, reloadOnRetry]);
   return children;
 }

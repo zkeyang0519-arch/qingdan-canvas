@@ -526,9 +526,21 @@
   .opening-topline {
     top: 17px;
   }
-  .opening-bottomline,
-  .opening-credit {
+  .opening-bottomline {
+    max-width: max(96px, calc(50% - 144px));
     bottom: 17px;
+  }
+  .opening-credit {
+    left: auto;
+    right: 20px;
+    bottom: 17px;
+  }
+  .opening-home {
+    top: auto;
+    left: auto;
+    right: 20px;
+    bottom: 53px;
+    transform: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {

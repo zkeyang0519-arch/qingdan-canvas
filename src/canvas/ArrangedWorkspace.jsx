@@ -1656,7 +1656,7 @@ export default function ArrangedWorkspace({
         >
           <Suspense
             fallback={
-              <OpeningPreparation id="calendar" status="loading">
+              <OpeningPreparation id="calendar" status="loading" reloadOnRetry>
                 <p role="status">正在加载月历…</p>
               </OpeningPreparation>
             }

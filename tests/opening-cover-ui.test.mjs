@@ -117,7 +117,7 @@ await build({
         }));
         build.onLoad({ filter: /.*/, namespace: "test-drafts" }, () => ({
           contents: `export const claimDraftIdentity = async (_scope, id) => ({id, release() {}});
-          export const openDrafts = async () => ({ async get(store) { return store === "drafts" ? globalThis.openingDraft : undefined; }, async put() {}, close() {} });`,
+          export const openDrafts = async () => ({ async get(store) { return store === "drafts" ? globalThis.openingDraft : undefined; }, async put(...args) { globalThis.openingDraftWrite?.(...args); }, close() {} });`,
           loader: "js",
         }));
       },
@@ -191,6 +191,7 @@ async function mount(t, { url = "/", reduced = false, children } = {}) {
     frames.clear();
     sockets.length = 0;
     globalThis.openingDraft = undefined;
+    globalThis.openingDraftWrite = undefined;
     setActiveAccount(null);
   });
   await act(async () =>
@@ -658,4 +659,53 @@ test("无权限的直达画布在封面显示错误并提供返回首页", async
   assert.equal(coverStatus(host), "error");
   assert.equal(host.querySelector(".opening-home").getAttribute("href"), "/");
   assert.ok(host.textContent.includes("你没有权限访问此画布"));
+});
+
+test("慢图片加载期间重试，旧工作区结束请求后不会留下心跳或写入过期资源", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const image = deferred();
+  const activeHeartbeats = new Set();
+  const createInterval = globalThis.setInterval;
+  const removeInterval = globalThis.clearInterval;
+  t.mock.method(globalThis, "setInterval", (callback, delay, ...args) => {
+    const id = createInterval(callback, delay, ...args);
+    if (delay === 20000) activeHeartbeats.add(id);
+    return id;
+  });
+  t.mock.method(globalThis, "clearInterval", (id) => {
+    activeHeartbeats.delete(id);
+    removeInterval(id);
+  });
+  t.after(() => activeHeartbeats.forEach(removeInterval));
+  const assetWrites = [];
+  globalThis.openingDraftWrite = (store, key) => {
+    if (store === "assets") assetWrites.push(key);
+  };
+  globalThis.openingDraft = {
+    replica: { objects: [], base: [] },
+    assets: { "slow-image": { name: "cached.png" } },
+  };
+  const requests = apiFixture(t, {
+    loggedIn: true,
+    intercept: (url) => url.endsWith("/assets/slow-image") && image.promise,
+  });
+  const { host } = await mount(t, { url: "/?room=opening-room" });
+  assert.ok(
+    paths(requests).includes("/api/rooms/opening-room/assets/slow-image"),
+  );
+  assert.equal(sockets.length, 0);
+  await tick(t, 20000);
+  assert.equal(coverStatus(host), "error");
+  globalThis.openingDraft = undefined;
+  await click(enter(host));
+  assert.equal(sockets.length, 1);
+  assert.equal(activeHeartbeats.size, 1);
+  await act(async () =>
+    image.resolve(new Response(new Blob(["image"], { type: "image/png" }))),
+  );
+  assert.equal(activeHeartbeats.size, 1, "已卸载的工作区不能注册另一个心跳");
+  assert.deepEqual(assetWrites, [], "旧请求不能继续写入资源库");
+  await act(async () => sockets[0].snapshot());
+  await paint();
+  assert.equal(coverStatus(host), "ready");
 });
