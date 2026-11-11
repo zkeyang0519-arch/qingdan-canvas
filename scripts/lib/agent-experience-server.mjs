@@ -90,7 +90,17 @@ function json(res, body, status = 200) {
   });
   res.end(JSON.stringify(body));
 }
-export function createExperienceServer({ service, upstream, runnerApi }) {
+export function createExperienceServer({
+  service,
+  upstream,
+  runnerApi,
+  handshakeTimeoutMs = 10000,
+}) {
+  if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1)
+    throw Error("WebSocket handshake timeout must be a positive integer.");
+  let closing = false;
+  const connections = new Set(),
+    remotes = new Set();
   const target = new URL(upstream);
   if (target.protocol !== "http:" || target.hostname !== "127.0.0.1")
     throw Error("上游必须是本机轻单开发服务。");
@@ -99,6 +109,7 @@ export function createExperienceServer({ service, upstream, runnerApi }) {
   const runnerOrigins = new Set([target.origin, "http://127.0.0.1:5178"]);
   const server = createServer(async (req, res) => {
     try {
+      if (closing) throw reject(503, "本机服务正在关闭。");
       const url = new URL(req.url, originFor(req));
       const localCodex = url.pathname.startsWith("/api/local-codex/");
       const localRunner = url.pathname.startsWith("/api/local-runner/");
@@ -177,27 +188,37 @@ export function createExperienceServer({ service, upstream, runnerApi }) {
         );
     }
   });
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+    if (closing) socket.destroy();
+  });
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     try {
+      if (closing) return socket.destroy();
       guard(req);
       if (req.headers.origin !== originFor(req) || !req.url.startsWith("/api/"))
         throw reject(403, "仅支持本机协作连接。");
       const url = new URL(req.url, target);
       url.protocol = "ws:";
       const remote = new WebSocket(url, {
+        handshakeTimeout: handshakeTimeoutMs,
         headers: {
           ...(req.headers.cookie ? { cookie: req.headers.cookie } : {}),
           origin: target.origin,
         },
       });
+      remotes.add(remote);
+      remote.once("close", () => remotes.delete(remote));
       socket.on("close", () => remote.terminate());
       remote.on("error", () => socket.destroy());
       remote.on("unexpected-response", (_req, res) => {
         res.resume();
         socket.destroy();
       });
-      remote.once("open", () =>
+      remote.once("open", () => {
+        if (closing || socket.destroyed) return remote.terminate();
         sockets.handleUpgrade(req, socket, head, (local) => {
           remote.on("message", (data, isBinary) => {
             if (local.readyState === WebSocket.OPEN)
@@ -210,18 +231,24 @@ export function createExperienceServer({ service, upstream, runnerApi }) {
           local.on("error", () => remote.terminate());
           local.on("close", () => remote.close());
           remote.on("close", () => local.close());
-        }),
-      );
+        });
+      });
     } catch {
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     }
   });
   server.on("close", () => {
+    for (const remote of remotes) remote.terminate();
     for (const client of sockets.clients) client.terminate();
     sockets.close();
   });
   server.closeConnections = () => {
+    closing = true;
+    // CONNECTING peers are not yet WebSocketServer clients. Destroy both ends,
+    // including raw sockets whose upstream handshake never completed.
+    for (const remote of remotes) remote.terminate();
     for (const client of sockets.clients) client.terminate();
+    for (const socket of connections) socket.destroy();
     server.closeAllConnections();
   };
   return server;

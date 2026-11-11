@@ -14,6 +14,8 @@
     "agent:stop": "node scripts/agent-install.mjs stop",
     "agent:restart": "node scripts/agent-install.mjs restart",
     "agent:diagnose": "node scripts/agent-install.mjs diagnose",
+    "agent:recover-web": "node scripts/agent-install.mjs recover-web",
+    "agent:repair": "node scripts/agent-install.mjs repair",
     "agent:uninstall": "node scripts/agent-install.mjs uninstall",
     "dev:ui": "vite --host 127.0.0.1",
     "build": "vite build",

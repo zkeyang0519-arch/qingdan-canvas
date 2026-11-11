@@ -4,7 +4,16 @@ import path from "node:path";
 import { createExperienceServer } from "./lib/agent-experience-server.mjs";
 import { ExperienceService } from "./lib/agent-experience-service.mjs";
 import { stopOwnedChild } from "./lib/stop-child.mjs";
-import { startExperience } from "./lib/agent-experience-launcher.mjs";
+import {
+  startExperience,
+  createWebSupervisor,
+} from "./lib/agent-experience-launcher.mjs";
+import {
+  hasLifecycleControl,
+  openSourceControl,
+  setLifecycleHooks,
+  closeLifecycleControl,
+} from "./lib/agent-install-bridge.mjs";
 import { createLocalRunnerApi } from "./lib/local-runner-api.mjs";
 import { readLocalRunnerDiagnostics } from "./lib/local-runner-diagnostics.mjs";
 import {
@@ -18,6 +27,7 @@ if (Number(process.versions.node.split(".")[0]) < 24)
 let child,
   service,
   deviceController,
+  sourceControlOpening,
   closing = false;
 // Bind before touching the durable harness state: a second launcher must not
 // alter the running launcher's sessions or open another Codex process.
@@ -83,26 +93,65 @@ const run = (script, args = []) =>
         : reject(Error(`开发服务退出：${code}`)),
     );
   });
-async function close() {
-  if (closing) return;
+const supervisor = createWebSupervisor({
+  run: () => run(path.join(root, "scripts/dev.mjs")),
+  onState: (state) => {
+    if (state.phase === "recovery_required")
+      console.error(
+        "网页后端重试已耗尽；Runner 状态保留。请运行 recover-web 恢复网页服务。",
+      );
+  },
+});
+setLifecycleHooks({
+  status: supervisor.status,
+  recoverWeb: () => {
+    if (closing) throw Error("Launcher is closing.");
+    return supervisor.recover();
+  },
+});
+let closePromise;
+function close() {
+  if (closePromise) return closePromise;
   closing = true;
-  await deviceController?.close();
-  await service?.close();
-  await stopOwnedChild(child);
-  server.closeConnections();
-  server.close();
+  supervisor.close();
+  closePromise = (async () => {
+    // N6 owns cancellation and queue drain. Never clear its pending timer or
+    // replace the controller merely because the web child is unavailable.
+    await deviceController?.close();
+    await service?.close();
+    await stopOwnedChild(child);
+    server.closeConnections();
+    await new Promise((resolve) => server.close(resolve));
+    // Registration performs async ACL/lock work. A signal during that wait must
+    // drain its late endpoint as part of this same shutdown promise.
+    await sourceControlOpening?.catch(() => {});
+    await closeLifecycleControl();
+  })();
+  return closePromise;
 }
-process.once("SIGINT", () => void close());
-process.once("SIGTERM", () => void close());
+const requestClose = () => {
+  void close().catch((error) => console.error(error.message));
+};
+process.once("SIGINT", requestClose);
+process.once("SIGTERM", requestClose);
 try {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(8790, "127.0.0.1", resolve);
   });
+  const sourceMode = !hasLifecycleControl();
+  if (sourceMode && !closing) {
+    sourceControlOpening = openSourceControl({ root });
+    await sourceControlOpening;
+  }
+  console.log(
+    `本机管理：node scripts/agent-install.mjs diagnose${sourceMode ? " --source" : ""}；网页恢复：node scripts/agent-install.mjs recover-web${sourceMode ? " --source" : ""}`,
+  );
   await startExperience({
     root,
     run,
     isClosing: () => closing,
+    supervisor,
     onReady: async () => {
       const { RunnerDeviceController } =
         await import("../runner/dist/index.js");
@@ -114,10 +163,7 @@ try {
         executionEnabled: true,
       });
       await deviceController.start();
-      if (closing) {
-        await deviceController.close();
-        return;
-      }
+      if (closing) return;
       console.log(
         "\n轻单 Agent 入口：http://127.0.0.1:8790\n登录并进入画布后，点击顶部“Agent”；电脑设置中可查看诊断与恢复。\n",
       );

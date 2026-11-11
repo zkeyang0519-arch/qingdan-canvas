@@ -29,7 +29,44 @@ npm run agent:diagnose
 node scripts/agent-install.mjs diagnose
 ```
 
-本机 PowerShell 执行策略若限制 `.ps1`，使用 npm 或 Node 入口即可。安装目录绑定 checkout 的绝对路径；移动 checkout、更新 Node 路径或切换固定 Codex 版本后，应停止服务，再重新安装。
+本机 PowerShell 执行策略若限制 `.ps1`，使用 npm 或 Node 入口即可。更新 Node 路径或切换固定 Codex 版本时，应先停止服务，在原 checkout 重新安装。移动 checkout 使用下文的显式迁移修复，普通 `install/start` 不会自动改写旧身份。
+
+## 源码入口与网页恢复
+
+`npm run dev` 和 `npm run dev:agent` 会在 `.tmp/agent-install-source` 创建仅当前用户可访问的本机控制密钥与 `source.json`，没有安装清单或生成的 PowerShell 入口，也不注册系统服务。它复用与已安装入口相同的随机挑战/HMAC 管道协议。
+
+网页后端异常退出时，启动器保留同一个 Controller、Runner 身份和执行日志，只重试网页子进程，最多三次，间隔为 1、2、4 秒。构建 Runner 和初始化 Controller 不重复执行。重试耗尽后仍保留本机控制入口，诊断状态为 `recovery_required`。
+
+```powershell
+# 已安装入口
+npm run agent:recover-web
+
+# 由 npm run dev 启动的源码入口
+node scripts/agent-install.mjs diagnose --source
+node scripts/agent-install.mjs recover-web --source
+# 或 .\scripts\agent.ps1 -Action recover-web -Source
+```
+
+`recover-web` 只在网页重试耗尽时开始新一轮有限恢复；已有启动或重试正在进行时返回原状态，不并发启动第二个网页进程。它直接使用本机认证控制通道，不依赖故障网页的 `/api/session`，不重置设备、不关闭 Controller、不提交或重放任务。任务是否可继续仍由原运行的核对与暂停状态决定。不要用 `restart --interrupt-active` 代替网页恢复，它会中断任务。
+
+源码服务需要整体停止时使用 `node scripts/agent-install.mjs stop --source`；它同样拒绝活动或未知运行，显式中断才加 `--interrupt-active`。源码 Node 路径更新在确认旧控制实例不存在后登记当前执行文件，保留控制密钥和身份。
+
+## 移动 checkout 后修复
+
+先在旧位置停止服务，移动整个 checkout，再在新位置执行：
+
+```powershell
+node scripts/agent-install.mjs repair --relocate
+# 若使用自定义安装目录，仍须传新位置下的 --state-dir
+# 源码入口留下的管理身份单独修复：
+node scripts/agent-install.mjs repair --relocate --source
+```
+
+修复会验证保留的密钥、旧控制端和 PID，并检查同一 checkout 中的其他本机控制身份。旧目录仍存在属于复制，不能自动当成迁移；旧实例在线、PID 存活但无法认证、控制超时或协议异常都拒绝修复。没有控制响应本身不能证明旧进程已经停止。
+
+迁移只更新安装元数据、入口脚本和已终结体验会话中严格位于旧 checkout 内的已知路径。设备身份、凭据、执行历史和项目文件保留，外部项目路径不变。设备登记不会被自动重新授权；已移动的登记目录仍须通过原项目设置核对。活动/待复核体验、held、租约、未知 native 运行、目录锁、缺失或损坏的日志都会阻断修复，应恢复旧位置后先核对原运行。明确从未创建的执行器可通过检查，但不会为通过检查而初始化日志。
+
+`relocation.json` 保存带 HMAC 的迁移阶段。若中途退出，再次执行同一 `repair --relocate` 会重新验证旧实例及当前执行证据，再接续发布；普通启动和其他源码/安装入口不能绕过未完成阶段。不要删除迁移记录或执行证据来解除阻断。迁移完成后再 `start`，源码入口则再次 `npm run dev`。
 
 ## 启动、停止与重启
 
@@ -53,7 +90,7 @@ npm run agent:stop -- --interrupt-active
 
 这会让已认证启动器走自己的退出流程，关闭执行控制器和它启动的子进程，并取消尚未执行的剩余任务。`--interrupt-active` 不是暂停批次后继续原批次的操作。停止若仍未结束，会报错并保留身份记录供诊断；安装器不会按超时强杀一个 PID。
 
-并发的安装、启动、停止和卸载通过独立 `operation.sqlite` 的 SQLite 写事务互斥。第二个命令若遇到正在进行的操作，会要求稍后重试，不会另开一个实例。事务由连接持有，命令异常退出后由系统释放；数据库文件本身会保留，不代表仍有操作运行，也不应为“解锁”而删除它。早期开发版本遗留的 `operation.lock` 不再用于互斥。
+并发的安装、启动、停止和卸载通过 `operation.sqlite` 及 checkout 级 `.tmp/agent-lifecycle.sqlite` 的 SQLite 写事务互斥。第二个命令若遇到正在进行的操作，会要求稍后重试，不会另开一个实例。事务由连接持有，命令异常退出后由系统释放；数据库文件本身会保留，不代表仍有操作运行，也不应为“解锁”而删除它。早期开发版本遗留的 `operation.lock` 不再用于互斥。
 
 ## 诊断状态
 
@@ -62,16 +99,17 @@ npm run agent:diagnose
 Get-Content .\.tmp\agent-install\service.log -Tail 80
 ```
 
-| 状态            | 含义和处理                                                                                  |
-| --------------- | ------------------------------------------------------------------------------------------- |
-| `not_installed` | 没有安装记录。先运行 `agent:install`。                                                      |
-| `stopped`       | 没有已运行的受管实例，固定端口空闲。                                                        |
-| `starting`      | 控制身份已验证，应用健康检查尚未通过。查看日志并稍后诊断。                                  |
-| `running`       | 控制身份已验证，应用会话 API 可用；不表示已登录、执行器已配对或任务成功。                   |
-| `stopping`      | 已收到停止请求，仍在关闭。                                                                  |
-| `unmanaged`     | 未运行受管实例，但 8790/8788 被占用。回到原启动终端明确关闭那个开发服务，再启动本安装。     |
-| `unverified`    | 记录中的 PID 仍存在，但控制身份不能通过验证。不要删除记录后强行接管；检查原进程和安装目录。 |
-| `stale`         | 记录中的进程已不存在。`stop` 只移除这条过期记录，不杀任何进程；随后可 `start`。             |
+| 状态                | 含义和处理                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| `not_installed`     | 没有安装记录。先运行 `agent:install`。                                                      |
+| `stopped`           | 没有已运行的受管实例，固定端口空闲。                                                        |
+| `starting`          | 控制身份已验证，应用健康检查尚未通过。查看日志并稍后诊断。                                  |
+| `running`           | 控制身份已验证，应用会话 API 可用；不表示已登录、执行器已配对或任务成功。                   |
+| `stopping`          | 已收到停止请求，仍在关闭。                                                                  |
+| `recovery_required` | 网页后端的三次重试已耗尽；同一 Runner 保留，通过 `recover-web` 再次恢复网页。               |
+| `unmanaged`         | 未运行受管实例，但 8790/8788 被占用。回到原启动终端明确关闭那个开发服务，再启动本安装。     |
+| `unverified`        | 记录中的 PID 仍存在，但控制身份不能通过验证。不要删除记录后强行接管；检查原进程和安装目录。 |
+| `stale`             | 记录中的进程已不存在。`stop` 只移除这条过期记录，不杀任何进程；随后可 `start`。             |
 
 诊断还返回实际端口占用情况、安装时的 Codex 版本、当前命令使用的 Node 版本、日志路径，以及活动/未知状态计数。密钥、账号凭据和任务内容不出现在诊断输出中。
 
