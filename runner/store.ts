@@ -182,6 +182,23 @@ export class RunnerStore {
       .prepare("UPDATE commands SET receipt = ? WHERE command_id = ?")
       .run(JSON.stringify(receipt), commandId);
   }
+  acceptedCommandReceipt(
+    commandId: string,
+    runId: string,
+  ): { threadId: string; turnId: string } | null {
+    const row = this.db
+      .prepare("SELECT run_id, receipt FROM commands WHERE command_id = ?")
+      .get(commandId);
+    if (!row?.receipt || row.run_id !== runId) return null;
+    const receipt = JSON.parse(String(row.receipt));
+    return receipt.commandId === commandId &&
+      receipt.runId === runId &&
+      receipt.status === "accepted" &&
+      typeof receipt.threadId === "string" &&
+      typeof receipt.turnId === "string"
+      ? receipt
+      : null;
+  }
   appendEvent<K extends keyof RunnerEventPayloads>(
     runnerId: string,
     runId: string,

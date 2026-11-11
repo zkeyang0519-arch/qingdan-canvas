@@ -16,13 +16,20 @@ import {
   RunnerTransport,
   type TransportOptions,
   type TransportStatus,
+  type RunnerClock,
 } from "./transport";
+import { withDeviceResetSafety } from "./device-reset-safety";
 import { RunnerError } from "./errors";
-import { validDeviceName } from "./metadata";
+import { validDeviceName, WORKSPACE_NAME_MAX } from "./metadata";
 import { ExecutionStore } from "./execution-store";
 import { RunnerExecutor, type ExecutionTransport } from "./executor";
 import { digest, RunnerStore } from "./store";
 import type { AdapterOptions } from "./codex-adapter";
+import {
+  listCodexSessions,
+  readCodexSession,
+  type SessionQuery,
+} from "./codex-sessions";
 export type LocalDeviceView = {
   paired: boolean;
   runnerId: string | null;
@@ -54,7 +61,13 @@ export type DeviceControllerOptions = {
   locksDir?: string;
   executionEnabled?: boolean;
   executionCodex?: Omit<AdapterOptions, "runnerId" | "store" | "workspaces">;
+  clock?: RunnerClock;
 };
+export type DeviceResetTarget = Pick<
+  DeviceConfig,
+  "runnerId" | "ownerId" | "serverOrigin" | "authEpoch"
+>;
+export type RevocationEvidence = DeviceResetTarget & { status: "revoked" };
 export class RunnerDeviceController {
   private store: DeviceStore;
   private registry: WorkspaceRegistry;
@@ -70,6 +83,10 @@ export class RunnerDeviceController {
   private closed = false;
   private started = false;
   private generation = 0;
+  private lifecycle = new AbortController();
+  private pendingTimer: any;
+  private pendingAttempt = 0;
+  private clock: RunnerClock;
   private error: string | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   readonly serverOrigin: string;
@@ -77,6 +94,11 @@ export class RunnerDeviceController {
     this.serverOrigin = validateServerOrigin(options.serverOrigin);
     this.credentials = options.credentials ?? new WindowsCredentialManager();
     this.http = options.fetch ?? fetch;
+    this.clock = options.clock ?? {
+      now: Date.now,
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (id) => clearTimeout(id),
+    };
     this.store = new DeviceStore(path.join(options.stateDir, "device.sqlite"));
     this.registry = new WorkspaceRegistry(this.store, {
       locksDir: options.locksDir,
@@ -97,15 +119,9 @@ export class RunnerDeviceController {
     if (!this.config) return;
     if (this.config.pairingPending) {
       const generation = this.generation;
-      void this.recoverPair(this.config)
-        .then((ok) => {
-          if (ok && !this.closed && generation === this.generation)
-            this.startTransport();
-        })
-        .catch(() => {
-          if (!this.closed)
-            this.error = "Pairing recovery is waiting for the Runner server.";
-        });
+      void this.exclusive(() => this.recoverPending(generation)).catch(
+        () => {},
+      );
     } else if (this.config.enabled) this.startTransport();
     else await this.ensureExecutor()?.suspend();
   }
@@ -125,8 +141,8 @@ export class RunnerDeviceController {
       );
     if (this.config && this.config.ownerId !== ownerId)
       throw new RunnerError(
-        "ACCESS_DENIED",
-        "Runner belongs to another owner account.",
+        "OWNER_MISMATCH",
+        "这台电脑已绑定其他轻单账号。请先在原账号解除绑定，再使用当前账号连接。",
       );
   }
   status(ownerId: string): LocalDeviceView {
@@ -159,24 +175,133 @@ export class RunnerDeviceController {
     this.queue = operation.catch(() => {});
     return operation;
   }
+  private identityOperation<T>(generation: number, fn: () => Promise<T>) {
+    const pending = this.config?.pairingPending
+      ? { ownerId: this.config.ownerId, runnerId: this.config.runnerId }
+      : null;
+    return this.exclusive(async () => {
+      try {
+        return await fn();
+      } catch (error) {
+        // A failed switch retains the old identity and its recovery duty, but
+        // cannot restore work cancelled by a later identity operation or close.
+        if (
+          !this.closed &&
+          generation === this.generation &&
+          pending &&
+          this.config?.pairingPending &&
+          this.config.ownerId === pending.ownerId &&
+          this.config.runnerId === pending.runnerId
+        )
+          this.schedulePending(generation);
+        throw error;
+      }
+    });
+  }
   private save() {
     this.checkOpen();
     if (this.config) this.store.saveConfig(this.config);
   }
+  private invalidateIdentity() {
+    ++this.generation;
+    this.lifecycle.abort();
+    this.lifecycle = new AbortController();
+    this.clock.clearTimeout(this.pendingTimer);
+    this.pendingTimer = undefined;
+    this.pendingAttempt = 0;
+    return this.generation;
+  }
+  private assertIdentity(config: DeviceConfig, generation: number) {
+    this.checkOpen();
+    if (
+      generation !== this.generation ||
+      this.config?.runnerId !== config.runnerId ||
+      this.config.ownerId !== config.ownerId
+    )
+      throw new RunnerError(
+        "CONNECTION_CHANGED",
+        "电脑连接已变化，请重新核对。",
+      );
+  }
+  private schedulePending(generation: number) {
+    if (
+      this.closed ||
+      generation !== this.generation ||
+      !this.config?.pairingPending ||
+      this.pendingTimer !== undefined
+    )
+      return;
+    const delay = Math.min(
+      30000,
+      1000 * 2 ** Math.min(this.pendingAttempt++, 5),
+    );
+    // Keep an independent pending controller alive until recovery or close.
+    this.pendingTimer = this.clock.setTimeout(() => {
+      this.pendingTimer = undefined;
+      void this.exclusive(() => this.recoverPending(generation)).catch(
+        () => {},
+      );
+    }, delay);
+  }
+  private async recoverPending(generation: number) {
+    if (
+      this.closed ||
+      generation !== this.generation ||
+      !this.config?.pairingPending
+    )
+      return;
+    try {
+      if (await this.recoverPair({ ...this.config }, generation))
+        this.startTransport();
+      else this.error = "配对尚未完成，请重新连接或重试配对。";
+    } catch (error) {
+      if (this.closed || generation !== this.generation) return;
+      const code = (error as { code?: string }).code;
+      this.error =
+        code === "CREDENTIAL_MISSING"
+          ? "设备凭据已丢失，请撤销旧设备后核对并重置本机绑定。"
+          : "配对恢复正在等待设备服务，请稍后重试。";
+      if (!["CREDENTIAL_MISSING", "ACCESS_DENIED"].includes(code ?? ""))
+        this.schedulePending(generation);
+    }
+  }
   private async post(route: string, body: unknown) {
-    return this.http(`${this.serverOrigin}${route}`, {
+    const signal = AbortSignal.any([
+      this.lifecycle.signal,
+      AbortSignal.timeout(10000),
+    ]);
+    const request = this.http(`${this.serverOrigin}${route}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       redirect: "error",
-      signal: AbortSignal.timeout(10000),
+      signal,
     });
+    let abort!: () => void;
+    try {
+      return await Promise.race([
+        request,
+        new Promise<never>((_, reject) => {
+          abort = () =>
+            reject(
+              new RunnerError("CONNECTION_CHANGED", "设备请求已取消或超时。"),
+            );
+          signal.addEventListener("abort", abort, { once: true });
+          if (signal.aborted) abort();
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
   }
-  private async recoverPair(config: DeviceConfig): Promise<boolean> {
-    const generation = this.generation;
+  private async recoverPair(
+    config: DeviceConfig,
+    generation = this.generation,
+  ): Promise<boolean> {
     const secret = await this.credentials.read(
       credentialTarget(this.serverOrigin, config.runnerId),
     );
+    this.assertIdentity(config, generation);
     if (!secret)
       throw new RunnerError(
         "CREDENTIAL_MISSING",
@@ -186,7 +311,10 @@ export class RunnerDeviceController {
       runnerId: config.runnerId,
       secret,
     });
-    if (!response.ok) return false;
+    this.assertIdentity(config, generation);
+    if (response.status === 401 || response.status === 403) return false;
+    if (!response.ok)
+      throw new RunnerError("PAIRING_UNAVAILABLE", "配对服务暂时不可用。");
     const token = (await response.json()) as any;
     if (
       token.runnerId !== config.runnerId ||
@@ -198,10 +326,15 @@ export class RunnerDeviceController {
         "ACCESS_DENIED",
         "Pairing recovered a different account or device.",
       );
-    if (this.closed || generation !== this.generation) return false;
-    config.authEpoch = token.authEpoch;
-    config.pairingPending = false;
-    this.config = config;
+    this.assertIdentity(config, generation);
+    this.config = {
+      ...config,
+      authEpoch: token.authEpoch,
+      pairingPending: false,
+    };
+    this.clock.clearTimeout(this.pendingTimer);
+    this.pendingTimer = undefined;
+    this.pendingAttempt = 0;
     this.error = null;
     this.save();
     return true;
@@ -233,9 +366,16 @@ export class RunnerDeviceController {
     const executor = this.ensureExecutor();
     this.transport =
       this.options.transportFactory?.(options) ?? new RunnerTransport(options);
+    const transport = this.transport;
     executor?.start();
-    void this.transport.start().catch(() => {
-      if (!this.closed) this.error = "Unable to start Runner connection.";
+    void transport.start().catch(() => {
+      if (
+        !this.closed &&
+        this.transport === transport &&
+        this.config?.runnerId === config.runnerId &&
+        this.config.ownerId === config.ownerId
+      )
+        this.error = "Unable to start Runner connection.";
     });
   }
   private ensureExecutor() {
@@ -305,18 +445,26 @@ export class RunnerDeviceController {
     this.execution.runs.close();
     this.execution = undefined;
   }
-  pair(input: { ownerId: string; pairingCode: string; deviceName: string }) {
-    return this.exclusive(async () => {
+  async pair(input: {
+    ownerId: string;
+    pairingCode: string;
+    deviceName: string;
+  }) {
+    this.owner(input.ownerId);
+    if (
+      typeof input.pairingCode !== "string" ||
+      !input.pairingCode.trim() ||
+      !validDeviceName(input.deviceName)
+    )
+      throw new RunnerError(
+        "VALIDATION_ERROR",
+        "Pairing code and device name are required.",
+      );
+    const generation = this.invalidateIdentity();
+    return this.identityOperation(generation, async () => {
       this.owner(input.ownerId);
-      if (
-        typeof input.pairingCode !== "string" ||
-        !input.pairingCode.trim() ||
-        !validDeviceName(input.deviceName)
-      )
-        throw new RunnerError(
-          "VALIDATION_ERROR",
-          "Pairing code and device name are required.",
-        );
+      if (generation !== this.generation)
+        throw new RunnerError("CONNECTION_CHANGED", "设备配对请求已失效。");
       if (this.config && !this.config.pairingPending)
         throw new RunnerError("ALREADY_PAIRED", "Runner is already paired.");
       let config = this.config;
@@ -330,9 +478,23 @@ export class RunnerDeviceController {
             "CREDENTIAL_MISSING",
             "Saved Runner credential is unavailable.",
           );
-        if (await this.recoverPair(config)) {
-          this.startTransport();
-          return this.status(input.ownerId);
+        try {
+          if (await this.recoverPair({ ...config }, generation)) {
+            this.startTransport();
+            return this.status(input.ownerId);
+          }
+        } catch (error) {
+          if (
+            !this.closed &&
+            generation === this.generation &&
+            !["CREDENTIAL_MISSING", "ACCESS_DENIED"].includes(
+              (error as { code?: string }).code ?? "",
+            )
+          ) {
+            this.error = "配对恢复正在等待设备服务，请稍后重试。";
+            this.schedulePending(generation);
+          }
+          throw error;
         }
         // A legacy invalid pending name can be corrected without replacing the
         // identity/credential reserved for an ambiguous successful claim.
@@ -354,10 +516,11 @@ export class RunnerDeviceController {
           secret,
         );
         this.checkOpen();
+        if (generation !== this.generation)
+          throw new RunnerError("CONNECTION_CHANGED", "设备配对请求已失效。");
         this.config = config;
         this.save();
       }
-      const generation = this.generation;
       try {
         const response = await this.post("/api/runner/pair", {
           pairingCode: input.pairingCode,
@@ -369,7 +532,11 @@ export class RunnerDeviceController {
         if (!response.ok) {
           const error = (await response.json().catch(() => ({}))) as any;
           throw new RunnerError(
-            typeof error.code === "string" ? error.code : "PAIRING_FAILED",
+            response.status >= 500 || response.status === 429
+              ? "PAIRING_UNAVAILABLE"
+              : typeof error.code === "string"
+                ? error.code
+                : "PAIRING_FAILED",
             "Pairing code could not be accepted.",
           );
         }
@@ -393,15 +560,20 @@ export class RunnerDeviceController {
         config.pairingPending = false;
         this.save();
       } catch (error) {
-        if (this.closed) throw error;
+        if (this.closed || generation !== this.generation) throw error;
         let recovered = false;
+        let retry = (error as { code?: string }).code === "PAIRING_UNAVAILABLE";
         try {
-          recovered = await this.recoverPair(config);
-        } catch {
-          /* Retain pending identity and credential for an explicit retry. */
+          recovered = await this.recoverPair({ ...config }, generation);
+        } catch (recoveryError) {
+          retry = !["CREDENTIAL_MISSING", "ACCESS_DENIED"].includes(
+            (recoveryError as { code?: string }).code ?? "",
+          );
         }
         if (!recovered) {
+          if (this.closed || generation !== this.generation) throw error;
           this.error = "Pairing is pending; retry with this device identity.";
+          if (retry) this.schedulePending(generation);
           throw error instanceof RunnerError
             ? error
             : new RunnerError(
@@ -422,6 +594,51 @@ export class RunnerDeviceController {
       await this.registry.register(input);
       await this.transport?.updateWorkspaces();
       return this.status(ownerId);
+    });
+  }
+  async listCodexSessions(ownerId: string, query: SessionQuery) {
+    this.owner(ownerId);
+    const generation = this.generation;
+    const result = await listCodexSessions(
+      {
+        command: process.env.QINGDAN_CODEX_BIN || "codex",
+        ...this.options.executionCodex,
+      },
+      query,
+    );
+    this.owner(ownerId);
+    if (generation !== this.generation)
+      throw new RunnerError(
+        "ACCESS_DENIED",
+        "电脑连接已变化，请重新读取会话。",
+      );
+    return result;
+  }
+  selectCodexSession(ownerId: string, threadId: string) {
+    return this.exclusive(async () => {
+      this.owner(ownerId);
+      this.requirePaired();
+      const generation = this.generation;
+      const session = await readCodexSession(
+        {
+          command: process.env.QINGDAN_CODEX_BIN || "codex",
+          ...this.options.executionCodex,
+        },
+        threadId,
+      );
+      this.owner(ownerId);
+      if (generation !== this.generation)
+        throw new RunnerError(
+          "ACCESS_DENIED",
+          "电脑连接已变化，请重新选择会话。",
+        );
+      const workspace = await this.registry.register({
+        root: session.cwd,
+        name: session.projectName.slice(0, WORKSPACE_NAME_MAX),
+      });
+      await this.transport?.updateWorkspaces();
+      this.owner(ownerId);
+      return { runnerId: this.config!.runnerId, workspace, session };
     });
   }
   removeWorkspace(ownerId: string, workspaceId: string) {
@@ -462,19 +679,48 @@ export class RunnerDeviceController {
       return this.status(ownerId);
     });
   }
-  reconnect(ownerId: string) {
+  async reconnect(ownerId: string) {
+    this.owner(ownerId);
+    const generation = this.config?.pairingPending
+      ? this.invalidateIdentity()
+      : this.generation;
     return this.exclusive(async () => {
       this.owner(ownerId);
+      if (generation !== this.generation)
+        throw new RunnerError("CONNECTION_CHANGED", "设备连接已变化。");
+      if (this.config?.pairingPending) {
+        await this.recoverPending(generation);
+        return this.status(ownerId);
+      }
       this.requirePaired();
       if (this.config!.enabled) {
         if (this.transport) this.transport.reconnect();
         else this.startTransport();
+        this.execution?.executor.requestReconciliation();
       }
       return this.status(ownerId);
     });
   }
-  forget(ownerId: string) {
-    return this.exclusive(async () => {
+  async forget(
+    ownerId: string,
+    authorized?: {
+      expectedRunnerId: string;
+      revokeAndVerify: (
+        target: DeviceResetTarget,
+      ) => Promise<RevocationEvidence>;
+    },
+  ) {
+    // Only an explicitly targeted, session-authorized caller may revoke remotely.
+    // The legacy call still verifies an already-revoked device with its secret.
+    if (authorized)
+      return this.reset(
+        ownerId,
+        authorized.expectedRunnerId,
+        authorized.revokeAndVerify,
+      );
+    this.owner(ownerId);
+    const generation = this.invalidateIdentity();
+    return this.identityOperation(generation, async () => {
       this.owner(ownerId);
       if (!this.config) return this.status(ownerId);
       if (this.store.leases().length || this.execution?.executor.hasHold)
@@ -483,30 +729,140 @@ export class RunnerDeviceController {
           "Confirm all local runs are stopped before forgetting this device.",
         );
       const config = this.config;
-      const target = credentialTarget(this.serverOrigin, config.runnerId);
-      const secret = await this.credentials.read(target);
-      if (!secret)
-        throw new RunnerError(
-          "CREDENTIAL_MISSING",
-          "Cannot verify remote revocation without the saved credential.",
-        );
-      const response = await this.post("/api/runner/token", {
-        runnerId: config.runnerId,
-        secret,
+      this.assertIdentity(config, generation);
+      await this.withResetSafety(config, async (check) => {
+        const target = credentialTarget(this.serverOrigin, config.runnerId);
+        const secret = await this.credentials.read(target);
+        this.assertIdentity(config, generation);
+        if (!secret)
+          throw new RunnerError(
+            "CREDENTIAL_MISSING",
+            "Cannot verify remote revocation without the saved credential.",
+          );
+        const response = await this.post("/api/runner/token", {
+          runnerId: config.runnerId,
+          secret,
+        });
+        this.assertIdentity(config, generation);
+        if (response.status !== 401 && response.status !== 403)
+          throw new RunnerError(
+            "REVOCATION_REQUIRED",
+            "Device must be remotely revoked before forgetting its credential.",
+          );
+        await check();
+        this.assertIdentity(config, generation);
+        this.transport?.close();
+        this.transport = undefined;
+        await this.credentials.delete(target);
+        this.assertIdentity(config, generation);
+        await check();
+        this.assertIdentity(config, generation);
+        this.store.clear();
+        this.config = null;
+        this.error = null;
       });
-      if (response.status !== 401 && response.status !== 403)
-        throw new RunnerError(
-          "REVOCATION_REQUIRED",
-          "Device must be remotely revoked before forgetting its credential.",
-        );
       await this.closeExecutor();
-      this.transport?.close();
-      this.transport = undefined;
-      await this.credentials.delete(target);
-      this.checkOpen();
-      this.store.clear();
-      this.config = null;
-      this.error = null;
+      return this.status(ownerId);
+    });
+  }
+  private withResetSafety<T>(
+    config: DeviceConfig,
+    work: (check: () => Promise<void>) => Promise<T>,
+  ) {
+    const guarded = () =>
+      withDeviceResetSafety(
+        {
+          executionDir: path.join(
+            this.options.stateDir,
+            "execution",
+            digest([config.ownerId, config.runnerId]),
+          ),
+          device: this.store,
+          registry: this.registry,
+          consumerOwned: !!this.execution,
+        },
+        work,
+      );
+    return this.execution
+      ? this.execution.executor.withDeviceResetGuard(guarded)
+      : guarded();
+  }
+  async reset(
+    ownerId: string,
+    expectedRunnerId: string,
+    verifyRevocation: (
+      target: DeviceResetTarget,
+    ) => Promise<RevocationEvidence>,
+  ) {
+    this.owner(ownerId);
+    if (!expectedRunnerId || typeof expectedRunnerId !== "string")
+      throw new RunnerError("VALIDATION_ERROR", "缺少原设备身份。");
+    if (this.config && this.config.runnerId !== expectedRunnerId)
+      throw new RunnerError("STALE_DEVICE", "电脑已重新绑定，请刷新后重试。");
+    // A completed receipt is read-only. Replaying it must not cancel a new
+    // pairing that is still writing its credential before saving its config.
+    const generation = this.config
+      ? this.invalidateIdentity()
+      : this.generation;
+    return this.identityOperation(generation, async () => {
+      this.owner(ownerId);
+      if (!this.config) {
+        const receipt = this.store.resetReceipt();
+        if (receipt?.ownerId !== ownerId)
+          throw new RunnerError("OWNER_MISMATCH", "重置回执不属于当前账号。");
+        if (
+          receipt.runnerId !== expectedRunnerId ||
+          receipt.serverOrigin !== this.serverOrigin
+        )
+          throw new RunnerError("STALE_DEVICE", "找不到对应的本机重置回执。");
+        return this.status(ownerId);
+      }
+      const config = { ...this.config };
+      if (config.runnerId !== expectedRunnerId)
+        throw new RunnerError("STALE_DEVICE", "电脑已重新绑定，请刷新后重试。");
+      this.assertIdentity(config, generation);
+      await this.withResetSafety(config, async (check) => {
+        const evidence = await verifyRevocation({
+          runnerId: config.runnerId,
+          ownerId,
+          serverOrigin: this.serverOrigin,
+          authEpoch: config.authEpoch,
+        });
+        this.assertIdentity(config, generation);
+        if (
+          !evidence ||
+          evidence.runnerId !== config.runnerId ||
+          evidence.ownerId !== ownerId ||
+          evidence.serverOrigin !== this.serverOrigin ||
+          evidence.status !== "revoked" ||
+          !Number.isSafeInteger(evidence.authEpoch) ||
+          evidence.authEpoch <= config.authEpoch
+        )
+          throw new RunnerError(
+            "REVOCATION_REQUIRED",
+            "尚未核实当前账号已撤销原设备，请联网核对后重试。",
+          );
+        await check();
+        this.assertIdentity(config, generation);
+        this.transport?.close();
+        this.transport = undefined;
+        await this.credentials.delete(
+          credentialTarget(this.serverOrigin, config.runnerId),
+        );
+        this.assertIdentity(config, generation);
+        await check();
+        this.assertIdentity(config, generation);
+        this.store.clearForReset(config, {
+          ownerId,
+          runnerId: config.runnerId,
+          serverOrigin: this.serverOrigin,
+          revokedAuthEpoch: evidence.authEpoch,
+          completedAt: new Date(this.clock.now()).toISOString(),
+        });
+        this.config = null;
+        this.error = null;
+      });
+      await this.closeExecutor();
       return this.status(ownerId);
     });
   }
@@ -517,7 +873,7 @@ export class RunnerDeviceController {
   async close() {
     if (this.closed) return;
     this.closed = true;
-    ++this.generation;
+    this.invalidateIdentity();
     await this.queue;
     await this.closeExecutor();
     this.transport?.close();

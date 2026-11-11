@@ -25,6 +25,8 @@ if (rules) {
     parseRunOutcome,
     parseCommandEnvelope,
     parseExecutionSnapshot,
+    manualIntentSchema,
+    executionReportSchema,
   } = rules;
 
   test("a plan preserves distinct IDs with identical task text and normalizes offset dates", () => {
@@ -429,5 +431,166 @@ if (rules) {
         code: "VALIDATION_ERROR",
       });
     }
+  });
+
+  test("batch snapshots preserve order, bind the first item, and validate all criteria", () => {
+    const snapshot = makeSnapshot();
+    const { text, instruction, acceptance, taskRef } = snapshot.task;
+    const first = { taskId: taskRef.taskId, text, instruction, acceptance };
+    const second = { ...first, taskId: "task-b", text: "第二条任务" };
+    const batch = (items) => ({ ...snapshot, batch: { items } });
+
+    assert.deepEqual(
+      parseExecutionSnapshot(batch([first, second])).batch.items,
+      [first, second],
+    );
+    assert.equal(
+      parseExecutionSnapshot(
+        batch(
+          Array.from({ length: 50 }, (_, i) =>
+            i === 0 ? first : { ...second, taskId: `task-${i}` },
+          ),
+        ),
+      ).batch.items.length,
+      50,
+    );
+    for (const invalid of [
+      batch([]),
+      batch([second, first]),
+      batch([first, first]),
+      batch([{ ...first, text: "另一个任务" }]),
+      batch([{ ...first, instruction: "另一个指令" }]),
+      batch([
+        {
+          ...first,
+          acceptance: second.acceptance.map((c) => ({
+            ...c,
+            description: "另一个验收标准",
+          })),
+        },
+      ]),
+      batch([
+        first,
+        {
+          ...second,
+          acceptance: [
+            {
+              ...acceptance[0],
+              kind: "command",
+              checkId: "unregistered",
+            },
+          ],
+        },
+      ]),
+      batch([
+        first,
+        ...Array.from({ length: 50 }, (_, i) => ({
+          ...second,
+          taskId: `task-${i}`,
+        })),
+      ]),
+      { ...batch([first]), kind: "summary", task: null },
+    ]) {
+      assert.throws(() => parseExecutionSnapshot(invalid), {
+        code: "VALIDATION_ERROR",
+      });
+    }
+  });
+
+  test("checklist intent accepts ordered source revisions and keeps manual inputs separate", () => {
+    const sourceTasks = [
+      { noteId: "note-b", taskId: "task-b", generation: 2, specRevision: 4 },
+      { noteId: "note-a", taskId: "task-a", generation: 1, specRevision: 1 },
+    ];
+    const request = {
+      requestId: "request-a",
+      bindingId: "binding-a",
+      bindingRevision: 1,
+      kind: "task",
+      sourceTasks,
+      autoComplete: true,
+    };
+    assert.deepEqual(manualIntentSchema.parse(request), request);
+    for (const invalid of [
+      { ...request, kind: "summary" },
+      { ...request, instruction: "另一个任务" },
+      { ...request, items: [{ instruction: "另一个任务" }] },
+      { ...request, sourceTasks: undefined, instruction: "单条任务" },
+      { ...request, sourceTasks: [sourceTasks[0], sourceTasks[0]] },
+      { ...request, sourceTasks: [{ ...sourceTasks[0], generation: 0 }] },
+      { ...request, sourceTasks: [{ ...sourceTasks[0], specRevision: 0 }] },
+    ]) {
+      assert.equal(manualIntentSchema.safeParse(invalid).success, false);
+    }
+  });
+
+  test("automatic completion snapshots bind each checklist source to its item", () => {
+    const snapshot = makeSnapshot();
+    const { text, instruction, acceptance, taskRef, specRevision } =
+      snapshot.task;
+    const item = {
+      taskId: taskRef.taskId,
+      text,
+      instruction,
+      acceptance,
+      source: { taskRef, generation: 2, specRevision },
+    };
+    const batch = (...items) => ({
+      ...snapshot,
+      batch: { items, autoComplete: true },
+    });
+    assert.deepEqual(
+      parseExecutionSnapshot(batch(item)).batch,
+      batch(item).batch,
+    );
+    for (const invalid of [
+      batch({ ...item, source: undefined }),
+      batch({
+        ...item,
+        source: { ...item.source, taskRef: { ...taskRef, taskId: "other" } },
+      }),
+      batch({
+        ...item,
+        source: { ...item.source, taskRef: { ...taskRef, noteId: "other" } },
+      }),
+    ]) {
+      assert.throws(() => parseExecutionSnapshot(invalid), {
+        code: "VALIDATION_ERROR",
+      });
+    }
+  });
+
+  test("Runner may report a completed turn proof but cannot report canvas writeback", () => {
+    const item = {
+      taskId: "task-a",
+      text: "任务",
+      status: "done",
+      summary: "已完成",
+      completedTurnId: "turn-a",
+    };
+    const report = (item) => ({
+      connectionEpoch: 1,
+      runId: "run-a",
+      commandId: "command-a",
+      revision: 1,
+      status: "verifying",
+      threadId: "thread-a",
+      turnId: "turn-a",
+      terminal: true,
+      stopConfirmed: true,
+      batch: { currentIndex: 0, items: [item] },
+    });
+    assert.deepEqual(executionReportSchema.parse(report(item)), report(item));
+    assert.equal(
+      executionReportSchema.safeParse(report({ ...item, status: "failed" }))
+        .success,
+      false,
+    );
+    assert.equal(
+      executionReportSchema.safeParse(
+        report({ ...item, writeback: { status: "applied" } }),
+      ).success,
+      false,
+    );
   });
 }

@@ -7,9 +7,10 @@ import type {
   ExecutionSnapshot,
   RunnerEvent,
 } from "../shared/agent/contracts";
-import type { ExecutionAck, ExecutionReport } from "../shared/agent/execution";
+import type { ExecutionAck, ExecutionReport, ExecutionReconcileRequest, ExecutionReconcileTicket } from "../shared/agent/execution";
 import { digest } from "./store";
 import { RunnerError } from "./errors";
+import type { NativeRequestResponse } from "../shared/agent/permissions";
 
 export type NativeAck = Omit<ExecutionAck, "connectionEpoch">;
 export type NativeReport = Omit<ExecutionReport, "connectionEpoch">;
@@ -17,7 +18,21 @@ export type HeldRun = {
   runId: string;
   workspaceId: string;
   lockToken: string;
+  // Original claim identity survives a missing/expired transport lease.
+  leaseEpoch?: number;
   phase: "reserving" | "locked" | "claimed" | "releasing" | "local_release";
+};
+type ClaimIdentity = Pick<HeldRun, "runId" | "workspaceId" | "leaseEpoch" | "lockToken">;
+const claimIdentity = (claim: ClaimIdentity) => ({ runId: claim.runId, workspaceId: claim.workspaceId, leaseEpoch: claim.leaseEpoch, lockToken: claim.lockToken });
+export const sameExecutionClaim = (a: ClaimIdentity | undefined, b: ClaimIdentity) => !!a && digest(claimIdentity(a)) === digest(claimIdentity(b));
+const claimKey = (claim: ClaimIdentity) => digest(claimIdentity(claim));
+export type ReconciliationRequest = Omit<Extract<ExecutionReconcileRequest, { phase: "confirm" }>, "connectionEpoch">;
+export type NativeReconciliation = {
+  claim: { runId: string; workspaceId: string; leaseEpoch: number; lockToken: string };
+  ticket?: ExecutionReconcileTicket;
+  request?: ReconciliationRequest;
+  settled?: boolean;
+  error?: string;
 };
 export type JournalEntry = {
   envelope: CommandEnvelope;
@@ -42,6 +57,14 @@ type RunState = {
   reportSettled?: boolean;
 };
 type EventPage = { cursor: number; events: RunnerEvent[] };
+export type InteractionReceipt = {
+  responseId: string;
+  pendingRequestId: string;
+  runId: string;
+  hash: string;
+  status: "dispatching" | "applied" | "expired" | "cancelled";
+  acked: boolean;
+};
 
 /** Native side effects and their delivery receipts survive transport/process restarts. */
 export class ExecutionStore {
@@ -151,6 +174,93 @@ export class ExecutionStore {
         this.db.prepare("DELETE FROM state WHERE key='held'").run();
     });
   }
+  bindClaim(held: HeldRun, leaseEpoch: number) {
+    return this.transaction(() => {
+      const current = this.held();
+      if (!current || current.lockToken !== held.lockToken ||
+          (current.leaseEpoch !== undefined && current.leaseEpoch !== leaseEpoch))
+        throw new RunnerError("LEASE_MISMATCH", "原占用的租约身份已改变。");
+      const next = { ...current, leaseEpoch };
+      this.write("state", "held", next);
+      return next;
+    });
+  }
+  commandsForRun(runId: string): JournalEntry[] {
+    return this.db.prepare("SELECT data FROM commands WHERE json_extract(data,'$.envelope.runId')=?")
+      .all(runId).map(row => JSON.parse(String(row.data)));
+  }
+  reconciliation(claim: ClaimIdentity) {
+    const current = this.read<NativeReconciliation>("state", `reconciliation-claim:${claimKey(claim)}`);
+    if (current) return current;
+    // Retain the old record and its tombstones. It belongs only to the claim
+    // stored inside it, never to a later reply that happens to reuse runId.
+    const legacy = this.read<NativeReconciliation>("state", `reconciliation:${claim.runId}`);
+    return legacy && sameExecutionClaim(legacy.claim, claim) ? legacy : undefined;
+  }
+  private legacyManualBelongs(claim: ClaimIdentity) {
+    const legacy = this.read<NativeReconciliation>("state", `reconciliation:${claim.runId}`);
+    return sameExecutionClaim(legacy?.claim ?? this.held(), claim);
+  }
+  requestReconciliation(claim: ClaimIdentity) {
+    this.write("state", `manual-reconciliation-claim:${claimKey(claim)}`, true);
+  }
+  reconciliationRequested(claim: ClaimIdentity) {
+    return this.read<boolean>("state", `manual-reconciliation-claim:${claimKey(claim)}`) === true ||
+      (this.legacyManualBelongs(claim) && this.read<boolean>("state", `manual-reconciliation:${claim.runId}`) === true);
+  }
+  clearReconciliationRequest(claim: ClaimIdentity) {
+    this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation-claim:${claimKey(claim)}`);
+    if (this.legacyManualBelongs(claim))
+      this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation:${claim.runId}`);
+  }
+  beginReconciliation(held: HeldRun): NativeReconciliation {
+    return this.transaction(() => {
+      const current = this.held(), old = this.reconciliation(held);
+      if (!current || current.phase !== "claimed" || current.lockToken !== held.lockToken || !current.leaseEpoch)
+        throw new RunnerError("RECONCILIATION_REQUIRED", "缺少原占用与租约记录，不能声明已停止。");
+      const claim = { runId: current.runId, workspaceId: current.workspaceId, leaseEpoch: current.leaseEpoch, lockToken: current.lockToken };
+      if (old && digest(old.claim) !== digest(claim))
+        throw new RunnerError("LEASE_MISMATCH", "核对记录不属于当前占用。");
+      if (old) return old;
+      const record = { claim };
+      // Freeze BEFORE inspect: its server-side seal may commit without an ACK.
+      this.write("state", `reconciliation-claim:${claimKey(held)}`, record);
+      return record;
+    });
+  }
+  saveReconciliation(claim: ClaimIdentity, patch: Partial<Omit<NativeReconciliation, "claim">>) {
+    return this.transaction(() => {
+      const old = this.reconciliation(claim);
+      if (!old) throw new RunnerError("RECONCILIATION_REQUIRED", "缺少持久核对记录。");
+      if (patch.request) {
+        const key = `reconciliation-request:${patch.request.requestId}`;
+        const prior = this.read<ReconciliationRequest>("state", key);
+        if (prior && digest(prior) !== digest(patch.request))
+          throw new RunnerError("IDEMPOTENCY_KEY_REUSED", "停止证明请求不能更改。");
+        this.write("state", key, patch.request);
+      }
+      if (patch.ticket)
+        this.write("state", `sealed-command:${patch.ticket.originalCommandId}`, { claim: old.claim, runId: claim.runId, snapshotHash: patch.ticket.snapshotHash });
+      const next = { ...old, ...patch };
+      this.write("state", `reconciliation-claim:${claimKey(claim)}`, next);
+      return next;
+    });
+  }
+  assertClaimCurrent(claim: ClaimIdentity, commandId?: string) {
+    if (!sameExecutionClaim(this.held(), claim))
+      throw new RunnerError("LEASE_MISMATCH", "原执行占用已改变，不能使用后来的租约或目录锁。");
+    if (commandId) {
+      const command = this.command(commandId);
+      if (this.run(claim.runId)?.latest !== commandId || command?.envelope.runId !== claim.runId ||
+          command.envelope.leaseEpoch !== claim.leaseEpoch)
+        throw new RunnerError("COMMAND_SUPERSEDED", "原执行命令已更改。");
+    }
+  }
+  assertDispatchAllowed(claim: ClaimIdentity, commandId: string) {
+    this.assertClaimCurrent(claim, commandId);
+    if (this.held()?.phase !== "claimed" || this.reconciliation(claim) || this.reconciliationRequested(claim) || this.read("state", `sealed-command:${commandId}`))
+      throw new RunnerError("COMMAND_SEALED", "运行正在核对或已经封存，不能发送新的轮次。");
+  }
   command(commandId: string) {
     return this.read<JournalEntry>("commands", commandId);
   }
@@ -160,6 +270,21 @@ export class ExecutionStore {
   latest(runId: string) {
     const state = this.run(runId);
     return state && this.command(state.latest);
+  }
+  checkpointRecovery(runId:string) {
+    return this.read<{commandId:string;turnId:string}>("state",`checkpoint-recovery:${runId}`);
+  }
+  stopIntent(runId:string) {
+    return this.read<{reason:string;commandId:string|null}>("state",`stop-intent:${runId}`);
+  }
+  recordStopIntent(runId:string,reason:string,commandId:string|null) {
+    this.write("state",`stop-intent:${runId}`,{reason,commandId});
+  }
+  markCheckpointRecovery(runId:string,commandId:string,turnId:string) {
+    this.write("state",`checkpoint-recovery:${runId}`,{commandId,turnId});
+  }
+  clearCheckpointRecovery(runId:string) {
+    this.db.prepare("DELETE FROM state WHERE key=?").run(`checkpoint-recovery:${runId}`);
   }
   accept(envelope: CommandEnvelope, snapshot: ExecutionSnapshot) {
     return this.transaction(() => {
@@ -176,6 +301,12 @@ export class ExecutionStore {
         return old;
       }
       const prior = this.run(envelope.runId);
+      const settledRevision = Math.max(0, ...this.db.prepare(
+        "SELECT data FROM state WHERE (key LIKE 'reconciliation-claim:%' OR key=?) AND json_extract(data,'$.claim.runId')=? AND json_extract(data,'$.settled')=1",
+      ).all(`reconciliation:${envelope.runId}`, envelope.runId).map(row => {
+        const recovery = JSON.parse(String(row.data)) as NativeReconciliation;
+        return recovery.request?.report.revision ?? 0;
+      }));
       const command = envelope.payload;
       const startedAt =
         command.type === "cancel_run" ||
@@ -197,7 +328,12 @@ export class ExecutionStore {
       this.write("runs", envelope.runId, {
         ...prior,
         latest: envelope.commandId,
-        revision: prior?.revision ?? 0,
+        revision: Math.max(prior?.revision ?? 0, settledRevision),
+        // A confirmed reconciliation is also the server's report watermark.
+        // Keep the old payload intact, but retire its superseded outbox entry
+        // so a later authorized reply can report above that committed revision.
+        ...(prior?.report && prior.report.revision <= settledRevision
+          ? { reportSent: true, reportSettled: false } : {}),
       } satisfies RunState);
       return entry;
     });
@@ -244,6 +380,8 @@ export class ExecutionStore {
     });
   }
   interruptOnce(key: string) {
+    // This legacy row records stop intent only. The executor must reconcile
+    // the target after a new connection; insertion is not a delivery receipt.
     return !!this.db
       .prepare("INSERT OR IGNORE INTO interrupts VALUES (?)")
       .run(key).changes;
@@ -255,6 +393,57 @@ export class ExecutionStore {
       )
       .get();
     return row ? String(row.run_id) : undefined;
+  }
+  beginInteractionResponse(input: NativeRequestResponse): {
+    receipt: InteractionReceipt;
+    created: boolean;
+  } {
+    const key = `interaction-response:${input.responseId}`,
+      hash = digest(input);
+    return this.transaction(() => {
+      const previous = this.read<InteractionReceipt>("state", key);
+      if (previous) {
+        if (previous.hash !== hash)
+          throw new RunnerError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "审批响应编号已被不同内容使用。",
+          );
+        return { receipt: previous, created: false };
+      }
+      // Only identity, digest and delivery state persist; answers and wire IDs
+      // never do. The marker fences the following non-idempotent RPC response.
+      const receipt: InteractionReceipt = {
+        responseId: input.responseId,
+        pendingRequestId: input.pendingRequestId,
+        runId: input.runId,
+        hash,
+        status: "dispatching",
+        acked: false,
+      };
+      this.write("state", key, receipt);
+      return { receipt, created: true };
+    });
+  }
+  finishInteractionResponse(
+    responseId: string,
+    status: Exclude<InteractionReceipt["status"], "dispatching">,
+  ) {
+    const key = `interaction-response:${responseId}`,
+      receipt = this.read<InteractionReceipt>("state", key);
+    if (receipt) this.write("state", key, { ...receipt, status });
+  }
+  unackedInteractionResponses(): InteractionReceipt[] {
+    return this.db
+      .prepare(
+        "SELECT data FROM state WHERE key LIKE 'interaction-response:%' AND json_extract(data,'$.acked')=0 LIMIT 20",
+      )
+      .all()
+      .map((row) => JSON.parse(String(row.data)));
+  }
+  acknowledgeInteractionResponse(responseId: string) {
+    const key = `interaction-response:${responseId}`,
+      receipt = this.read<InteractionReceipt>("state", key);
+    if (receipt) this.write("state", key, { ...receipt, acked: true });
   }
   eventState(runId: string) {
     const row = this.db

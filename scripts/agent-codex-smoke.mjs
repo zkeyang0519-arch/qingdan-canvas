@@ -188,7 +188,7 @@ try {
       );
       await writeFile(
         path.join(workspace, "AGENTS.md"),
-        "本目录是独立自动化接入验收项目。只处理当前消息指定的简单任务，直接执行，无需扩展设计。只可创建 task-a.txt 或 task-b.txt；其他文件只读。最终按消息给出的 outputSchema 返回 JSON。\n",
+        "本目录是独立自动化接入验收项目。只处理当前消息指定的简单任务，直接执行，无需扩展设计。只可创建 task-a.txt 或 task-b.txt；其他文件只读。使用轻单提供的回执工具记录结果，最终用自然语言回复。\n",
       );
       const git = (args) =>
         exec("git", ["-C", workspace, ...args], { windowsHide: true });
@@ -243,13 +243,13 @@ try {
       if (!run.terminal || !run.resultValid)
         throw Error(run.resultError ?? `运行 ${value.runId} 未在限时内完成。`);
       if (key !== "summary") {
+        if (run.result.outcome !== "done")
+          throw Error(`任务 ${key.toUpperCase()} 返回 ${run.result.outcome}：${[run.result.summary, ...(run.result.remainingIssues ?? [])].filter(Boolean).join("；")}`);
         const contents = (
           await readFile(path.join(workspace, `task-${key}.txt`), "utf8")
         ).replaceAll("\r\n", "\n");
         if (contents !== `${key.toUpperCase()}:${ledger.token}\n`)
           throw Error(`task-${key}.txt 内容验收失败。`);
-        if (run.result.outcome !== "done")
-          throw Error(`任务返回 ${run.result.outcome}`);
       }
       const history = await adapter.readThread(run.threadId, "smoke-workspace");
       report.runs.push({

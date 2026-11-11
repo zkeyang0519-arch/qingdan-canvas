@@ -33,6 +33,13 @@ export type LeaseRecord = {
   expiresAt: number;
 };
 export type StoredReceipt = { status: "stored" | "rejected"; reason?: string };
+export type DeviceResetReceipt = {
+  ownerId: string;
+  runnerId: string;
+  serverOrigin: string;
+  revokedAuthEpoch: number;
+  completedAt: string;
+};
 /** Separate schema: never opens or changes the execution adapter's RunnerStore. */
 export class DeviceStore {
   private db: DatabaseSync;
@@ -73,6 +80,30 @@ export class DeviceStore {
     this.db.exec(
       "BEGIN IMMEDIATE;DELETE FROM metadata;DELETE FROM workspaces;DELETE FROM commands;DELETE FROM events;DELETE FROM leases;COMMIT;",
     );
+  }
+  resetReceipt(): DeviceResetReceipt | null {
+    const row = this.db
+      .prepare("SELECT data FROM metadata WHERE key='device-reset'")
+      .get();
+    return row ? JSON.parse(String(row.data)) : null;
+  }
+  clearForReset(expected: DeviceConfig, receipt: DeviceResetReceipt) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.config();
+      if (!current || digest(current) !== digest(expected))
+        throw new RunnerError("STALE_DEVICE", "电脑绑定已变化，请刷新后重试。");
+      this.db.exec(
+        "DELETE FROM metadata; DELETE FROM workspaces; DELETE FROM commands; DELETE FROM events; DELETE FROM leases;",
+      );
+      this.db
+        .prepare("INSERT INTO metadata VALUES ('device-reset',?)")
+        .run(JSON.stringify(receipt));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
   workspaces(): WorkspaceRecord[] {
     return this.db

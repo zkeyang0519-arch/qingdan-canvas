@@ -71,6 +71,23 @@ export class WorkspaceRegistry {
   list() {
     return this.store.workspaces().map(workspaceView);
   }
+  async assertUnoccupied() {
+    for (const record of this.store.workspaces()) {
+      try {
+        await stat(path.join(this.locksDir, hash(key(record.lockRoot))));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new RunnerError(
+          "RESET_STATE_UNKNOWN",
+          "无法核实项目目录占用，请保留设备状态。",
+        );
+      }
+      throw new RunnerError(
+        "WORKSPACE_BUSY",
+        "项目仍有活动或未确认停止的目录锁。",
+      );
+    }
+  }
   async register(input: {
     root: string;
     name?: string;

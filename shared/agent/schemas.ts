@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   AcceptanceCriterion,
   AgentCommand,
+  BatchItem,
   CommandEnvelope,
   ExecutionSnapshot,
   PlanTask,
@@ -13,6 +14,7 @@ import type {
 import { AgentValidationError } from "./errors";
 import { normalizeAgentDeadline } from "./deadlines";
 import { MAX_PLAN_TASKS, sortPlan } from "./sort-plan";
+import { approvalDetailsSchema, executionPermissionsSchema, inputQuestionSchema } from "./permissions";
 
 const id = z
   .string()
@@ -242,6 +244,8 @@ const verificationResult = z.strictObject({
     .nullable()
     .optional(),
   outputHash: hash.optional(),
+  failureKind: z.enum(["predicate", "command_exit", "timeout", "access_denied", "unsupported", "error"]).optional(),
+  message: z.string().max(1000).optional(),
 });
 export const runnerEventSchema = z
   .discriminatedUnion("type", [
@@ -275,7 +279,7 @@ export const runnerEventSchema = z
       ...eventBase,
       ...turnIdentity,
       type: z.literal("approval.requested"),
-      payload: z.strictObject({ requestId: id, description: text(8000) }),
+      payload: z.strictObject({ requestId: id, description: text(8000), details:approvalDetailsSchema.optional() }),
     }),
     z.strictObject({
       ...eventBase,
@@ -284,7 +288,7 @@ export const runnerEventSchema = z
       payload: z.strictObject({
         requestId: id,
         questions: z
-          .array(z.strictObject({ id, prompt: text(8000) }))
+          .array(inputQuestionSchema)
           .min(1)
           .max(20)
           .refine(
@@ -292,6 +296,12 @@ export const runnerEventSchema = z
             "Duplicate question identifiers",
           ),
       }),
+    }),
+    z.strictObject({
+      ...eventBase,
+      ...turnIdentity,
+      type:z.literal("request.resolved"),
+      payload:z.strictObject({requestId:id,status:z.enum(["responded","expired","cancelled"]),reason:z.string().max(1000).optional()}),
     }),
     z.strictObject({
       ...eventBase,
@@ -351,6 +361,7 @@ export const runnerEventSchema = z
   }) satisfies z.ZodType<RunnerEvent>;
 
 const snapshotBase = {
+  executionPermissions: executionPermissionsSchema.optional(),
   snapshotId: id,
   runId: id,
   ownerId: id,
@@ -377,6 +388,41 @@ const snapshotBase = {
     }),
   }),
 };
+const batchItemSchema = z.strictObject({
+  taskId: id,
+  text: taskFields.text,
+  instruction: taskFields.instruction,
+  acceptance: taskFields.acceptance,
+  source: z
+    .strictObject({
+      taskRef: taskRefSchema,
+      generation: revision.min(1),
+      specRevision: revision.min(1),
+    })
+    .optional(),
+}) satisfies z.ZodType<BatchItem>;
+const batchSchema = z.strictObject({
+  managed: z.literal(true).optional(),
+  items: z
+    .array(batchItemSchema)
+    .min(1)
+    .max(MAX_PLAN_TASKS)
+    .refine(
+      (items) => unique(items.map(({ taskId }) => taskId)),
+      "Duplicate batch task identifiers",
+    ),
+  autoComplete: z.boolean().optional(),
+});
+const orderedJson = (value: unknown) =>
+  JSON.stringify(value, (_, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
 export const executionSnapshotSchema = z
   .discriminatedUnion("kind", [
     z.strictObject({
@@ -388,9 +434,12 @@ export const executionSnapshotSchema = z
       ...snapshotBase,
       kind: z.literal("task"),
       task: taskSpecSchema,
+      batch: batchSchema.optional(),
     }),
   ])
   .superRefine((snapshot, ctx) => {
+    if(snapshot.kind === "summary" && snapshot.executionPermissions && snapshot.executionPermissions.profile !== "read_only")
+      ctx.addIssue({code:"custom",message:"Project summaries require read-only permissions"});
     if (snapshot.kind !== "task") return;
     const issue = (message: string) =>
       ctx.addIssue({ code: "custom", message });
@@ -398,13 +447,41 @@ export const executionSnapshotSchema = z
       issue("Stale task specifications cannot be dispatched");
     if (snapshot.task.dependsOn.includes(snapshot.task.taskRef.taskId))
       issue("A task cannot depend on itself");
-    for (const criterion of snapshot.task.acceptance) {
+    const first = snapshot.batch?.items[0];
+    if (
+      first &&
+      (first.taskId !== snapshot.task.taskRef.taskId ||
+        first.text !== snapshot.task.text ||
+        first.instruction !== snapshot.task.instruction ||
+        (first.source &&
+          (orderedJson(first.source.taskRef) !==
+            orderedJson(snapshot.task.taskRef) ||
+            first.source.specRevision !== snapshot.task.specRevision)) ||
+        orderedJson(first.acceptance) !== orderedJson(snapshot.task.acceptance))
+    )
+      issue("The first batch item must match the dispatched task");
+    if (snapshot.batch) {
+      const { items, autoComplete } = snapshot.batch;
+      if (autoComplete && items.some((item) => !item.source))
+        issue("Automatic completion requires checklist sources");
       if (
-        criterion.kind === "command" &&
-        !snapshot.allowedCheckIds.includes(criterion.checkId)
+        items.some(
+          ({ source, taskId }) =>
+            source &&
+            (source.taskRef.taskId !== taskId ||
+              source.taskRef.canvasId !== snapshot.task.taskRef.canvasId),
+        )
       )
-        issue("Acceptance command is not registered for this snapshot");
+        issue("Checklist source must identify its batch item and canvas");
     }
+    const tasks = snapshot.batch?.items ?? [snapshot.task];
+    for (const task of tasks)
+      for (const criterion of task.acceptance)
+        if (
+          criterion.kind === "command" &&
+          !snapshot.allowedCheckIds.includes(criterion.checkId)
+        )
+          issue("Acceptance command is not registered for this snapshot");
   }) satisfies z.ZodType<ExecutionSnapshot>;
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {

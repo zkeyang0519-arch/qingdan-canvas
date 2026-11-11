@@ -26,6 +26,7 @@
         "class_name": "CanvasRoom",
       },
       { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
+      { "name": "AGENT_CHATS", "class_name": "AgentChatRouter" },
     ],
   },
   "migrations": [
@@ -34,6 +35,7 @@
       "new_sqlite_classes": ["CanvasRoom"],
     },
     { "tag": "v2", "new_sqlite_classes": ["RunnerHub"] },
+    { "tag": "v3", "new_sqlite_classes": ["AgentChatRouter"] },
   ],
   "d1_databases": [
     {
@@ -54,6 +56,9 @@
     "MCP_ENABLED": "false",
     "RUNNER_ENABLED": "false",
     "EXECUTION_ENABLED": "false",
+    "CHAT_ENABLED": "false",
+    "PROJECT_SUMMARY_ENABLED": "false",
+    "BATCH_QUEUE_ENABLED": "false",
   },
   "observability": {
     "enabled": true,
@@ -64,11 +69,15 @@
       "MCP_ENABLED": "false",
       "RUNNER_ENABLED": "false",
       "EXECUTION_ENABLED": "false",
+      "CHAT_ENABLED": "false",
+      "PROJECT_SUMMARY_ENABLED": "false",
+      "BATCH_QUEUE_ENABLED": "false",
     },
     "durable_objects": {
       "bindings": [
         { "name": "ROOMS", "class_name": "CanvasRoom" },
         { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
+        { "name": "AGENT_CHATS", "class_name": "AgentChatRouter" },
       ],
     },
     "d1_databases": [

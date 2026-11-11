@@ -1,5 +1,6 @@
 // Shared DTOs only. Authentication, persistence and execution are implemented by
 // their owning services; parsing a DTO never grants authority to execute it.
+import type { ApprovalDetails, ExecutionPermissions, InputQuestion } from "./permissions";
 export type TaskRef = { canvasId: string; noteId: string; taskId: string };
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -180,6 +181,7 @@ export type MemoryRecord = {
   updatedAt: string;
 };
 type SnapshotBase = {
+  executionPermissions?: ExecutionPermissions;
   snapshotId: string;
   runId: string;
   ownerId: string;
@@ -203,8 +205,48 @@ type SnapshotBase = {
     };
   };
 };
+export type ChecklistSource = {
+  taskRef: TaskRef;
+  generation: number;
+  specRevision: number;
+};
+export type BatchItem = {
+  taskId: string;
+  text: string;
+  instruction: string;
+  acceptance: AcceptanceCriterion[];
+  source?: ChecklistSource;
+};
+export type BatchProgress = {
+  currentIndex: number;
+  items: {
+    taskId: string;
+    text: string;
+    status:
+      | "pending"
+      | "running"
+      | "done"
+      | "blocked"
+      | "needs_input"
+      | "failed"
+      | "cancelled";
+    summary: string;
+    completedTurnId?: string;
+    writeback?: {
+      status: "pending" | "applied" | "conflict" | "failed" | "disabled";
+      message?: string;
+    };
+  }[];
+};
 export type ExecutionSnapshot = SnapshotBase &
-  ({ kind: "summary"; task: null } | { kind: "task"; task: TaskSpec });
+  (
+    | { kind: "summary"; task: null }
+    | {
+        kind: "task";
+        task: TaskSpec;
+        batch?: { items: BatchItem[]; autoComplete?: boolean; managed?: true };
+      }
+  );
 export type RunOutcome = {
   runId: string;
   taskId: string | null;
@@ -256,17 +298,20 @@ export type VerificationResult = {
   evidenceRefs: string[];
   exitCode?: number | null;
   outputHash?: string;
+  failureKind?: "predicate" | "command_exit" | "timeout" | "access_denied" | "unsupported" | "error";
+  message?: string;
 };
 export type RunnerEventPayloads = {
   "run.accepted": { status: "queued" | "preparing" };
   "thread.created": Record<string, never>;
   "turn.started": Record<string, never>;
   "output.delta": { text: string };
-  "approval.requested": { requestId: string; description: string };
+  "approval.requested": { requestId: string; description: string; details?: ApprovalDetails };
   "input.requested": {
     requestId: string;
-    questions: { id: string; prompt: string }[];
+    questions: InputQuestion[];
   };
+  "request.resolved": { requestId: string; status:"responded"|"expired"|"cancelled"; reason?:string };
   "turn.completed": {
     status: "completed" | "failed" | "interrupted";
     outcome: RunOutcome | null;
