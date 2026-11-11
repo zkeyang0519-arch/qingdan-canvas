@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { browserLocks } from "./fixtures/browser-locks.mjs";
 
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8788",
@@ -19,6 +20,11 @@ Object.assign(globalThis, {
 Object.defineProperty(globalThis, "navigator", {
   value: dom.window.navigator,
   configurable: true,
+});
+test.beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+  navigator.locks = browserLocks();
 });
 const { createRoot } = await import("react-dom/client");
 const dir = mkdtempSync(resolve("node_modules/.cache/agent-batch-ui-"));

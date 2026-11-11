@@ -93,7 +93,32 @@ const click = async (el) => {
 };
 test.beforeEach(() => {
   sessionStorage.clear();
+  localStorage.clear();
   root = createRoot(document.getElementById("root"));
+});
+
+test("legacy project and batch targets survive a fresh browser session without submitting work", async () => {
+  const key = 'qingdan.agent-workspace:["owner","room"]';
+  sessionStorage.setItem(`${key}:project`, JSON.stringify("b"));
+  sessionStorage.setItem(
+    `${key}:batches`,
+    JSON.stringify({
+      b: {
+        sectionId: "b",
+        bindingId: "binding-b",
+        bindingRevision: 1,
+        runId: "saved-b",
+      },
+    }),
+  );
+  await act(async () => root.render(React.createElement(AgentWorkspace, opts)));
+  assert.equal(document.querySelector("[data-batch]").dataset.run, "saved-b");
+  await act(async () => root.unmount());
+  sessionStorage.clear();
+  root = createRoot(document.getElementById("root"));
+  await act(async () => root.render(React.createElement(AgentWorkspace, opts)));
+  assert.equal(document.querySelector("[data-chat]").dataset.chat, "b");
+  assert.equal(document.querySelector("[data-batch]").dataset.run, "saved-b");
 });
 test.afterEach(async () => {
   await act(async () => root.unmount());

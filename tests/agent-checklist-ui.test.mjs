@@ -1,4 +1,5 @@
 import test from "node:test";
+test.beforeEach(() => window.localStorage.clear());
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";

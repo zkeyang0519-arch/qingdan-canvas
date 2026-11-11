@@ -20,23 +20,10 @@ import DiagnosisPanel from "./DiagnosisPanel.jsx";
 import PendingBatchNotice from "./PendingBatchNotice.jsx";
 import WorkspaceDrawer from "./WorkspaceDrawer.jsx";
 import CodexSessionPicker from "./CodexSessionPicker.jsx";
+import { useWorkspaceDraft } from "./workspace-state.js";
 import "./experience.css";
 import "./agent.css";
 
-function readSaved(key, fallback) {
-  try {
-    return JSON.parse(sessionStorage.getItem(key)) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-function writeSaved(key, value) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* This view still works without browser storage. */
-  }
-}
 function validTarget(target) {
   return (
     target &&
@@ -50,14 +37,13 @@ function validTarget(target) {
     target.bindingRevision > 0
   );
 }
-function readTargets(key) {
-  const saved = readSaved(key, {});
-  return Object.fromEntries(
-    Object.entries(
-      saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {},
-    ).filter(([id, target]) => validTarget(target) && target.sectionId === id),
+const validTargets = (value) =>
+  value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.entries(value).every(
+    ([id, target]) => validTarget(target) && target.sectionId === id,
   );
-}
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const countTasks = (page) => ({
   total: page?.tasks?.length || 0,
@@ -150,19 +136,21 @@ function WorkspaceScope({
 }) {
   const scope = JSON.stringify([userId, roomId]);
   const storage = `qingdan.agent-workspace:${scope}`;
-  const [selected, setSelected] = useState(
-    () =>
-      (startAtBatch && validTarget(initialBatchTarget)
-        ? initialBatchTarget.sectionId
-        : readSaved(storage + ":project", "")) ||
-      (validTarget(initialBatchTarget) ? initialBatchTarget.sectionId : ""),
+  const [selected, setSelected, projectStorage] = useWorkspaceDraft(
+    storage + ":project",
+    validTarget(initialBatchTarget) ? initialBatchTarget.sectionId : "",
+    true,
+    {
+      storageKey: storage + ":project",
+      validate: (value) => typeof value === "string" && value.length <= 256,
+    },
   );
-  const [targets, setTargets] = useState(() => ({
-    ...readTargets(storage + ":batches"),
-    ...(validTarget(initialBatchTarget)
-      ? { [initialBatchTarget.sectionId]: initialBatchTarget }
-      : {}),
-  }));
+  const [targets, setTargets, targetStorage] = useWorkspaceDraft(
+    storage + ":batches",
+    {},
+    true,
+    { storageKey: storage + ":batches", validate: validTargets },
+  );
   const [mobilePane, setMobilePane] = useState(startAtBatch ? "tasks" : "chat");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -204,19 +192,17 @@ function WorkspaceScope({
   }, []);
 
   useEffect(() => {
-    if (pageId) writeSaved(storage + ":project", pageId);
+    if (pageId) setSelected(pageId);
   }, [storage, pageId]);
   useEffect(() => {
-    writeSaved(storage + ":batches", targets);
-  }, [storage, targets]);
-  useEffect(() => {
     if (!validTarget(initialBatchTarget)) return;
+    if (startAtBatch) setSelected(initialBatchTarget.sectionId);
     setTargets((prior) =>
       same(prior[initialBatchTarget.sectionId], initialBatchTarget)
         ? prior
         : { ...prior, [initialBatchTarget.sectionId]: initialBatchTarget },
     );
-  }, [initialBatchTarget]);
+  }, [initialBatchTarget, startAtBatch]);
   useEffect(() => {
     let active = true,
       reading = false;
@@ -395,6 +381,11 @@ function WorkspaceScope({
         </div>
       </aside>
       <div className="agent-workspace-main">
+        {(projectStorage.warning || targetStorage.warning) && (
+          <p className="agent-error" role="alert">
+            {projectStorage.warning || targetStorage.warning}
+          </p>
+        )}
         <header className="agent-workspace-header">
           <div className="agent-workspace-heading">
             <h1>{page?.title || "开始你的第一个项目"}</h1>

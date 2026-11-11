@@ -1,12 +1,14 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { currentNativeRequests } from "./PermissionControls.jsx";
+import { useWorkspaceDraft } from "./workspace-state.js";
 import "./experience.css";
 
-function readTarget(key) {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(key));
-    return value &&
+function validTarget(value) {
+  return (
+    value === null ||
+    !!(
+      value &&
       ["runId", "bindingId", "sectionId"].every(
         (field) =>
           typeof value[field] === "string" &&
@@ -15,33 +17,15 @@ function readTarget(key) {
       ) &&
       Number.isSafeInteger(value.bindingRevision) &&
       value.bindingRevision > 0
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
+    )
+  );
 }
 export function useObservedBatchTarget(userId, roomId) {
   const key = `qingdan.observed-batch:${JSON.stringify([userId, roomId])}`;
-  const [state, setState] = useState(() => ({ key, target: readTarget(key) }));
-  useEffect(() => setState({ key, target: readTarget(key) }), [key]);
-  const select = useCallback(
-    (target) => {
-      setState((previous) =>
-        previous.key === key &&
-        JSON.stringify(previous.target) === JSON.stringify(target)
-          ? previous
-          : { key, target },
-      );
-      try {
-        sessionStorage.setItem(key, JSON.stringify(target));
-      } catch {
-        /* Monitoring still works until refresh. */
-      }
-    },
-    [key],
-  );
-  return [state.key === key ? state.target : readTarget(key), select];
+  return useWorkspaceDraft(key, null, true, {
+    storageKey: key,
+    validate: validTarget,
+  });
 }
 
 export default function PendingBatchNotice({

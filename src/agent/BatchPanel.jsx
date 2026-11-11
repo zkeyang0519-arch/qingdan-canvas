@@ -2,6 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import {
+  useWorkspaceDraft,
+  useWorkspaceRequests,
+  workspaceScope,
+} from "./workspace-state.js";
+import {
   currentNativeRequests,
   NativeRequestPrompt,
   permissionLabel,
@@ -357,6 +362,8 @@ function BatchItems({ run, completed, cancelled, current }) {
 }
 
 function BoundBatch({
+  userId,
+  roomId,
   binding,
   page,
   initialTarget,
@@ -380,7 +387,20 @@ function BoundBatch({
     targetMatches ? "" : "项目关联已变化，请选择当前项目的批次。",
   );
   const [message, setMessage] = useState("");
-  const [followup, setFollowup] = useState("");
+  const [readError, setReadError] = useState("");
+  const scope = workspaceScope({
+    accountId: userId,
+    canvasId: roomId,
+    sectionId: page.id,
+    binding,
+    runId: selectedId || null,
+  });
+  const [followup, setFollowup, draftStorage] = useWorkspaceDraft(
+    `${scope}:followup`,
+    "",
+    !!selectedId,
+  );
+  const requests = useWorkspaceRequests(scope);
   const [confirmingStop, setConfirmingStop] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [responded, setResponded] = useState(new Map());
@@ -390,7 +410,10 @@ function BoundBatch({
   const currentId = useRef(initialId);
   const receivedTarget = useRef(initialId);
   const priorDetail = useRef(null);
-  const pending = useRef(new Map());
+  const readSequence = useRef(0);
+  const acceptedRead = useRef(0);
+  const acceptedHistory = useRef(0);
+  const settledRead = useRef(0);
   const valid = useCallback(
     (version) => alive.current && epoch.current === version,
     [],
@@ -411,7 +434,7 @@ function BoundBatch({
     [binding.bindingId, post],
   );
   const readRun = useCallback(
-    async (id, version) => {
+    async (id, version, order = ++readSequence.current) => {
       let prior =
         priorDetail.current?.run?.runId === id ? priorDetail.current : null;
       for (let pageIndex = 0; pageIndex < 5; pageIndex++) {
@@ -419,12 +442,27 @@ function BoundBatch({
           runId: id,
           afterSeq: prior?.nextAfterSeq || 0,
         });
-        if (!valid(version) || currentId.current !== id) return;
+        if (
+          !valid(version) ||
+          currentId.current !== id ||
+          order < acceptedRead.current
+        )
+          return;
         if (
           !isBatch(result.run) ||
           (result.run.bindingId && result.run.bindingId !== binding.bindingId)
         )
           throw Error("该记录不是当前清单的执行批次。");
+        const observed = priorDetail.current?.run;
+        if (
+          observed?.runId === id &&
+          ((Number.isFinite(observed.queue?.revision) &&
+            result.run.queue?.revision < observed.queue.revision) ||
+            (observed.updatedAt &&
+              result.run.updatedAt &&
+              result.run.updatedAt < observed.updatedAt))
+        )
+          return;
         const events = [
           ...new Map(
             [...(prior?.events || []), ...(result.events || [])].map(
@@ -438,6 +476,7 @@ function BoundBatch({
           truncated: prior?.truncated || result.truncated,
         };
         priorDetail.current = prior;
+        acceptedRead.current = order;
         setDetail(prior);
         setRuns((previous) =>
           previous.map((entry) => (entry.runId === id ? result.run : entry)),
@@ -449,36 +488,48 @@ function BoundBatch({
   );
   const refresh = useCallback(
     async (version) => {
-      const latest = await loadBinding();
-      if (!valid(version) || bindingKey(latest) !== bindingKey(binding)) return;
-      const history = await callCloud(
-        `${base}/runs?bindingId=${encodeURIComponent(binding.bindingId)}`,
-      );
-      if (!valid(version)) return;
-      const batches = (history.runs || []).filter(isBatch);
-      setRuns(batches);
-      let id = currentId.current;
-      if (!id && targetMatches && batches.length) {
-        id = batches[0].runId;
-        currentId.current = id;
-        setSelectedId(id);
+      const order = ++readSequence.current;
+      try {
+        const latest = await loadBinding();
+        if (!valid(version) || bindingKey(latest) !== bindingKey(binding))
+          return;
+        const history = await callCloud(
+          `${base}/runs?bindingId=${encodeURIComponent(binding.bindingId)}`,
+        );
+        if (!valid(version)) return;
+        const batches = (history.runs || []).filter(isBatch);
+        if (order >= acceptedHistory.current && order >= acceptedRead.current) {
+          acceptedHistory.current = order;
+          setRuns(batches);
+        }
+        let id = currentId.current;
+        if (!id && targetMatches && batches.length) {
+          id = batches[0].runId;
+          currentId.current = id;
+          setSelectedId(id);
+        }
+        if (id) await readRun(id, version, order);
+        if (valid(version) && order >= settledRead.current) {
+          settledRead.current = order;
+          setReadError("");
+        }
+      } catch (err) {
+        if (valid(version) && order >= settledRead.current) {
+          settledRead.current = order;
+          setReadError(err.message);
+        }
       }
-      if (id) await readRun(id, version);
     },
     [binding, callCloud, loadBinding, readRun, targetMatches, valid],
   );
   useEffect(() => {
     alive.current = true;
     const version = epoch.current;
-    void refresh(version).catch((err) => {
-      if (valid(version)) setError(err.message);
-    });
+    void refresh(version);
     const timer = window.setInterval(() => {
       if (working.current) return;
       const current = epoch.current;
-      void refresh(current).catch((err) => {
-        if (valid(current)) setError(err.message);
-      });
+      void refresh(current);
     }, 2500);
     return () => {
       alive.current = false;
@@ -496,12 +547,9 @@ function BoundBatch({
     setDetail(null);
     priorDetail.current = null;
     setError("");
-    setFollowup("");
     setConfirmingStop(false);
     setStopping(false);
-    void refresh(version).catch((err) => {
-      if (valid(version)) setError(err.message);
-    });
+    void refresh(version);
   }, [initialId, targetMatches, refresh, valid, busy]);
   const observedCallback = useRef(onRunChange);
   observedCallback.current = onRunChange;
@@ -549,25 +597,67 @@ function BoundBatch({
       if (valid(version)) setBusy(false);
     }
   }
-  async function sendStable(route, input, version) {
-    const key = JSON.stringify([route, input]);
-    if (!pending.current.has(key))
-      pending.current.set(key, { ...input, requestId: crypto.randomUUID() });
+  async function sendRecord(record, version) {
     try {
-      const body = pending.current.get(key);
-      const result = ["queue", "respond"].includes(route)
-        ? await post(route, body)
-        : await tool(route, body);
-      pending.current.delete(key);
-      return result;
+      const { path, method, body } = record.request;
+      const response = await callCloud(path, { method, body });
+      // A received ACK can settle its original scope even after navigation.
+      // Failure to persist that fact retains the exact retry identity.
+      await requests.resolve(record.requestId, "acknowledged").catch(() => {});
+      return path === `${base}/tools` ? response.result : response;
     } catch (err) {
-      if (err.status === 409) {
-        pending.current.delete(key);
-        await refresh(version);
-      }
+      if (err.status === 409) await refresh(version);
       throw err;
     }
   }
+  async function sendStable(route, input, version) {
+    const key = JSON.stringify([
+      route,
+      input.action || "",
+      input.expectedRevision ?? null,
+      input.pendingRequestId || "",
+    ]);
+    const record = await requests.prepare(
+      key,
+      (requestId) => ({
+        path: `${base}/${["queue", "respond"].includes(route) ? route : "tools"}`,
+        method: "POST",
+        body: ["queue", "respond"].includes(route)
+          ? { ...input, requestId }
+          : {
+              bindingId: binding.bindingId,
+              name: route,
+              arguments: { ...input, requestId },
+            },
+      }),
+      { safeStop: route === "codex_cancel_run" },
+    );
+    if (!valid(version)) return;
+    return sendRecord(record, version);
+  }
+  const retryOriginal = (record) =>
+    perform(async (version) => {
+      const body = record.request.body;
+      const prepared = await requests.prepare(
+        record.operationKey,
+        () => record.request,
+        { safeStop: body.name === "codex_cancel_run" },
+      );
+      if (!valid(version)) return;
+      await sendRecord(prepared, version);
+      if (!valid(version)) return;
+      if (body.name === "codex_cancel_run") {
+        setStopping(true);
+        setConfirmingStop(false);
+      }
+      if (
+        body.name === "codex_continue_run" &&
+        followup.trim() === body.arguments.message
+      )
+        setFollowup("");
+      setMessage("原操作已收到回执，正在核对当前执行。");
+      await refresh(version);
+    });
   const run = detail?.run;
   const queue = run?.queue;
   useEffect(() => {
@@ -685,7 +775,6 @@ function BoundBatch({
                 setSelectedId(id);
                 setDetail(null);
                 priorDetail.current = null;
-                setFollowup("");
                 setConfirmingStop(false);
                 setStopping(false);
                 void perform((version) => readRun(id, version));
@@ -719,6 +808,44 @@ function BoundBatch({
           {embedded ? <RefreshCw size={15} /> : "刷新批次"}
         </button>
       </div>
+      {(draftStorage.warning || requests.warning) && (
+        <p className="agent-error" role="alert">
+          {requests.warning || draftStorage.warning}
+        </p>
+      )}
+      {requests.records.length > 0 && (
+        <section
+          className="agent-pending-operations"
+          aria-label="待核对的批次操作"
+        >
+          <p className="agent-note">
+            有 {requests.records.length}{" "}
+            项操作尚未确认。重新打开页面不会自动重发，请先核对原执行。
+          </p>
+          {requests.records.map((record) => (
+            <div className="agent-actions" key={record.requestId}>
+              <span>
+                {record.request.body.name === "codex_continue_run"
+                  ? "补充说明"
+                  : record.request.body.name === "codex_cancel_run"
+                    ? "停止执行"
+                    : "批次操作"}
+              </span>
+              <button disabled={busy} onClick={() => perform(refresh)}>
+                核对原操作
+              </button>
+              <button disabled={busy} onClick={() => retryOriginal(record)}>
+                重试原操作
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
+      {readError && (
+        <p className="agent-error" role="alert">
+          {readError}
+        </p>
+      )}
       {error && (
         <p className="agent-error" role="alert">
           {error}
@@ -786,6 +913,7 @@ function BatchSection({
   const [error, setError] = useState("");
   const active = useRef(false);
   const sequence = useRef(0);
+  const acceptedBinding = useRef(0);
   const callCloud = useCallback(
     (route, options) =>
       requestCloud(route, {
@@ -800,7 +928,8 @@ function BatchSection({
     const result = await callCloud(
       `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(page.id)}`,
     );
-    if (!active.current || sequence.current !== version) return null;
+    if (!active.current || version < acceptedBinding.current) return null;
+    acceptedBinding.current = version;
     const next = result.binding?.enabled ? result.binding : null;
     setBinding((prior) =>
       bindingKey(prior) === bindingKey(next) ? prior : next,
@@ -854,6 +983,8 @@ function BatchSection({
     <BoundBatch
       key={bindingKey(binding)}
       {...{
+        userId,
+        roomId,
         binding,
         page,
         initialTarget,
