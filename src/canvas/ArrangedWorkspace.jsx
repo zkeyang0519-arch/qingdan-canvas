@@ -8,6 +8,7 @@ import React, {
   lazy,
   Suspense,
 } from "react";
+import OpeningPreparation from "../opening/OpeningPreparation.jsx";
 import {
   Archive,
   Check,
@@ -40,6 +41,9 @@ import {
   activatePane,
   choosePanePage,
   createChecklistPage,
+  canDeleteChecklistPage,
+  deleteChecklistPage,
+  renameChecklistPage,
   appendPageObjects,
   editPageBlock,
   insertPageBlocks,
@@ -953,9 +957,29 @@ export default function ArrangedWorkspace({
     pendingLocate = useRef(null),
     pendingAdd = useRef(false);
   const [selected, setSelected] = useState({ side: "left", keys: [] });
+  const [projectMenu, setProjectMenu] = useState(null);
   const [dialog, setDialog] = useState(null),
     [title, setTitle] = useState(""),
     [importing, setImporting] = useState(0);
+  const dialogPage = dialog?.pageId
+    ? writablePage(state, boardId, dialog.pageId)
+    : null;
+  const dialogEditable =
+    !blocked &&
+    !workspace.readOnly &&
+    (dialog?.type === "create" ||
+      !!dialogPage?.group ||
+      !!dialogPage?.objects.length);
+  const canDeletePage =
+    dialogEditable &&
+    !!dialogPage &&
+    canDeleteChecklistPage(state, boardId, dialogPage.id);
+  const canRenamePage =
+    dialogEditable && (!!dialogPage?.group || canDeletePage);
+  const pageTitle =
+    resolved.page?.group || resolved.page?.objects.length
+      ? resolved.page.title
+      : "项目清单";
   const [quickTaskLibraryOpen, setQuickTaskLibraryOpen] = useState(false);
   const quickTaskLibrary = useQuickTasks(libraryKey, quickTaskLibraryOpen);
   const modalDialog = dialog && dialog.type !== "deadline";
@@ -1003,6 +1027,7 @@ export default function ArrangedWorkspace({
       return;
     document.activeElement?.blur();
     onExit();
+    setProjectMenu(null);
     action();
   };
   const choose = (side, pageId) =>
@@ -1088,6 +1113,13 @@ export default function ArrangedWorkspace({
       setTitle(page.title);
       setDialog({ side, type: "rename", pageId: page.id });
     });
+  const removePage = () => {
+    if (!canDeletePage) return;
+    onExit();
+    update((s) => deleteChecklistPage(s, boardId, dialog.pageId));
+    setSelected({ side: "left", keys: [] });
+    setDialog(null);
+  };
   const currentPage = () => {
     const live = panePages(workspace.current.current, boardId);
     return live[live.active];
@@ -1307,7 +1339,7 @@ export default function ArrangedWorkspace({
     pendingLocate.current = null;
   });
   apiRef.current = {
-    isBlocked: () => !!dialog || blocked,
+    isBlocked: () => !!dialog || !!projectMenu || blocked,
     beforeNavigate: navigate,
     addNote: () => {
       if (resolved.view === "calendar") {
@@ -1482,15 +1514,20 @@ export default function ArrangedWorkspace({
         page={resolved.page}
         onChoose={(pageId) => choose("left", pageId)}
         onCreate={() => create("left")}
+        onRename={(page) => rename("left", page)}
+        onDelete={(page) =>
+          navigate(() => setDialog({ type: "delete", pageId: page.id }))
+        }
+        canEdit={(page) => !!writablePage(state, boardId, page.id)}
+        menu={projectMenu}
+        onMenuChange={setProjectMenu}
         readOnly={workspace.readOnly || blocked || !!dialog}
         panelId={panelId}
       />
       <div className="arranged-toolbar">
         <div className="arranged-project-heading">
           <Frame size={15} aria-hidden="true" />
-          <span title={resolved.page?.title}>
-            {resolved.page?.title || "项目清单"}
-          </span>
+          <span title={pageTitle}>{pageTitle}</span>
           {resolved.page?.group && (
             <>
               <button
@@ -1617,7 +1654,13 @@ export default function ArrangedWorkspace({
           id={panelId}
           aria-label={resolved.page?.title || "项目月历"}
         >
-          <Suspense fallback={<p role="status">正在加载月历…</p>}>
+          <Suspense
+            fallback={
+              <OpeningPreparation id="calendar" status="loading" reloadOnRetry>
+                <p role="status">正在加载月历…</p>
+              </OpeningPreparation>
+            }
+          >
             <DeadlineCalendar
               key={resolved.page?.id || "empty"}
               page={resolved.page}
@@ -1744,7 +1787,33 @@ export default function ArrangedWorkspace({
           e.target.value = "";
         }}
       />
-      {dialog && dialog.type !== "deadline" && (
+      {dialog?.type === "delete" && (
+        <Modal title="删除标签" onClose={() => setDialog(null)}>
+          <p>
+            「{dialogPage?.title || "此标签"}
+            」标签及其中的待办、图片和子分组将一起移入回收站，可在此浏览器的回收站恢复。
+          </p>
+          {!dialogEditable && (
+            <p role="status">当前标签无法修改，请关闭后重试。</p>
+          )}
+          {dialogEditable && !canDeletePage && (
+            <p role="status">标签内有锁定内容，请先解锁后再删除。</p>
+          )}
+          <div className="modal-actions">
+            <button className="button" onClick={() => setDialog(null)}>
+              取消
+            </button>
+            <button
+              className="button danger-button"
+              disabled={!canDeletePage}
+              onClick={removePage}
+            >
+              删除标签
+            </button>
+          </div>
+        </Modal>
+      )}
+      {(dialog?.type === "create" || dialog?.type === "rename") && (
         <Modal
           title={dialog.type === "create" ? "新建灵感板" : "重命名灵感板"}
           onClose={() => setDialog(null)}
@@ -1752,7 +1821,11 @@ export default function ArrangedWorkspace({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (!title.trim() || workspace.readOnly) return;
+              if (
+                !title.trim() ||
+                !(dialog.type === "create" ? dialogEditable : canRenamePage)
+              )
+                return;
               onExit();
               if (dialog.type === "create") {
                 update((s) => createChecklistPage(s, boardId, title));
@@ -1760,15 +1833,21 @@ export default function ArrangedWorkspace({
                 if (created?.type === "frame") choose(dialog.side, created.id);
               } else
                 update((s) =>
-                  writablePage(s, boardId, dialog.pageId)
-                    ? patchObjects(s, {
-                        [dialog.pageId]: { title: title.trim() },
-                      })
-                    : s,
+                  renameChecklistPage(s, boardId, dialog.pageId, title),
                 );
               setDialog(null);
             }}
           >
+            {dialog.type === "rename" && dialog.pageId === "ungrouped" && (
+              <p>重命名会将未分组内容整理为一个灵感板，保留内容和画布位置。</p>
+            )}
+            {dialog.type === "rename" && !canRenamePage && (
+              <p role="status">
+                {dialogEditable
+                  ? "标签内有锁定内容，请先解锁后再重命名。"
+                  : "当前标签无法修改，请关闭后重试。"}
+              </p>
+            )}
             <input
               className="text-field"
               autoFocus
@@ -1781,7 +1860,10 @@ export default function ArrangedWorkspace({
             <div className="modal-actions">
               <button
                 className="button primary"
-                disabled={!title.trim() || workspace.readOnly}
+                disabled={
+                  !title.trim() ||
+                  !(dialog.type === "create" ? dialogEditable : canRenamePage)
+                }
                 type="submit"
               >
                 {dialog.type === "create" ? "创建灵感板" : "保存名称"}

@@ -7,6 +7,7 @@ import {
   collectObjects,
 } from "../src/canvas/model.js";
 import { todoPages } from "../src/canvas/todoPages.js";
+import * as arranged from "../src/canvas/arranged-model.js";
 import { prepareEdit } from "../src/sync/workspace-changes.js";
 import { undoChanges } from "../src/sync/replica.js";
 import {
@@ -68,6 +69,100 @@ function fixture() {
   };
 }
 const pages = (f) => panePages(f.state, f.boardId);
+
+test("删除未分组保留其他项目、画布和默认收纳框，完整收纳额外箱子", () => {
+  const f = fixture();
+  const dock = f.state.objects.find((o) => o.type === "collection");
+  const loose = { ...createObject(f.boardId, "note"), id: "loose" };
+  const box = { ...createObject(f.boardId, "collection"), id: "loose-box" };
+  const stored = {
+    ...createObject(f.boardId, "note"),
+    id: "stored",
+    parentId: box.id,
+  };
+  const other = { ...createObject("other-board", "note"), id: "other" };
+  f.state.boards.push({ ...f.state.boards[0], id: "other-board" });
+  f.state.objects.push(loose, box, stored, other);
+  assert.equal(
+    arranged.canDeleteChecklistPage(f.state, f.boardId, "ungrouped"),
+    true,
+  );
+  const next = arranged.deleteChecklistPage(f.state, f.boardId, "ungrouped");
+  assert.deepEqual(
+    next.trash[0].objects.map((o) => o.id),
+    ["loose", "loose-box", "stored"],
+  );
+  for (const object of [f.left, f.right, f.note, dock, other])
+    assert.ok(next.objects.some((o) => o.id === object.id));
+  assert.equal(next.objects.find((o) => o.id === f.note.id).parentId, "left");
+});
+
+test("未分组箱子内锁定的后代阻止整批删除和重命名", () => {
+  const f = fixture();
+  const box = { ...createObject(f.boardId, "collection"), id: "loose-box" };
+  const stored = {
+    ...createObject(f.boardId, "note"),
+    id: "stored",
+    parentId: box.id,
+    locked: true,
+  };
+  f.state.objects.push(box, stored, {
+    ...createObject(f.boardId, "image"),
+    id: "loose-image",
+  });
+  assert.equal(
+    arranged.canDeleteChecklistPage(f.state, f.boardId, "ungrouped"),
+    false,
+  );
+  assert.strictEqual(
+    arranged.deleteChecklistPage(f.state, f.boardId, "ungrouped"),
+    f.state,
+  );
+  assert.strictEqual(
+    arranged.renameChecklistPage(f.state, f.boardId, "ungrouped", "旧内容"),
+    f.state,
+  );
+});
+
+test("未分组重命名保持箱子子层级和共享对象身份，拒绝空名和失效目标", () => {
+  const f = fixture();
+  const box = { ...createObject(f.boardId, "collection"), id: "loose-box" };
+  const stored = {
+    ...createObject(f.boardId, "note"),
+    id: "stored",
+    parentId: box.id,
+  };
+  f.state.objects.push(box, stored);
+  assert.strictEqual(
+    arranged.renameChecklistPage(f.state, f.boardId, "ungrouped", "  "),
+    f.state,
+  );
+  assert.strictEqual(
+    arranged.renameChecklistPage(f.state, f.boardId, "missing", "旧内容"),
+    f.state,
+  );
+  const next = arranged.renameChecklistPage(
+    f.state,
+    f.boardId,
+    "ungrouped",
+    "  旧内容  ",
+  );
+  const group = next.objects.find(
+    (o) => o.type === "frame" && o.title === "旧内容",
+  );
+  assert.ok(group);
+  assert.equal(next.objects.find((o) => o.id === box.id).parentId, group.id);
+  assert.equal(next.objects.find((o) => o.id === stored.id).parentId, box.id);
+  assert.deepEqual(
+    next.objects.find((o) => o.id === stored.id).blocks,
+    stored.blocks,
+  );
+  const shared = prepareEdit(next);
+  assert.equal(shared.find((o) => o.id === group.id).title, "旧内容");
+  assert.equal(shared.find((o) => o.id === box.id).parentId, group.id);
+  assert.equal(shared.find((o) => o.id === stored.id).parentId, box.id);
+  assert.equal(panePages(next, f.boardId).page.id, "left");
+});
 
 test("两栏始终显示同一项目，切换标签只修改本机偏好", () => {
   const f = fixture();

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { APP_PATH, appRoomPath } from "../src/navigation.js";
 
 // Exercise the actual App handlers with deferred HTTP responses. No DOM is needed
 // to reproduce the logout/login race; the component's JSX remains untouched.
@@ -20,6 +21,9 @@ function appHarness(api, href = "https://test.invalid/") {
     replaceState(_state, _title, path) {
       location.href = new URL(path, location.href).href;
     },
+    pushState(_state, _title, path) {
+      location.href = new URL(path, location.href).href;
+    },
   };
   const fn = new Function(
     "useState",
@@ -31,6 +35,8 @@ function appHarness(api, href = "https://test.invalid/") {
     "inviteLink",
     "history",
     "location",
+    "APP_PATH",
+    "appRoomPath",
     `${logic}\nreturn {create,logout,authenticated,join};`,
   );
   const app = fn(
@@ -52,6 +58,8 @@ function appHarness(api, href = "https://test.invalid/") {
     (id, token) => `https://test.invalid/?room=${id}#invite=${token}`,
     history,
     location,
+    APP_PATH,
+    appRoomPath,
   );
   return { app, states, location };
 }
@@ -78,7 +86,7 @@ test("退出并登录另一账号后，前一账号延迟创建的画布与邀�
   await pending;
   assert.ok(states.some((state) => state?.user?.id === userB.id));
   assert.equal(JSON.stringify(states).includes("private-a-"), false);
-  assert.equal(location.href, "https://test.invalid/");
+  assert.equal(location.href, "https://test.invalid/app");
 });
 
 test("登录过程中的旧列表请求迟到时，不会用新账号继续兑换旧邀请", async () => {

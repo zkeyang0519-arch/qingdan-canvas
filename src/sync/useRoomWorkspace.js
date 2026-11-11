@@ -23,6 +23,7 @@ export function useRoomWorkspace(room, user) {
   latestRoomName.current = room.name;
   const [state, setState] = useState(null),
     [status, setStatus] = useState("loading");
+  const [startupReady, setStartupReady] = useState(false);
   const [error, setError] = useState(""),
     [conflict, setConflict] = useState(null);
   const [members, setMembers] = useState([]),
@@ -66,13 +67,16 @@ export function useRoomWorkspace(room, user) {
       if (assets.current.has(assetId)) continue;
       try {
         let blob = await db.current.get("assets", `${room.id}/${assetId}`);
+        if (e.closed) return;
         if (!blob) {
           const response = await fetch(
             `/api/rooms/${room.id}/assets/${assetId}`,
             { headers: { "X-QD-Account": user.id } },
           );
+          if (e.closed) return;
           if (!response.ok) throw new Error("图片加载失败，点击重试。");
           blob = await response.blob();
+          if (e.closed) return;
           await db.current.put("assets", `${room.id}/${assetId}`, blob);
         }
         if (e.closed) return;
@@ -237,7 +241,12 @@ export function useRoomWorkspace(room, user) {
               setProfiles(message.profiles);
               void persist().catch(persistError);
             }
-          } else engine.current.receive(message);
+          } else {
+            engine.current.receive(message);
+            // Cached drafts render before the socket connects. Only a processed
+            // server snapshot establishes that the destination is prepared.
+            if (message.type === "snapshot") setStartupReady(true);
+          }
         } catch (err) {
           setError(err.message);
           setStatus("error");
@@ -329,6 +338,7 @@ export function useRoomWorkspace(room, user) {
           syncState,
         );
         await hydrate();
+        if (e.closed) return;
         connect();
         e.heartbeat = setInterval(() => {
           const ws = socket.current;
@@ -529,6 +539,7 @@ export function useRoomWorkspace(room, user) {
   };
   return {
     state,
+    startupReady,
     current,
     update,
     begin,

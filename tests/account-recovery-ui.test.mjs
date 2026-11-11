@@ -456,10 +456,14 @@ for (const fails of [false, true]) {
   });
 }
 
-test("注册确认期间防止重复提交，卸载后不广播登录也不触发回调", async (t) => {
+test("注册确认期间防止重复提交，卸载后通知当前会话重验但不触发旧回调", async (t) => {
   const pending = deferred(),
     authenticated = [];
   const announcement = localStorage.getItem("qingdan.account-change");
+  let revalidations = 0;
+  const revalidate = () => revalidations++;
+  window.addEventListener("qingdan-session-changed", revalidate);
+  t.after(() => window.removeEventListener("qingdan-session-changed", revalidate));
   let requests = 0;
   t.mock.method(globalThis, "fetch", async (url) => {
     requests++;
@@ -481,7 +485,8 @@ test("注册确认期间防止重复提交，卸载后不广播登录也不触�
     pending.resolve(response({ user: { id: "late-account" } }, 201)),
   );
   assert.equal(authenticated.length, 0);
-  assert.equal(localStorage.getItem("qingdan.account-change"), announcement);
+  assert.notEqual(localStorage.getItem("qingdan.account-change"), announcement);
+  assert.equal(revalidations, 1, "成功响应已改变 Cookie，当前页面需要重新读取会话");
 });
 
 test("等待注册邮件时重复点击当前标签页不会取消发送锁或清除密码", async (t) => {

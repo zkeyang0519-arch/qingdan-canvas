@@ -5,11 +5,13 @@ export default function ContextMenu({
   anchor,
   items,
   onClose,
+  returnFocus,
   label = "操作菜单",
 }) {
   const ref = useRef(null),
     previous = useRef(document.activeElement),
     [position, setPosition] = useState(anchor);
+  if (returnFocus) previous.current = returnFocus;
   useLayoutEffect(() => {
     const r = ref.current.getBoundingClientRect();
     setPosition({

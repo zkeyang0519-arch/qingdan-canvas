@@ -21,6 +21,12 @@ import AuthScreen from "./auth/AuthScreen.jsx";
 import ProfileSettings from "./auth/ProfileSettings.jsx";
 import McpConsent from "./auth/McpConsent.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
+import OpeningPreparation from "./opening/OpeningPreparation.jsx";
+import {
+  APP_PATH,
+  appRoomPath,
+  normalizeLegacyRoomLocation,
+} from "./navigation.js";
 import "./auth/auth.css";
 
 export default function App() {
@@ -52,17 +58,21 @@ export default function App() {
   const refresh = async () => {
     const started = epoch.current;
     const before = new Map(roomWrites.current);
-    const result = await api("/api/rooms");
+    const result = await api("/api/rooms", {
+      isCurrentSession: () => started === epoch.current,
+    });
     if (started === epoch.current)
       setRooms(result.rooms.map((item) => mergeRoomRead(item, before)));
   };
-  const enter = async (id) => {
+  const enter = async (id, { replace = false } = {}) => {
     const started = epoch.current;
     const before = new Map(roomWrites.current);
-    const result = await api(`/api/rooms/${id}`);
+    const result = await api(`/api/rooms/${encodeURIComponent(id)}`, {
+      isCurrentSession: () => started === epoch.current,
+    });
     if (started !== epoch.current) return;
     setRoom(mergeRoomRead(result.room, before));
-    history.replaceState(null, "", `/?room=${id}`);
+    history[replace ? "replaceState" : "pushState"](null, "", appRoomPath(id));
   };
   const authenticated = async (result) => {
     const started = ++epoch.current;
@@ -84,13 +94,14 @@ export default function App() {
         await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
           method: "POST",
           body: { invite: token },
+          isCurrentSession: () => started === epoch.current,
         });
         if (started !== epoch.current) return;
-        history.replaceState(null, "", `/?room=${encodeURIComponent(id)}`);
+        history.replaceState(null, "", appRoomPath(id));
       }
       if (id && token) await refresh();
       if (started !== epoch.current) return;
-      if (id) await enter(encodeURIComponent(id));
+      if (id) await enter(id, { replace: true });
     } catch (err) {
       if (started === epoch.current) setError(err.message);
     } finally {
@@ -98,16 +109,21 @@ export default function App() {
     }
   };
   useEffect(() => {
+    normalizeLegacyRoomLocation();
     let cancelled = false;
+    let preparing = true;
     void (async () => {
       try {
-        const result = await api("/api/session");
+        const result = await api("/api/session", {
+          isCurrentSession: () => !cancelled,
+        });
         if (cancelled) return;
         setSession(result);
         if (result.user) await authenticated(result);
       } catch (err) {
         if (!cancelled) setConnectionError(err.message);
       } finally {
+        preparing = false;
         if (!cancelled) {
           setInitializing(false);
           setBusy(false);
@@ -133,9 +149,12 @@ export default function App() {
       }
     };
     const focus = async () => {
+      if (cancelled || preparing) return;
       const started = epoch.current;
       try {
-        const result = await api("/api/session");
+        const result = await api("/api/session", {
+          isCurrentSession: () => !cancelled && started === epoch.current,
+        });
         if (
           !cancelled &&
           started === epoch.current &&
@@ -153,6 +172,7 @@ export default function App() {
     window.addEventListener("focus", focus);
     return () => {
       cancelled = true;
+      epoch.current++;
       window.removeEventListener("storage", switched);
       window.removeEventListener("qingdan-session-expired", expired);
       window.removeEventListener("focus", focus);
@@ -161,7 +181,10 @@ export default function App() {
   const logout = async () => {
     const started = epoch.current;
     await api("/api/auth/logout", { method: "POST", body: {} });
-    if (started !== epoch.current) return;
+    if (started !== epoch.current) {
+      announceAccountChange({ refreshCurrent: true });
+      return;
+    }
     epoch.current++;
     roomWrites.current.clear();
     identity.current = null;
@@ -173,7 +196,7 @@ export default function App() {
     setInvite("");
     setRenameTarget(null);
     setError("");
-    history.replaceState(null, "", "/");
+    history.replaceState(null, "", APP_PATH);
     announceAccountChange();
   };
   const act = async (action) => {
@@ -195,12 +218,13 @@ export default function App() {
       const result = await api("/api/rooms", {
         method: "POST",
         body: { name: roomName },
+        isCurrentSession: () => started === epoch.current,
       });
       if (started !== epoch.current) return;
       setInvite(inviteLink(result.room.id, result.invite));
       setRoom(result.room);
       setDialog(null);
-      history.replaceState(null, "", `/?room=${result.room.id}`);
+      history.pushState(null, "", appRoomPath(result.room.id));
     });
   };
   const join = async (event) => {
@@ -221,9 +245,10 @@ export default function App() {
       await api(`/api/rooms/${encodeURIComponent(id)}/join`, {
         method: "POST",
         body: { invite: token },
+        isCurrentSession: () => started === epoch.current,
       });
       if (started !== epoch.current) return;
-      await enter(encodeURIComponent(id));
+      await enter(id);
       if (started !== epoch.current) return;
       setDialog(null);
     });
@@ -249,19 +274,26 @@ export default function App() {
   };
   if (initializing)
     return (
-      <div className="loading-screen">
-        <LoaderCircle className="spin" />
-        <p>正在连接轻单…</p>
-      </div>
+      <OpeningPreparation status="loading">
+        <div className="loading-screen">
+          <LoaderCircle className="spin" />
+          <p>正在连接轻单…</p>
+        </div>
+      </OpeningPreparation>
     );
   if (!session?.user)
     return (
-      <AuthScreen
-        legacyRoomCount={session?.legacyRoomCount}
-        onAuthenticated={authenticated}
-        connectionError={connectionError}
-        onRetry={() => location.reload()}
-      />
+      <OpeningPreparation
+        status={connectionError ? "error" : "ready"}
+        error={connectionError}
+      >
+        <AuthScreen
+          legacyRoomCount={session?.legacyRoomCount}
+          onAuthenticated={authenticated}
+          connectionError={connectionError}
+          onRetry={() => location.reload()}
+        />
+      </OpeningPreparation>
     );
   if (consentRoute)
     return (
@@ -272,7 +304,7 @@ export default function App() {
         isCurrentSession={isCurrentSession}
         onFinish={(redirect) => {
           if (!isCurrentSession()) return;
-          history.replaceState(null, "", "/");
+          history.replaceState(null, "", APP_PATH);
           // Native-app callbacks can leave this tab open; render the normal home.
           void act(refresh);
           location.assign(redirect);
@@ -290,15 +322,19 @@ export default function App() {
         onLeave={() => {
           setRoom(null);
           setInvite("");
-          history.replaceState(null, "", "/");
+          history.pushState(null, "", APP_PATH);
           void act(refresh);
         }}
       />
     );
   return (
     <div className="home">
+      <OpeningPreparation
+        status={busy ? "loading" : error ? "error" : "ready"}
+        error={error}
+      />
       <header className="home-nav">
-        <a className="brand" href="/">
+        <a className="brand" href={APP_PATH}>
           <span className="brand-mark" />
           <span>轻单</span>
           <small>协作画布</small>

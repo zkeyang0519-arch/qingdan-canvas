@@ -1,9 +1,15 @@
+import { APP_PATH } from "./navigation.js";
+
 let activeAccount = null;
 export function setActiveAccount(id) {
   activeAccount = id;
 }
-export function announceAccountChange() {
+export function announceAccountChange({ refreshCurrent = false } = {}) {
   localStorage.setItem("qingdan.account-change", crypto.randomUUID());
+  // An unmounted auth form can still receive a response that changes cookies.
+  // Revalidate the active destination without restoring the old form's URL.
+  if (refreshCurrent)
+    window.dispatchEvent(new Event("qingdan-session-changed"));
 }
 export async function api(
   path,
@@ -46,7 +52,7 @@ export async function api(
   return result;
 }
 export function inviteLink(room, invite) {
-  const url = new URL("/", location.origin);
+  const url = new URL(APP_PATH, location.origin);
   url.searchParams.set("room", room);
   url.hash = new URLSearchParams({ invite }).toString();
   return url.href;

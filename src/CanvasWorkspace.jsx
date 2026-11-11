@@ -46,6 +46,8 @@ import {
 } from "./canvas/TaskAuthors.jsx";
 import UserAvatar from "./UserAvatar.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
+import OpeningPreparation from "./opening/OpeningPreparation.jsx";
+import { APP_PATH } from "./navigation.js";
 import {
   CollectionPanel,
   SearchPanel,
@@ -529,9 +531,21 @@ export default function CanvasWorkspace({
     if (share)
       sessionStorage.setItem(`qingdan.invite.${user.id}/${room.id}`, share);
   }, [user.id, room.id, share]);
+  const preparationError =
+    workspace.error ||
+    (workspace.status === "offline" ? "画布连接暂时中断，请重试。" : "");
+  const preparationStatus = workspace.startupReady
+    ? "ready"
+    : preparationError
+      ? "error"
+      : "loading";
   if (!state)
     return (
       <div className="loading-screen">
+        <OpeningPreparation
+          status={preparationStatus}
+          error={preparationError}
+        />
         <span className="brand-mark" />
         <p>{workspace.error || "正在打开画布…"}</p>
         <button onClick={onLeave}>返回画布列表</button>
@@ -557,6 +571,10 @@ export default function CanvasWorkspace({
       members={members}
       profiles={workspace.profiles}
     >
+      <OpeningPreparation
+        status={preparationStatus}
+        error={workspace.startupReady ? "" : preparationError}
+      />
       <TodoToolsProvider
         workspace={workspace}
         scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
@@ -589,7 +607,7 @@ export default function CanvasWorkspace({
               </button>
               <a
                 className="brand"
-                href="/"
+                href={APP_PATH}
                 onClick={(e) => {
                   e.preventDefault();
                   onLeave();
@@ -733,6 +751,7 @@ export default function CanvasWorkspace({
               </button>
               <button
                 className="primary share-button"
+                aria-label="邀请协作"
                 disabled={room.role !== "owner"}
                 title={
                   room.role === "owner"
@@ -742,7 +761,9 @@ export default function CanvasWorkspace({
                 onClick={() => void shareNow()}
               >
                 <Share2 size={16} />
-                邀请协作
+                <span className="share-label" aria-hidden="true">
+                  邀请<span className="share-label-detail">协作</span>
+                </span>
               </button>
             </div>
           </nav>

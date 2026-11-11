@@ -441,12 +441,25 @@
 .cloud-canvas .nav-start {
   gap: 14px;
 }
+.cloud-canvas .nav-end,
+.cloud-canvas .nav-start > :not(.board-title) {
+  flex-shrink: 0;
+}
 .cloud-canvas .topbar {
   padding: 0 20px;
   gap: 10px;
 }
+.cloud-canvas .view-mode-switch {
+  margin-left: auto;
+}
+.cloud-canvas .view-mode-switch button {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
 .board-title {
   font-size: 14px;
+  min-width: 0;
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -475,9 +488,14 @@
   animation: fade-dot 1s infinite;
 }
 .share-button {
+  flex-shrink: 0;
+  height: 36px;
+  min-width: 36px;
   font-size: 12px;
-  padding: 8px 12px;
+  padding: 0 12px;
   margin-left: 6px;
+  white-space: nowrap;
+  line-height: 1;
 }
 .canvas-toolbox {
   position: absolute;
@@ -715,10 +733,6 @@
     font-size: 0;
     gap: 0;
   }
-  .share-button {
-    padding: 8px;
-    font-size: 11px;
-  }
   .canvas-toolbox {
     left: 9px;
     top: auto;
@@ -779,6 +793,94 @@
 }
 @media (max-width: 600px) {
   .agent-nav-entry span {
+    display: none;
+  }
+}
+
+/* Shared header: let the title shrink before the action buttons. */
+@media (max-width: 1150px) {
+  .cloud-canvas .share-label-detail {
+    display: none;
+  }
+  .cloud-canvas .share-button {
+    margin-left: 0;
+  }
+  .cloud-canvas .sync-indicator,
+  .cloud-canvas .presence {
+    display: none;
+  }
+  .cloud-canvas .board-title {
+    max-width: 100px;
+  }
+  .cloud-canvas .nav-start {
+    gap: 7px;
+  }
+  .cloud-canvas .ops-nav-entry {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+  }
+  .cloud-canvas .ops-nav-entry > span {
+    display: none;
+  }
+}
+@media (max-width: 820px) {
+  .cloud-canvas .brand > span:last-child,
+  .cloud-canvas .view-mode-switch svg {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .cloud-canvas .board-title,
+  .cloud-canvas .nav-divider,
+  .cloud-canvas .brand,
+  .cloud-canvas .share-label {
+    display: none;
+  }
+  .cloud-canvas .topbar,
+  .cloud-canvas .nav-start {
+    gap: 4px;
+  }
+  .cloud-canvas .nav-end {
+    gap: 2px;
+  }
+  .cloud-canvas .view-mode-switch {
+    margin-left: 0;
+  }
+  .cloud-canvas .view-mode-switch button {
+    padding: 5px 7px;
+  }
+  .cloud-canvas .share-button {
+    width: 36px;
+    padding: 0;
+    gap: 0;
+  }
+}
+@media (max-width: 360px) {
+  .cloud-canvas .topbar {
+    padding: 0 4px;
+    gap: 2px;
+  }
+  .cloud-canvas .nav-start {
+    gap: 2px;
+  }
+  .cloud-canvas .view-mode-switch {
+    gap: 1px;
+    padding: 2px;
+  }
+  .cloud-canvas .view-mode-switch button {
+    padding: 5px;
+  }
+  .cloud-canvas .ops-nav-entry,
+  .cloud-canvas .help-button {
+    width: 30px;
+    padding: 0;
+  }
+  .cloud-canvas .author-avatar-toggle {
+    width: 36px;
+    height: 36px;
+  }
+  .cloud-canvas .author-avatar-toggle > span:first-child {
     display: none;
   }
 }

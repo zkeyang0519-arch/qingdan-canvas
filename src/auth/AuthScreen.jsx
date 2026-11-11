@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { APP_PATH } from "../navigation.js";
 import { ArrowRight, LockKeyhole, LayoutDashboard, Users } from "lucide-react";
 import { api, announceAccountChange } from "../api.js";
 import ForgotPassword from "./ForgotPassword.jsx";
@@ -130,7 +131,10 @@ export default function AuthScreen({
           }),
         },
       });
-      if (!current(action)) return;
+      if (!current(action)) {
+        announceAccountChange({ refreshCurrent: true });
+        return;
+      }
       setPassword("");
       setConfirm("");
       setChallenge(null);
@@ -149,7 +153,7 @@ export default function AuthScreen({
   return (
     <div className="home auth-page">
       <header className="home-nav">
-        <a className="brand" href="/">
+        <a className="brand" href={APP_PATH}>
           <span className="brand-mark" />
           <span>轻单</span>
           <small>想法与行动，都有归处</small>

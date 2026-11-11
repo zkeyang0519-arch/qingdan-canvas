@@ -330,7 +330,7 @@ test("没有画布时有帮助信息，允许不可用，拒绝仍可提交并�
     canvas_ids: [],
     csrf: "csrf-from-server",
   });
-  assert.equal(location.pathname, "/");
+  assert.equal(location.pathname, "/app");
   assert.equal(location.search, "");
   assert.match(host.textContent, /我的画布/);
 });
@@ -645,7 +645,7 @@ test("读取授权失败可安全重试；请求的写入和离线权限默认�
   assert.deepEqual(requests.find((r) => r.method === "POST").body.scopes, [
     "qingdan:read",
   ]);
-  assert.equal(location.pathname, "/");
+  assert.equal(location.pathname, "/app");
 });
 
 test("失效授权只提示重新发起，不能再次提交或采用 URL 传来的回调", async (t) => {
