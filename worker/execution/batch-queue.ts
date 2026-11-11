@@ -49,16 +49,20 @@ export class BatchQueue {
     if(proof?.type!=="verification.completed")return view;
     return {...view,queue:{...view.queue,verification:{results:proof.payload.results}}};
   }
-  private async save(r:QueueRun) {
+  private prepare(r:QueueRun) {
     const previous=r.view.queue, next=this.view(r);
     if(previous && canonical({...previous,revision:0})!==canonical({...next,revision:0})) {r.queueState!.revision++;next.revision=r.queueState!.revision;}
     r.view.queue=next;r.view.updatedAt=new Date().toISOString();
+  }
+  private async save(r:QueueRun) {
+    this.prepare(r);
     await this.storage.put("exec:run:"+r.view.runId,r);
   }
   async initialize(r:QueueRun) { if(isManaged(r)){this.state(r);await this.save(r);} }
-  async cancel(r:QueueRun) {
+  async cancel(r:QueueRun,persist=true) {
     if(!isManaged(r))return;const q=this.state(r);
-    q.phase=r.view.terminal&&r.view.stopConfirmed?"cancelled":"cancel_requested";q.pauseRequested=true;q.reason="已请求停止剩余待办。";await this.save(r);
+    q.phase=r.view.terminal&&r.view.stopConfirmed?"cancelled":"cancel_requested";q.pauseRequested=true;q.reason="已请求停止剩余待办。";
+    if(persist)await this.save(r);else this.prepare(r);
   }
   async reply(r:QueueRun) {
     if(!isManaged(r))return;const q=this.state(r);
@@ -66,10 +70,10 @@ export class BatchQueue {
     check(!q.accepted[String(q.index)],"已验收的待办不能重复执行。",409);
     q.phase=q.pauseRequested?"pause_requested":"running";delete q.verificationTurn;delete q.reason;await this.save(r);
   }
-  async observe(r:QueueRun) {
+  async observe(r:QueueRun,persist=true) {
     if(!isManaged(r))return;
     const q=this.state(r), b=r.view.batch;
-    if(r.view.status==="cancelled"||r.view.status==="cancel_requested")return this.cancel(r);
+    if(r.view.status==="cancelled"||r.view.status==="cancel_requested")return this.cancel(r,persist);
     if(!b)return;
     const index=b.currentIndex;
     if(index!==q.index) {
@@ -85,7 +89,7 @@ export class BatchQueue {
     } else if(["blocked","needs_input","failed"].includes(item.status)||r.view.status==="reconciliation_required") {
       q.phase="blocked";q.reason=item.summary||r.view.error||"本项需要补充信息或重新核对执行状态。";
     } else if(!terminal(q.phase)&&q.phase!=="cancel_requested")q.phase=q.pauseRequested?"pause_requested":"running";
-    await this.save(r);
+    if(persist)await this.save(r);else this.prepare(r);
   }
   async control(r:QueueRun,input:QueueControl) {
     const q=this.state(r),key=`exec:queue-control:${r.principal.ownerId}:${input.requestId}`,digest=await hash({principal:r.principal,input});
@@ -105,11 +109,15 @@ export class BatchQueue {
         q.recovery={recoveryId:crypto.randomUUID(),revision:q.revision,commandId:r.view.commandId!,threadId:r.view.threadId!,completedTurnId:r.view.turnId!,index:q.index};
       } else delete q.reason;
     }
-    await this.save(r);
+    this.prepare(r);
+    const result={queue:(await this.decorate(r)).queue!};
+    // The accepted view is the immutable control receipt. Subsequent evidence
+    // reconciliation can advance the run, but cannot erase this request's CAS.
+    await this.storage.put({["exec:run:"+r.view.runId]:r,[key]:{hash:digest,...result}});
     // A UI operation may reconcile existing evidence/writeback, but never grants
     // a native permit or repeats execution. Only native batch-gate does that.
     if(input.action==="recover"&&q.phase!=="paused")await this.reconcile(r);
-    const result={queue:(await this.decorate(r)).queue!};await this.storage.put(key,{hash:digest,...result});return result;
+    return result;
   }
   private async assertRecoveryCheckpoint(r:QueueRun) {
     const q=this.state(r), item=r.view.batch?.items[q.index];
@@ -206,9 +214,14 @@ export class BatchQueue {
       const decision=result==="repair"?"repair":q.index+1===r.view.batch!.items.length?"finish":"advance";
       if(decision==="repair") {q.repairs[String(q.index)]=(q.repairs[String(q.index)]??0)+1;q.phase="running";}
       else if(decision==="advance")q.phase="running";
-      await this.save(r);
       const response:BatchGateResponse={decision,queueRevision:q.revision,permitId:crypto.randomUUID(),...(decision==="advance"?{nextIndex:q.index+1}:decision==="repair"?{nextIndex:q.index}:{}),...(decision==="repair"&&q.reason?{reason:q.reason}:{})};
-      q.permits[key]=response;await this.save(r);response.queueRevision=q.revision;await this.save(r);return response;
+      q.permits[key]=response;
+      this.prepare(r);
+      response.queueRevision=q.revision;
+      // Consumption and authorization are one durable fact. A crash must leave
+      // either no repair consumed or the exact permit available for redelivery.
+      await this.storage.put("exec:run:"+r.view.runId,r);
+      return response;
     }
     return {decision:result==="blocked"?"blocked":"wait",queueRevision:q.revision,...(q.reason?{reason:q.reason}:{})};
   }

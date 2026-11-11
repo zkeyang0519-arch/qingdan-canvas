@@ -247,6 +247,58 @@ export const executionReportSchema = z
       });
   });
 export type ExecutionReport = z.infer<typeof executionReportSchema>;
+const recoveryHash = z.string().regex(/^[a-f0-9]{64}$/);
+const stopEvidence = {
+  consumerHeld: z.literal(true),
+  claim: z.strictObject({ runId: id, workspaceId: id, leaseEpoch: revision, lockToken: id }),
+  journal: z.strictObject({ commandId: id, snapshotHash: recoveryHash, sealed: z.literal(true) }),
+};
+// These are attestations from the authenticated native consumer, not model
+// output. Native must hold its exclusive consumer and original durable claim,
+// seal the command against delayed delivery, and persist the proof before send.
+export const nativeStopProofSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("never_dispatched"), ...stopEvidence,
+    commandState: z.enum(["not_received", "staged", "dispatching", "rejected", "uncertain"]),
+    launchStage: z.enum(["absent", "prepared", "thread_requested", "thread_created"]),
+    turnStartRecorded: z.literal(false),
+  }),
+  z.strictObject({
+    kind: z.literal("native_stopped"), ...stopEvidence,
+    threadId: id, turnId: id,
+    turnsStopped: z.literal(true), backgroundTerminalsStopped: z.literal(true),
+  }),
+]);
+export type NativeStopProof = z.infer<typeof nativeStopProofSchema>;
+export const reconciliationReportSchema = z.strictObject({
+  runId: id, commandId: id, revision, threadId: id.nullable(), turnId: id.nullable(), error: z.string().max(2000).optional(),
+  status: z.literal("cancelled"), terminal: z.literal(true), stopConfirmed: z.literal(true),
+});
+export const executionReconcileSchema = z.discriminatedUnion("phase", [
+  z.strictObject({ connectionEpoch: revision, phase: z.literal("inspect"), runId: id, workspaceId: id, leaseEpoch: revision }),
+  z.strictObject({ connectionEpoch: revision, phase: z.literal("confirm"), runId: id, recoveryId: id, requestId: id, proof: nativeStopProofSchema, report: reconciliationReportSchema }),
+]);
+export type ExecutionReconcileRequest = z.infer<typeof executionReconcileSchema>;
+export interface ExecutionReconcileTicket {
+  recoveryId: string;
+  runId: string;
+  workspaceId: string;
+  originalCommandId: string;
+  currentCommandId: string;
+  leaseEpoch: number;
+  snapshotHash: string;
+  reportRevision: number;
+  threadId: string | null;
+  turnId: string | null;
+  // stop: explicit cancellation, expired or missing lease. inspect_only:
+  // observe already-stopped native work or seal never-dispatched work; do not
+  // interrupt turns/terminate terminals. Neither action grants execution.
+  action: "inspect_only" | "stop";
+}
+export type ExecutionReconcileResponse =
+  | { decision: "inspect"; ticket: ExecutionReconcileTicket }
+  | { decision: "settled"; runId: string; workspaceId: string; leaseEpoch: number }
+  | { ok: true; settled: true; recoveryId: string; runId: string; workspaceId: string; leaseEpoch: number; reportRevision: number };
 export type ExecutionAck = z.infer<typeof executionAckSchema>;
 export interface ExecutionAckResponse {
   ok: true;
