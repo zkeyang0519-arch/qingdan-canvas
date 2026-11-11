@@ -1,0 +1,262 @@
+TAP version 13
+# Subtest: standalone connection manager exists
+ok 1 - standalone connection manager exists
+  ---
+  duration_ms: 0.8676
+  type: 'test'
+  ...
+# Subtest: disconnect during configuration save cannot publish ready and schedules recovery
+ok 2 - disconnect during configuration save cannot publish ready and schedules recovery
+  ---
+  duration_ms: 239.7666
+  type: 'test'
+  ...
+# Subtest: concurrent probes share one process and expose separate successful checks
+ok 3 - concurrent probes share one process and expose separate successful checks
+  ---
+  duration_ms: 303.4884
+  type: 'test'
+  ...
+# Subtest: not logged in is not confused with disconnected and metadata remains readable
+ok 4 - not logged in is not confused with disconnected and metadata remains readable
+  ---
+  duration_ms: 202.6628
+  type: 'test'
+  ...
+# Subtest: diagnostics exclude executable paths, session titles and account details
+ok 5 - diagnostics exclude executable paths, session titles and account details
+  ---
+  duration_ms: 161.5277
+  type: 'test'
+  ...
+# Subtest: close while connecting cannot resurrect a connection
+ok 6 - close while connecting cannot resurrect a connection
+  ---
+  duration_ms: 1.8017
+  type: 'test'
+  ...
+# Subtest: corrupt preference file is surfaced and explicit reset recovers
+ok 7 - corrupt preference file is surfaced and explicit reset recovers
+  ---
+  duration_ms: 7.6546
+  type: 'test'
+  ...
+# Subtest: bounded Codex discovery exists
+ok 8 - bounded Codex discovery exists
+  ---
+  duration_ms: 0.826
+  type: 'test'
+  ...
+# Subtest: finds executables in PATH with spaces and deduplicates cached path
+ok 9 - finds executables in PATH with spaces and deduplicates cached path
+  ---
+  duration_ms: 9.8284
+  type: 'test'
+  ...
+# Subtest: expired cached path falls back to PATH
+ok 10 - expired cached path falls back to PATH
+  ---
+  duration_ms: 3.6662
+  type: 'test'
+  ...
+# Subtest: invalid manual path never silently switches to PATH
+ok 11 - invalid manual path never silently switches to PATH
+  ---
+  duration_ms: 2.5678
+  type: 'test'
+  ...
+# Subtest: rejects shell wrappers and relative manual paths
+ok 12 - rejects shell wrappers and relative manual paths
+  ---
+  duration_ms: 0.3593
+  type: 'test'
+  ...
+# Subtest: missing installation reports no candidates, not login error
+ok 13 - missing installation reports no candidates, not login error
+  ---
+  duration_ms: 0.1988
+  type: 'test'
+  ...
+# Subtest: kernel-backed single instance exists
+ok 14 - kernel-backed single instance exists
+  ---
+  duration_ms: 1.0628
+  type: 'test'
+  ...
+# Subtest: repeated launch reuses the live instance without a second owner
+ok 15 - repeated launch reuses the live instance without a second owner
+  ---
+  duration_ms: 17.7057
+  type: 'test'
+  ...
+# Subtest: stale runtime after process death does not block a new kernel owner
+ok 16 - stale runtime after process death does not block a new kernel owner
+  ---
+  duration_ms: 6.4358
+  type: 'test'
+  ...
+# Subtest: unresponsive existing instance is reported, never overwritten or killed
+ok 17 - unresponsive existing instance is reported, never overwritten or killed
+  ---
+  duration_ms: 121.4461
+  type: 'test'
+  ...
+# Subtest: release removes only this instance metadata and unlocks next launch
+ok 18 - release removes only this instance metadata and unlocks next launch
+  ---
+  duration_ms: 8.3869
+  type: 'test'
+  ...
+# Subtest: standalone Windows packager exists
+ok 19 - standalone Windows packager exists
+  ---
+  duration_ms: 1.3103
+  type: 'test'
+  ...
+# Subtest: refuses existing package directories without copying or deleting user state
+ok 20 - refuses existing package directories without copying or deleting user state
+  ---
+  duration_ms: 12.387
+  type: 'test'
+  ...
+# Subtest: package is self contained and excludes source-account state
+ok 21 - package is self contained and excludes source-account state
+  ---
+  duration_ms: 163.7371
+  type: 'test'
+  ...
+# Subtest: read-only Codex transport exists
+ok 22 - read-only Codex transport exists
+  ---
+  duration_ms: 0.9408
+  type: 'test'
+  ...
+# Subtest: closing during version discovery never spawns a later app-server
+ok 23 - closing during version discovery never spawns a later app-server
+  ---
+  duration_ms: 116.5357
+  type: 'test'
+  ...
+# Subtest: connects, checks account, reads metadata and paginates without executing
+ok 24 - connects, checks account, reads metadata and paginates without executing
+  ---
+  duration_ms: 231.8024
+  type: 'test'
+  ...
+# Subtest: decodes fragmented UTF-8 frames
+ok 25 - decodes fragmented UTF-8 frames
+  ---
+  duration_ms: 187.7767
+  type: 'test'
+  ...
+# Subtest: logged out and no sessions are valid distinct states
+ok 26 - logged out and no sessions are valid distinct states
+  ---
+  duration_ms: 360.0216
+  type: 'test'
+  ...
+# Subtest: classifies hang and closes owned child
+ok 27 - classifies hang and closes owned child
+  ---
+  duration_ms: 450.6772
+  type: 'test'
+  ...
+# Subtest: classifies malformed and closes owned child
+ok 28 - classifies malformed and closes owned child
+  ---
+  duration_ms: 157.8773
+  type: 'test'
+  ...
+# Subtest: classifies version and closes owned child
+ok 29 - classifies version and closes owned child
+  ---
+  duration_ms: 77.1451
+  type: 'test'
+  ...
+# Subtest: rejects invalid account schema
+ok 30 - rejects invalid account schema
+  ---
+  duration_ms: 145.7839
+  type: 'test'
+  ...
+# Subtest: classifies subprocess exit during request
+ok 31 - classifies subprocess exit during request
+  ---
+  duration_ms: 158.3544
+  type: 'test'
+  ...
+# Subtest: does not accept another thread as the selected project
+ok 32 - does not accept another thread as the selected project
+  ---
+  duration_ms: 155.0362
+  type: 'test'
+  ...
+# Subtest: protected loopback panel server exists
+ok 33 - protected loopback panel server exists
+  ---
+  duration_ms: 1.4749
+  type: 'test'
+  ...
+# Subtest: requires bearer even on loopback and does not disclose token in HTML
+ok 34 - requires bearer even on loopback and does not disclose token in HTML
+  ---
+  duration_ms: 64.8893
+  type: 'test'
+  ...
+# Subtest: rejects foreign Origin and Host, including with a valid bearer
+ok 35 - rejects foreign Origin and Host, including with a valid bearer
+  ---
+  duration_ms: 13.2357
+  type: 'test'
+  ...
+# Subtest: only fixed routes are available and bad JSON never starts a connection
+ok 36 - only fixed routes are available and bad JSON never starts a connection
+  ---
+  duration_ms: 20.5529
+  type: 'test'
+  ...
+# Subtest: rejects oversized bodies, invalid search and malformed selected IDs
+ok 37 - rejects oversized bodies, invalid search and malformed selected IDs
+  ---
+  duration_ms: 16.3647
+  type: 'test'
+  ...
+# Subtest: preserves Chinese program paths across split HTTP chunks
+ok 38 - preserves Chinese program paths across split HTTP chunks
+  ---
+  duration_ms: 21.9245
+  type: 'test'
+  ...
+# Subtest: panel connects, removes URL credential and displays a selected project
+ok 39 - panel connects, removes URL credential and displays a selected project
+  ---
+  duration_ms: 133.8166
+  type: 'test'
+  ...
+# Subtest: pagination stays with the submitted search when the input draft changes
+ok 40 - pagination stays with the submitted search when the input draft changes
+  ---
+  duration_ms: 60.3585
+  type: 'test'
+  ...
+# Subtest: session titles are treated as text and failed reads label retained results
+ok 41 - session titles are treated as text and failed reads label retained results
+  ---
+  duration_ms: 61.3826
+  type: 'test'
+  ...
+# Subtest: invalid manual path has a working return to automatic discovery
+ok 42 - invalid manual path has a working return to automatic discovery
+  ---
+  duration_ms: 62.3234
+  type: 'test'
+  ...
+1..42
+# tests 42
+# suites 0
+# pass 42
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2203.9798

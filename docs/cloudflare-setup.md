@@ -175,6 +175,8 @@ npm run deploy
 
 ### 下线 Agent 并保留已部署的数据
 
+本节描述生产 `main` 分支的 Agent 停用方式。本地 `feat/qingdan-mcp` 开发分支保留完整 Agent 页面、接口和真实 DO 实现，继续保留同一套迁移历史；停用兼容类保留为独立模块，不接入开发分支的 Worker 入口。生产下线提交与本地恢复提交分别管理。
+
 撤回 Agent 页面和接口时，线上已经应用的 Durable Object `v1`、`v2`、`v3` 迁移记录仍须保留。`RunnerHub` 和 `AgentChatRouter` 由 `worker/retired-agent.ts` 提供停用兼容类：请求返回 410，旧连接关闭，已有 alarm 不再执行或调度任务，不读取或修改历史业务数据。应用不再配置这两个类的绑定，也不提供 Agent 页面或业务接口。
 
 保留 D1 的 `0007_agent_bindings.sql` 和 `0008_execution_tokens.sql` 作为既有迁移历史。下线功能不需要删除数据库、存储对象或画布数据；不要用 `deleted_classes` 代替停用兼容类。删除类的迁移会永久删除对应命名空间的数据，详见 [Cloudflare 迁移说明](https://developers.cloudflare.com/durable-objects/reference/durable-object-class-migrations-legacy/)。
@@ -220,6 +222,14 @@ npm run db:preview
 `npm run deploy:check` 只验证生产配置的本地打包，不能验证预览资源是否已创建或云端部署权限。预览部署继续使用 `wrangler preview`；`wrangler deploy` 会发布生产站。
 
 配置依据：[预览配置](https://developers.cloudflare.com/workers/previews/configuration/)、[Durable Object 隔离](https://developers.cloudflare.com/workers/previews/resources/#durable-objects)、[预览 D1 迁移](https://developers.cloudflare.com/workers/previews/resources/#d1-migrations)。
+
+### Agent 版本发布与回滚
+
+本机安装与故障恢复入口见 [本机 Agent 安装](agent-installation.md)。当前安装器管理 checkout 中的本地 8790/8788 服务，不能把本机验收当作远程生产验收。
+
+Agent 发布应先在隔离预览环境完成：对正确 D1 应用全部待执行迁移，再发布匹配的 Worker/DO 代码，随后更新 Runner（使用 `runner/protocol-version.json` 固定的 Codex 版本）。最后才在预览环境启用对应功能开关，重新验证设备绑定、同批次逐项执行、断线和恢复。生产发布继续由用户手动执行。
+
+遇到故障先停止新增派单，保留 D1/DO、运行日志、设备凭据和原生会话记录，核对活动 run/thread/turn、租约及清单回执。不要删除数据或回退存储结构来强制解除占用；只有确认协议和存储兼容后才回滚 Worker/Runner。状态不明的原生执行保持阻断，不能把超时当作未执行而重发。
 
 ### 线上运行日志
 
