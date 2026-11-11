@@ -757,6 +757,13 @@ test("a definitive turn conflict refreshes the turn while an uncertain reply reu
     await edit("补充说明", "补上一行");
     f.conflictFollow();
     await click("发送补充说明");
+    assert.equal(document.querySelector('[aria-label="补充说明"]').value, "");
+    assert.equal(button("发送补充说明").disabled, true);
+    assert.equal(
+      document.querySelector('[aria-label="此前轮次 turn-1 的补充草稿"]').value,
+      "补上一行",
+    );
+    await edit("补充说明", "补上一行");
     await click("发送补充说明");
     let follow = f.calls.filter(
       (c) => c.options.body?.name === "codex_continue_run",

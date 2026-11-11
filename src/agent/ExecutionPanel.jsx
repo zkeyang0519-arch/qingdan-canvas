@@ -2,11 +2,48 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
 import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
-import { createWorkspaceRequests, workspaceScope } from "./workspace-state.js";
+import {
+  createWorkspaceRequests,
+  useWorkspaceDraft,
+  workspaceScope,
+} from "./workspace-state.js";
 
 const trialSection = "agent-execution-trial";
 // Uncertain submissions survive panel/selection changes within this page.
 const pendingCreates = new Map();
+const emptyDrafts = [{ id: 0, instruction: "", acceptance: "" }];
+const validDrafts = (value) =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.length <= MAX_PLAN_TASKS &&
+  new Set(value.map((item) => item?.id)).size === value.length &&
+  value.every(
+    (item) =>
+      Number.isSafeInteger(item?.id) &&
+      item.id >= 0 &&
+      typeof item.instruction === "string" &&
+      item.instruction.length <= 32000 &&
+      typeof item.acceptance === "string" &&
+      item.acceptance.length <= 4000,
+  );
+const validFollowups = (value) =>
+  value &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.entries(value).every(
+    ([turn, text]) => turn && typeof text === "string" && text.length <= 32000,
+  );
+const bindingKey = (binding) =>
+  JSON.stringify(
+    binding
+      ? [
+          binding.bindingId,
+          binding.revision,
+          binding.runnerId,
+          binding.workspaceId,
+        ]
+      : null,
+  );
 const statusText = {
   queued: "已排队，等待电脑接单",
   preparing: "正在准备",
@@ -51,7 +88,16 @@ const runStatus = (run) =>
 const clock = (time) =>
   time ? new Date(time).toLocaleString("zh-CN", { hour12: false }) : "";
 
-export default function ExecutionPanel({
+export default function ExecutionPanel(props) {
+  return (
+    <ExecutionSession
+      key={JSON.stringify([props.userId, props.roomId])}
+      {...props}
+    />
+  );
+}
+
+function ExecutionSession({
   roomId,
   userId,
   pages = [],
@@ -64,7 +110,10 @@ export default function ExecutionPanel({
   const [sectionId, setSectionId] = useState(
     initialPageId || pages[0]?.id || trialSection,
   );
-  const [binding, setBinding] = useState(null);
+  const contextKey = JSON.stringify([userId, roomId, sectionId]);
+  const [resolvedBinding, setResolvedBinding] = useState(null);
+  const binding =
+    resolvedBinding?.contextKey === contextKey ? resolvedBinding.binding : null;
   const [device, setDevice] = useState(null);
   const [project, setProject] = useState(null);
   const [local, setLocal] = useState(null);
@@ -75,10 +124,6 @@ export default function ExecutionPanel({
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState(null);
-  const [drafts, setDrafts] = useState([
-    { id: 0, instruction: "", acceptance: "" },
-  ]);
-  const [followup, setFollowup] = useState("");
   const [projectName, setProjectName] = useState("轻单测试项目");
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,7 +132,7 @@ export default function ExecutionPanel({
   const mounted = useRef(false),
     busyRef = useRef(false),
     epoch = useRef(0);
-  const nextDraftId = useRef(1);
+  const [trialPreset, setTrialPreset] = useState(null);
   const selected = useRef(""),
     details = useRef(null),
     activeBinding = useRef(null);
@@ -100,6 +145,80 @@ export default function ExecutionPanel({
     sectionId === trialSection ||
     pages.some((page) => page.id === sectionId) ||
     namedProjects.some((item) => item.sectionId === sectionId);
+  const draftReady =
+    !recoveryOnly &&
+    sectionValid &&
+    !!userId &&
+    !!roomId &&
+    !!binding?.bindingId &&
+    !!binding.runnerId &&
+    !!binding.workspaceId &&
+    Number.isSafeInteger(binding.revision);
+  const draftScope = workspaceScope({
+    accountId: userId,
+    canvasId: roomId,
+    sectionId,
+    binding,
+  });
+  const [drafts, setDrafts, draftStorage] = useWorkspaceDraft(
+    `${draftScope}:execution-tasks`,
+    emptyDrafts,
+    draftReady,
+    { validate: validDrafts },
+  );
+  const run = detail?.run;
+  const followupReady =
+    draftReady && run?.runId === selectedId && !!run?.turnId;
+  // Each turn retains its own text under this run's scope. A new turn never
+  // inherits an unsent message; prior drafts remain visible for manual review.
+  const [followups, setFollowups, followupStorage] = useWorkspaceDraft(
+    `${workspaceScope({ accountId: userId, canvasId: roomId, sectionId, binding, runId: selectedId || null })}:execution-followups`,
+    {},
+    followupReady,
+    { validate: validFollowups },
+  );
+  const followup =
+    followupReady && Object.hasOwn(followups, run.turnId)
+      ? followups[run.turnId]
+      : "";
+  const priorFollowups = followupReady
+    ? Object.entries(followups).filter(
+        ([turn, text]) => turn !== run.turnId && text.trim(),
+      )
+    : [];
+  const setFollowup = (next) => {
+    if (!followupReady) return;
+    const turnId = run.turnId;
+    setFollowups((current) => ({
+      ...current,
+      [turnId]:
+        typeof next === "function"
+          ? next(Object.hasOwn(current, turnId) ? current[turnId] : "")
+          : next,
+    }));
+  };
+  useEffect(() => {
+    const preset = trialPreset;
+    if (
+      !draftReady ||
+      preset?.sectionId !== sectionId ||
+      preset.workspaceId !== binding.workspaceId
+    )
+      return;
+    setTrialPreset(null);
+    setDrafts((current) =>
+      current.length === 1 && !current[0].instruction && !current[0].acceptance
+        ? [
+            {
+              ...current[0],
+              instruction:
+                "在当前测试项目中创建 hello.txt，内容为：你好，轻单 MCP！只修改这个文件。",
+              acceptance: "hello.txt 存在，内容为：你好，轻单 MCP！",
+            },
+          ]
+        : current,
+    );
+  }, [draftReady, draftScope, setDrafts, trialPreset]);
   const items = drafts.map(({ instruction, acceptance }) => ({
     instruction: instruction.trim(),
     acceptance: acceptance.trim(),
@@ -126,7 +245,6 @@ export default function ExecutionPanel({
     details.current = null;
     setSelectedId(id);
     setDetail(null);
-    setFollowup("");
     followPending.current = null;
   }, []);
 
@@ -181,13 +299,12 @@ export default function ExecutionPanel({
       const previousBinding = activeBinding.current;
       if (
         previousBinding &&
-        (previousBinding.bindingId !== nextBinding?.bindingId ||
-          previousBinding.revision !== nextBinding?.revision)
+        bindingKey(previousBinding) !== bindingKey(nextBinding)
       ) {
         selectRun("");
       }
       activeBinding.current = nextBinding;
-      setBinding(nextBinding);
+      setResolvedBinding({ contextKey, binding: nextBinding });
       setLocal(localResult.status === "fulfilled" ? localResult.value : null);
       if (localResult.status === "fulfilled")
         setProjectOptions({
@@ -240,7 +357,7 @@ export default function ExecutionPanel({
     mounted.current = true;
     const version = ++epoch.current;
     activeBinding.current = null;
-    setBinding(null);
+    setResolvedBinding(null);
     setDevice(null);
     setProject(null);
     setLoaded(false);
@@ -263,7 +380,7 @@ export default function ExecutionPanel({
     if (sectionValid) return;
     epoch.current++;
     activeBinding.current = null;
-    setBinding(null);
+    setResolvedBinding(null);
     setProject(null);
     setLoaded(false);
     selectRun("");
@@ -321,6 +438,7 @@ export default function ExecutionPanel({
     const trial = await localPost("/execution/trial", {
       projectName: projectName.trim(),
     });
+    if (!valid(version)) return;
     const workspaceId = trial.workspace?.workspaceId;
     const targetSection = `agent-execution-project-${workspaceId}`;
     if (
@@ -331,6 +449,7 @@ export default function ExecutionPanel({
       throw Error("项目创建结果不匹配，请刷新后重试。");
     const route = `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(targetSection)}`;
     const previous = (await requestCloud(route, { accountId: userId })).binding;
+    if (!valid(version)) return;
     if (
       !previous?.enabled ||
       previous.runnerId !== trial.runnerId ||
@@ -344,6 +463,7 @@ export default function ExecutionPanel({
         expectedRevision: previous?.revision ?? null,
       });
     }
+    if (!valid(version)) return;
     const nextLocal = await requestLocal("/status", { accountId: userId });
     if (!valid(version)) return;
     if (
@@ -358,31 +478,28 @@ export default function ExecutionPanel({
       accountId: userId,
       items: nextLocal.executionProjects,
     });
-    setDrafts((current) =>
-      current.length === 1 && !current[0].instruction && !current[0].acceptance
-        ? [
-            {
-              ...current[0],
-              instruction:
-                "在当前测试项目中创建 hello.txt，内容为：你好，轻单 MCP！只修改这个文件。",
-              acceptance: "hello.txt 存在，内容为：你好，轻单 MCP！",
-            },
-          ]
-        : current,
-    );
+    setTrialPreset({ sectionId: targetSection, workspaceId });
     setMessage(`项目“${trial.workspace.name}”已准备，可以编辑并提交待办。`);
     if (sectionId === targetSection) await refresh(version);
     else setSectionId(targetSection);
   }
   function addDraft() {
-    const id = nextDraftId.current++;
+    if (!draftReady) return;
     setDrafts((current) =>
       current.length < MAX_PLAN_TASKS
-        ? [...current, { id, instruction: "", acceptance: "" }]
+        ? [
+            ...current,
+            {
+              id: Math.max(...current.map((item) => item.id)) + 1,
+              instruction: "",
+              acceptance: "",
+            },
+          ]
         : current,
     );
   }
   function editDraft(id, field, value) {
+    if (!draftReady) return;
     setDrafts((current) =>
       current.map((item) =>
         item.id === id ? { ...item, [field]: value } : item,
@@ -390,6 +507,7 @@ export default function ExecutionPanel({
     );
   }
   function moveDraft(index, offset) {
+    if (!draftReady) return;
     setDrafts((current) => {
       const next = index + offset;
       if (next < 0 || next >= current.length) return current;
@@ -399,7 +517,7 @@ export default function ExecutionPanel({
     });
   }
   async function submit(kind, version) {
-    if (!binding || !sectionValid || !loaded) return;
+    if (!draftReady || !binding || !sectionValid || !loaded) return;
     if (kind === "task" && incompleteDraft)
       throw Error("请填写每项待办的执行要求和完成标准。");
     const target = {
@@ -425,10 +543,12 @@ export default function ExecutionPanel({
             workspaceId: binding.workspaceId,
           });
         }
+        if (!valid(version)) return;
         const intent = await cloudPost("/api/agent/execution/intents", {
           requestId: pending.requestId,
           ...target,
         });
+        if (!valid(version)) return;
         if (
           intent.input?.bindingId !== target.bindingId ||
           intent.input?.bindingRevision !== target.bindingRevision ||
@@ -444,6 +564,7 @@ export default function ExecutionPanel({
         throw err;
       }
     }
+    if (!valid(version)) return;
     const receipt = await callTool(
       binding.bindingId,
       "codex_create_run",
@@ -461,9 +582,11 @@ export default function ExecutionPanel({
   }
   async function sendFollowup(version) {
     const run = detail?.run;
-    if (recoveryOnly || !run?.turnId) return;
+    if (!followupReady || recoveryOnly || !run?.turnId || !followup.trim())
+      return;
     const mode = run.terminal ? "reply" : "steer";
-    const key = JSON.stringify([run.runId, followup.trim()]);
+    const text = followup.trim();
+    const key = JSON.stringify([draftScope, run.runId, run.turnId, mode, text]);
     if (followPending.current?.key !== key)
       followPending.current = {
         key,
@@ -471,7 +594,7 @@ export default function ExecutionPanel({
           requestId: crypto.randomUUID(),
           runId: run.runId,
           expectedTurnId: run.turnId,
-          message: followup.trim(),
+          message: text,
           mode,
         },
       };
@@ -490,7 +613,7 @@ export default function ExecutionPanel({
     }
     if (!valid(version)) return;
     followPending.current = null;
-    setFollowup("");
+    setFollowup((current) => (current.trim() === text ? "" : current));
     setMessage("补充说明已保存，将交给原来的 Codex 会话。");
     await readRun(run.runId, version, binding.bindingId);
   }
@@ -563,7 +686,6 @@ export default function ExecutionPanel({
     await readRun(run.runId, version, binding.bindingId);
   }
 
-  const run = detail?.run;
   const batch = run?.batch;
   const finished = batchFinished(run);
   const paused = batchPaused(run);
@@ -581,6 +703,7 @@ export default function ExecutionPanel({
     completion?.payload?.outcome?.summary ||
     completion?.payload?.summary?.overview;
   const canFollow =
+    followupReady &&
     !recoveryOnly &&
     run?.turnId &&
     !finished &&
@@ -609,6 +732,15 @@ export default function ExecutionPanel({
           {error}
         </p>
       )}
+      {[
+        ...new Set(
+          [draftStorage.warning, followupStorage.warning].filter(Boolean),
+        ),
+      ].map((warning) => (
+        <p className="agent-error" role="alert" key={warning}>
+          {warning}
+        </p>
+      ))}
       {message && (
         <p className="agent-success" role="status">
           {message}
@@ -706,7 +838,7 @@ export default function ExecutionPanel({
           <div className="agent-card-heading">
             <h4>编排待办</h4>
             <button
-              disabled={busy || drafts.length >= MAX_PLAN_TASKS}
+              disabled={busy || !draftReady || drafts.length >= MAX_PLAN_TASKS}
               onClick={addDraft}
             >
               添加待办
@@ -728,7 +860,7 @@ export default function ExecutionPanel({
                   placeholder="描述希望 Codex 在这个项目里完成的工作"
                   rows={3}
                   maxLength={32000}
-                  disabled={busy}
+                  disabled={busy || !draftReady}
                 />
               </label>
               <label>
@@ -744,28 +876,30 @@ export default function ExecutionPanel({
                   placeholder="写明你验收时要看到的结果"
                   rows={2}
                   maxLength={4000}
-                  disabled={busy}
+                  disabled={busy || !draftReady}
                 />
               </label>
               {drafts.length > 1 && (
                 <div className="agent-actions">
                   <button
                     aria-label={`上移第 ${index + 1} 项`}
-                    disabled={busy || index === 0}
+                    disabled={busy || !draftReady || index === 0}
                     onClick={() => moveDraft(index, -1)}
                   >
                     上移
                   </button>
                   <button
                     aria-label={`下移第 ${index + 1} 项`}
-                    disabled={busy || index === drafts.length - 1}
+                    disabled={
+                      busy || !draftReady || index === drafts.length - 1
+                    }
                     onClick={() => moveDraft(index, 1)}
                   >
                     下移
                   </button>
                   <button
                     aria-label={`删除第 ${index + 1} 项`}
-                    disabled={busy}
+                    disabled={busy || !draftReady}
                     onClick={() =>
                       setDrafts((current) =>
                         current.filter((draft) => draft.id !== item.id),
@@ -944,6 +1078,27 @@ export default function ExecutionPanel({
                   <p className="agent-note">
                     页面展示最近的输出，完整记录仍保存在本机 Codex 会话中。
                   </p>
+                )}
+                {priorFollowups.length > 0 && (
+                  <details
+                    className="agent-note"
+                    aria-label="此前轮次的补充草稿"
+                  >
+                    <summary>
+                      执行轮次已变化，此前草稿仍保留；核对后请明确填写当前轮次的补充说明。
+                    </summary>
+                    {priorFollowups.map(([turn, text]) => (
+                      <label key={turn}>
+                        此前轮次 {turn}
+                        <textarea
+                          aria-label={`此前轮次 ${turn} 的补充草稿`}
+                          readOnly
+                          value={text}
+                          rows={2}
+                        />
+                      </label>
+                    ))}
+                  </details>
                 )}
                 <label>
                   补充说明
