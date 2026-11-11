@@ -76,6 +76,7 @@ import { parseClipboard } from "./paste.js";
 import { prepareImageFile } from "./image-import.js";
 import TaskCompletionMotion from "./TaskCompletionMotion.jsx";
 import { captureCompletionSource } from "./taskCompletionMotion.js";
+import useArrangedClipboard from "./useArrangedClipboard.jsx";
 import "./arranged.css";
 
 const DeadlineCalendar = lazy(() => import("./DeadlineCalendar.jsx"));
@@ -92,7 +93,7 @@ function DraftRow({ onCommit, onClose, apiRef, label }) {
   const save = () => {
     if (composing.current) return false;
     if (saved.current) return true;
-    const value = input.current.value.trim();
+    const value = input.current.value;
     if (value && !onCommit(value)) return false;
     saved.current = true;
     onClose();
@@ -253,12 +254,13 @@ function ChecklistPane({
   const label = sideLabel(side);
   const addTodo = (text) => {
     if (workspace.readOnly || !page) return false;
+    const content = text.replace(/\r\n?/g, "\n");
+    if (!content.trim()) return true;
     const note = {
       ...createObject(boardId, "note"),
       noteKind: "checklist",
-      blocks: parseClipboard(text),
+      blocks: [makeBlock(content)],
     };
-    if (!note.blocks.length) return true;
     update((s) => appendPageObjects(s, boardId, page.id, [note]));
     if (!workspace.current.current.objects.some((o) => o.id === note.id)) {
       onToast("这块灵感板暂时无法编辑，输入内容仍保留在当前栏。");
@@ -325,16 +327,16 @@ function ChecklistPane({
         className={`todo-row ${task.article ? "is-article" : ""} ${task.block.done ? "is-done" : ""} ${selected.includes(task.key) ? "is-selected" : ""} ${located === task.note.id ? "located" : ""} ${dragging === task.key ? "is-reordering" : ""} ${dropTarget?.key === task.key ? `drop-${dropTarget.placement}` : ""}`}
         data-reorderable={!orderDisabled && !task.block.done && !isEditing}
         onDragStart={(e) => e.preventDefault()}
-        onContextMenu={(e) => {
-          if (!isEditor(e.target))
-            todoTools?.showMenu(e, [task.note], task.key, frozen);
-        }}
         onPointerDown={(e) => {
           if (
             !e.target.closest(
               "button,input,textarea,[contenteditable=true],.task-deadline-popover",
             )
-          )
+          ) {
+            if (e.button === 0 && !e.target.closest("a"))
+              e.currentTarget
+                .closest(".todo-panel-body")
+                ?.focus({ preventScroll: true });
             onSelect(
               side,
               e.shiftKey
@@ -343,6 +345,7 @@ function ChecklistPane({
                   : [...selected, task.key]
                 : [task.key],
             );
+          }
           if (
             e.button !== 0 ||
             e.pointerType === "touch" ||
@@ -475,6 +478,7 @@ function ChecklistPane({
                 block={task.block}
                 index={task.index}
                 checklist
+                singleTaskPaste
                 objects={objectMap}
                 onChange={(block) => {
                   if (!workspace.readOnly)
@@ -924,6 +928,7 @@ export default function ArrangedWorkspace({
   onToast,
   apiRef,
   blocked,
+  clipboardBlocked = blocked,
   dockedCollectionId,
   hideCollection = false,
   libraryKey,
@@ -1028,6 +1033,7 @@ export default function ArrangedWorkspace({
     document.activeElement?.blur();
     onExit();
     setProjectMenu(null);
+    clipboard.close();
     action();
   };
   const choose = (side, pageId) =>
@@ -1201,9 +1207,10 @@ export default function ArrangedWorkspace({
     });
   };
   const pasteText = (text, html = "", pageId = currentPage()?.id) => {
-    if (blocked || !pageId) return;
-    const blocks = parseClipboard(text, html);
-    if (!blocks.length) return;
+    if (blocked || dialog || workspace.readOnly || !pageId) return;
+    const content = text.replace(/\r\n?/g, "\n");
+    if (!content.trim()) return;
+    const blocks = [makeBlock(content)];
     const note = {
       ...createObject(boardId, "note"),
       noteKind: "checklist",
@@ -1213,6 +1220,16 @@ export default function ArrangedWorkspace({
     if (workspace.current.current.objects.some((o) => o.id === note.id))
       onToast(`已粘贴 ${blocks.length} 条内容`);
   };
+  const clipboard = useArrangedClipboard({
+    workspace,
+    boardId,
+    libraryKey,
+    selected,
+    blocked: !!(clipboardBlocked || dialog || projectMenu),
+    beforeAction: navigate,
+    onToast,
+    pasteText,
+  });
   const addImages = async (files, pageId = currentPage()?.id) => {
     if (
       workspace.readOnly ||
@@ -1339,7 +1356,7 @@ export default function ArrangedWorkspace({
     pendingLocate.current = null;
   });
   apiRef.current = {
-    isBlocked: () => !!dialog || !!projectMenu || blocked,
+    isBlocked: () => !!dialog || !!projectMenu || clipboard.isOpen || blocked,
     beforeNavigate: navigate,
     addNote: () => {
       if (resolved.view === "calendar") {
@@ -1461,7 +1478,8 @@ export default function ArrangedWorkspace({
       ref={main}
       aria-label="排列视图"
       tabIndex={-1}
-      onContextMenu={(e) => e.preventDefault()}
+      onContextMenu={clipboard.onContextMenu}
+      onCopy={clipboard.onCopy}
       onCompositionStart={() => {
         composing.current = true;
       }}
@@ -1872,6 +1890,7 @@ export default function ArrangedWorkspace({
           </form>
         </Modal>
       )}
+      {clipboard.overlay}
     </main>
   );
 }

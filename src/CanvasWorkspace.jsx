@@ -766,6 +766,7 @@ export default function CanvasWorkspace({
               onToast={showToast}
               apiRef={canvas}
               blocked={readOnly || operationsOpen || !!panel || !!menuDialog}
+              clipboardBlocked={operationsOpen || !!panel || !!menuDialog}
               dockedCollectionId={primaryCollection(state, room.id)?.id}
               hideCollection
               libraryKey={user.id}

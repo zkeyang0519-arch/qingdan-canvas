@@ -119,6 +119,8 @@ async function mount(t, { accountId } = {}) {
       [readOnly, setReadOnly] = useState(false),
       [editing, setEditing] = useState(null);
     const [libraryKey, setAccount] = useState(accountId);
+    const [activeBoard, setBoard] = useState(boardId);
+    const [modalBlocked, setModalBlocked] = useState(false);
     const current = useRef(state),
       apiRef = useRef(null);
     current.current = state;
@@ -141,6 +143,8 @@ async function mount(t, { accountId } = {}) {
       update,
       setReadOnly,
       setAccount,
+      setBoard,
+      setModalBlocked,
       state: () => current.current,
       api: () => apiRef.current,
     });
@@ -149,10 +153,12 @@ async function mount(t, { accountId } = {}) {
       { workspace, scope: "test", beforeAction() {}, onToast() {} },
       React.createElement(ArrangedWorkspace, {
         workspace,
-        boardId,
+        boardId: activeBoard,
         libraryKey,
         apiRef,
         editing,
+        blocked: readOnly || modalBlocked,
+        clipboardBlocked: modalBlocked,
         onEdit: (noteId, blockId) => setEditing({ noteId, blockId }),
         onExit: () => setEditing(null),
         onToast: (message) => controls.toasts.push(message),
@@ -176,6 +182,426 @@ const row = (host, id) => host.querySelector(`[data-task-id="${id}"]`);
 async function click(element) {
   assert.ok(element);
   await act(async () => element.click());
+}
+
+const clipboardBlocks = (controls) =>
+  controls.state().objects.flatMap((object) => object.blocks || []);
+const clipboardText = (block) =>
+  block.runs
+    .map((run) => (run.type === "text" ? run.text : `[[${run.label}]]`))
+    .join("");
+async function pasteClipboard(element, text, html = "") {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      files: [],
+      getData: (type) => (type === "text/plain" ? text : html),
+    },
+  });
+  await act(async () => element.dispatchEvent(event));
+  return event;
+}
+
+test("剪贴板：列表粘贴多行和列表文字只创建一个待办并保留空行", async (t) => {
+  const { host, controls } = await mount(t);
+  const before = clipboardBlocks(controls).map((block) => block.id);
+  await pasteClipboard(
+    host.querySelector(".pending-panel .todo-panel-body"),
+    "一行\r\n\r\n- 第二行",
+    "<ul><li>一行</li><li>第二行</li></ul>",
+  );
+  const added = clipboardBlocks(controls).filter(
+    (block) => !before.includes(block.id),
+  );
+  assert.equal(added.length, 1);
+  assert.equal(clipboardText(added[0]), "一行\n\n- 第二行");
+  assert.equal(added[0].done, false);
+});
+
+test("剪贴板：空白文字不创建待办", async (t) => {
+  const { host, controls } = await mount(t);
+  const before = structuredClone(controls.state());
+  await pasteClipboard(host.querySelector(".todo-panel-body"), " \r\n\t ");
+  assert.deepEqual(controls.state(), before);
+});
+
+test("剪贴板：新建输入框的多行文字保存为一个待办", async (t) => {
+  const { host, controls } = await mount(t);
+  const before = clipboardBlocks(controls).map((block) => block.id);
+  await click(host.querySelector('[aria-label="左侧添加待办"]'));
+  const input = host.querySelector(".todo-draft textarea");
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  ).set;
+  await act(async () => {
+    setter.call(input, " 第一行\n\n- 第二行 ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+  });
+  const added = clipboardBlocks(controls).filter(
+    (block) => !before.includes(block.id),
+  );
+  assert.equal(added.length, 1);
+  assert.equal(clipboardText(added[0]), " 第一行\n\n- 第二行 ");
+});
+
+test("剪贴板：编辑选区粘贴多行不拆分且保留待办身份和元数据", async (t) => {
+  const { host, controls } = await mount(t);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((object) => ({
+        ...object,
+        blocks: object.blocks.map((block) =>
+          block.id === "done"
+            ? {
+                ...block,
+                dueAt: "2026-11-11T08:00:00.000Z",
+                remark: {
+                  text: "保留备注",
+                  updatedAt: "2026-11-01T08:00:00.000Z",
+                },
+              }
+            : block,
+        ),
+      })),
+    })),
+  );
+  const before = structuredClone(
+    clipboardBlocks(controls).find((block) => block.id === "done"),
+  );
+  await act(async () =>
+    row(host, "done")
+      .querySelector(".todo-copy")
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+  );
+  const editor = row(host, "done").querySelector(".block-editor");
+  assert.ok(editor);
+  const range = document.createRange();
+  range.setStart(editor.firstChild, 1);
+  range.setEnd(editor.firstChild, 2);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  await pasteClipboard(editor, "甲\r\n\r\n乙");
+  const after = clipboardBlocks(controls).find((block) => block.id === "done");
+  assert.equal(clipboardBlocks(controls).length, 4);
+  assert.equal(clipboardText(after), "已甲\n\n乙成");
+  assert.deepEqual({ ...after, runs: before.runs }, before);
+});
+
+function useClipboardFixture(t, clipboard) {
+  const descriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: clipboard,
+  });
+  t.after(() =>
+    descriptor
+      ? Object.defineProperty(navigator, "clipboard", descriptor)
+      : delete navigator.clipboard,
+  );
+}
+async function clipboardMenu(element) {
+  const event = new MouseEvent("contextmenu", {
+    bubbles: true,
+    cancelable: true,
+    button: 2,
+    clientX: 100,
+    clientY: 150,
+  });
+  await act(async () => element.dispatchEvent(event));
+  return event;
+}
+
+test("剪贴板：右键复制完整正文及换行，锁定和只读不妨碍复制", async (t) => {
+  let copied;
+  useClipboardFixture(t, {
+    writeText: async (text) => {
+      copied = text;
+    },
+  });
+  const { host, controls } = await mount(t);
+  await act(async () => {
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((object) => ({
+        ...object,
+        locked: true,
+        blocks: object.blocks.map((block) =>
+          block.id === "late"
+            ? { ...block, runs: [{ type: "text", text: "完整正文\n\n第二行" }] }
+            : block,
+        ),
+      })),
+    }));
+    controls.setReadOnly(true);
+  });
+  await clipboardMenu(row(host, "late"));
+  const menu = document.querySelector('[role="menu"]');
+  assert.equal(labeledButton("删除", menu).disabled, true);
+  assert.equal(labeledButton("复制文字", menu).disabled, false);
+  await click(labeledButton("复制文字", menu));
+  assert.equal(copied, "完整正文\n\n第二行");
+  assert.equal(clipboardBlocks(controls).length, 4);
+});
+
+test("剪贴板：排列模式整篇便签复制全部正文而非截断标题", async (t) => {
+  let copied;
+  useClipboardFixture(t, {
+    writeText: async (text) => {
+      copied = text;
+    },
+  });
+  const { host, controls } = await mount(t);
+  await act(async () =>
+    controls.update((s) => ({
+      ...s,
+      objects: s.objects.map((object) => ({ ...object, noteKind: "text" })),
+    })),
+  );
+  await clipboardMenu(host.querySelector(".todo-row.is-article"));
+  await click(
+    labeledButton("复制文字", document.querySelector('[role="menu"]')),
+  );
+  assert.equal(copied, "无日期\n晚截止\n早截止\n已完成");
+});
+
+test("剪贴板：编辑区右键保留浏览器原生复制粘贴菜单", async (t) => {
+  const { host } = await mount(t);
+  await act(async () =>
+    row(host, "late")
+      .querySelector(".todo-copy")
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+  );
+  const event = await clipboardMenu(
+    row(host, "late").querySelector(".block-editor"),
+  );
+  assert.equal(event.defaultPrevented, false);
+  assert.equal(document.querySelector('[role="menu"]'), null);
+});
+
+test("剪贴板：选中待办可用复制快捷键输出正文，编辑选区仍交给浏览器", async (t) => {
+  const { host } = await mount(t);
+  getSelection().removeAllRanges();
+  await act(async () =>
+    row(host, "late").dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, button: 2 }),
+    ),
+  );
+  let copied;
+  const copyEvent = () => {
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        setData: (type, text) => {
+          copied = { type, text };
+        },
+      },
+    });
+    return event;
+  };
+  const event = copyEvent();
+  await act(async () => row(host, "late").dispatchEvent(event));
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(copied, { type: "text/plain", text: "晚截止" });
+  await act(async () =>
+    row(host, "late")
+      .querySelector(".todo-copy")
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+  );
+  copied = null;
+  const nativeEvent = copyEvent();
+  await act(async () =>
+    row(host, "late").querySelector(".block-editor").dispatchEvent(nativeEvent),
+  );
+  assert.equal(nativeEvent.defaultPrevented, false);
+  assert.equal(copied, null);
+});
+
+test("剪贴板：编辑区没有可粘贴文字时不删除当前选区", async (t) => {
+  const { host, controls } = await mount(t);
+  await act(async () =>
+    row(host, "late")
+      .querySelector(".todo-copy")
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+  );
+  const editor = row(host, "late").querySelector(".block-editor");
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  await pasteClipboard(editor, "");
+  assert.equal(
+    clipboardText(
+      clipboardBlocks(controls).find((block) => block.id === "late"),
+    ),
+    "晚截止",
+  );
+});
+
+test("剪贴板：从列表外单击待办后焦点进入列表，复制事件可到达处理器", async (t) => {
+  const { host } = await mount(t);
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  t.after(() => outside.remove());
+  outside.focus();
+  getSelection().removeAllRanges();
+  const pointer = new MouseEvent("pointerdown", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  await act(async () =>
+    row(host, "late").querySelector(".todo-copy").dispatchEvent(pointer),
+  );
+  assert.equal(pointer.defaultPrevented, true, "拖动排序仍然拦截原生指针动作");
+  assert.ok(
+    host.querySelector(".arranged-workspace").contains(document.activeElement),
+    "焦点必须进入排列列表",
+  );
+  let copied;
+  const event = new Event("copy", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      setData: (_type, text) => {
+        copied = text;
+      },
+    },
+  });
+  await act(async () => document.activeElement.dispatchEvent(event));
+  assert.equal(copied, "晚截止");
+});
+
+test("剪贴板：只读时可复制，但弹窗阻挡时不能打开任务菜单", async (t) => {
+  const { host, controls } = await mount(t);
+  await act(async () => controls.setReadOnly(true));
+  await clipboardMenu(row(host, "late"));
+  assert.ok(labeledButton("复制文字", document.querySelector('[role="menu"]')));
+  await act(async () => controls.setModalBlocked(true));
+  await clipboardMenu(row(host, "late"));
+  assert.equal(document.querySelector('[role="menu"]'), null);
+});
+
+test("剪贴板：空白处右键粘贴整段为一个未完成待办", async (t) => {
+  useClipboardFixture(t, { readText: async () => "第一行\r\n\r\n第二行" });
+  const { host, controls } = await mount(t);
+  const before = clipboardBlocks(controls).map((block) => block.id);
+  await clipboardMenu(host.querySelector(".pending-panel .todo-panel-body"));
+  await click(
+    labeledButton("粘贴为待办", document.querySelector('[role="menu"]')),
+  );
+  const added = clipboardBlocks(controls).filter(
+    (block) => !before.includes(block.id),
+  );
+  assert.equal(added.length, 1);
+  assert.equal(clipboardText(added[0]), "第一行\n\n第二行");
+  assert.equal(added[0].done, false);
+});
+
+test("剪贴板：只读列表不能通过快捷键或右键粘贴写入", async (t) => {
+  const { host, controls } = await mount(t);
+  await act(async () => controls.setReadOnly(true));
+  await pasteClipboard(host.querySelector(".todo-panel-body"), "不能写入");
+  assert.equal(clipboardBlocks(controls).length, 4);
+  await clipboardMenu(host.querySelector(".todo-panel-body"));
+  assert.equal(
+    labeledButton("粘贴为待办", document.querySelector('[role="menu"]'))
+      .disabled,
+    true,
+  );
+});
+
+test("剪贴板：读取被拒绝时可在原列表使用快捷键粘贴", async (t) => {
+  useClipboardFixture(t, {
+    readText: async () => {
+      throw new Error("NotAllowedError");
+    },
+  });
+  const { host, controls } = await mount(t);
+  const body = host.querySelector(".pending-panel .todo-panel-body");
+  await clipboardMenu(body);
+  await click(
+    labeledButton("粘贴为待办", document.querySelector('[role="menu"]')),
+  );
+  assert.equal(clipboardBlocks(controls).length, 4);
+  assert.match(controls.toasts.at(-1), /Ctrl.*V/);
+  assert.equal(document.activeElement, body);
+  await pasteClipboard(body, "改用快捷键\n第二行");
+  assert.equal(clipboardBlocks(controls).length, 5);
+});
+
+test("剪贴板：复制被拒绝后展示完整文字供手动复制", async (t) => {
+  useClipboardFixture(t, {
+    writeText: async () => {
+      throw new Error("NotAllowedError");
+    },
+  });
+  const { host, controls } = await mount(t);
+  await clipboardMenu(row(host, "late"));
+  await click(
+    labeledButton("复制文字", document.querySelector('[role="menu"]')),
+  );
+  const text = document.querySelector(
+    'textarea[aria-label="待办文字（手动复制）"]',
+  );
+  assert.ok(text);
+  assert.equal(text.value, "晚截止");
+  assert.equal(text.readOnly, true);
+  assert.equal((await clipboardMenu(text)).defaultPrevented, false);
+  assert.equal(
+    controls.toasts.some((message) => message === "已复制待办文字"),
+    false,
+  );
+});
+
+for (const transition of [
+  "账号",
+  "项目",
+  "切走再切回",
+  "画布",
+  "只读",
+  "锁定",
+]) {
+  test(`剪贴板：等待读取期间变化${transition}不会插入过期文字`, async (t) => {
+    let resolve;
+    useClipboardFixture(t, {
+      readText: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    const { host, controls } = await mountProjects(t);
+    await clipboardMenu(host.querySelector(".pending-panel .todo-panel-body"));
+    await click(
+      labeledButton("粘贴为待办", document.querySelector('[role="menu"]')),
+    );
+    assert.ok(resolve, "已经发起读取");
+    if (transition === "账号")
+      await act(async () => controls.setAccount("another-account"));
+    else if (transition === "只读")
+      await act(async () => controls.setReadOnly(true));
+    else if (transition === "画布")
+      await act(async () => controls.setBoard("another-board"));
+    else if (transition === "锁定")
+      await act(async () =>
+        controls.update((s) => ({
+          ...s,
+          objects: s.objects.map((object) =>
+            object.id === "delivery" ? { ...object, locked: true } : object,
+          ),
+        })),
+      );
+    else {
+      await click(host.querySelector('[role="tab"][aria-label="个人计划"]'));
+      if (transition === "切走再切回")
+        await click(host.querySelector('[role="tab"][aria-label="投递"]'));
+    }
+    await act(async () => resolve("不应被插入"));
+    assert.equal(clipboardBlocks(controls).length, 4);
+  });
 }
 
 async function mountProjects(t) {
@@ -211,6 +637,7 @@ async function mountProjects(t) {
 }
 
 function labeledButton(label, scope = document) {
+  assert.ok(scope, `找不到菜单：${label}`);
   const button = [...scope.querySelectorAll("button")].find(
     (item) =>
       item.getAttribute("aria-label") === label ||
@@ -914,7 +1341,7 @@ test("点击截止时间排序后可向上、向下拖动，无自动锁序，�
   assert.deepEqual(order(host), ["early", "late", "none"]);
 });
 
-test("待办右键阻止浏览器默认菜单，仅显示删除，删除后只移除目标待办", async (t) => {
+test("待办右键提供复制和删除，删除后只移除目标待办", async (t) => {
   const { host, controls } = await mount(t);
   const event = new MouseEvent("contextmenu", {
     bubbles: true,
@@ -929,9 +1356,9 @@ test("待办右键阻止浏览器默认菜单，仅显示删除，删除后只�
   assert.equal(event.defaultPrevented, true, "必须阻止浏览器右键菜单");
   const menu = document.querySelector('[role="menu"]');
   assert.ok(menu);
-  assert.equal(menu.textContent.trim(), "删除");
-  assert.equal(menu.querySelectorAll("button").length, 1);
-  await click(menu.querySelector('[role="menuitem"]'));
+  assert.ok(labeledButton("复制文字", menu));
+  assert.equal(menu.querySelectorAll("button").length, 2);
+  await click(labeledButton("删除", menu));
   assert.deepEqual(order(host), ["none", "early"]);
   assert.equal(controls.state().trash[0].task.block.id, "late");
   assert.equal(document.querySelector('[role="menu"]'), null);
@@ -978,7 +1405,10 @@ test("只读待办的紧凑右键菜单仍拦截浏览器菜单并禁止删除",
   });
   await act(async () => row(host, "early").dispatchEvent(event));
   assert.equal(event.defaultPrevented, true);
-  assert.equal(document.querySelector('[role="menuitem"]').disabled, true);
+  assert.equal(
+    labeledButton("删除", document.querySelector('[role="menu"]')).disabled,
+    true,
+  );
 });
 
 test("常用清单库可以保存模板并一键添加到当前清单", async (t) => {

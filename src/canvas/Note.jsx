@@ -375,6 +375,7 @@ export function EditableBlock({
   onReference,
   onReferencePicker,
   autoFocus,
+  singleTaskPaste = false,
 }) {
   const ref = useRef(null),
     composition = useRef(false),
@@ -459,9 +460,15 @@ export function EditableBlock({
       }}
       onPaste={(event) => {
         event.preventDefault();
-        const text = event.clipboardData.getData("text/plain");
+        const text = event.clipboardData
+          .getData("text/plain")
+          .replace(/\r\n?/g, "\n");
+        if (singleTaskPaste && !text) return;
         const html = event.clipboardData.getData("text/html");
-        if (text.includes("\n") || (checklist && html.includes("<li"))) {
+        if (
+          !singleTaskPaste &&
+          (text.includes("\n") || (checklist && html.includes("<li")))
+        ) {
           const parsed = checklist
             ? parseClipboard(text, html)
             : text
