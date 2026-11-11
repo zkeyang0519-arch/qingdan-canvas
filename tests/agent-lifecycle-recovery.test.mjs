@@ -531,6 +531,7 @@ for (const kind of [
   test(`relocation refuses a missing journal with ${kind}`, async (t) => {
     const f = await fixture(t);
     await deviceEvidence(f.root, "never-created");
+    await experience(f.root);
     const device = new DatabaseSync(
       path.join(f.root, ".tmp/runner-device/device.sqlite"),
       { readOnly: true },
@@ -547,34 +548,92 @@ for (const kind of [
             .digest("hex");
     const directory = path.join(f.root, ".tmp/runner-device/execution", key);
     await mkdir(directory, { recursive: true });
-    if (kind === "stale consumer journal")
+    if (kind === "stale consumer journal") {
+      const consumer = new DatabaseSync(
+        path.join(directory, "execution.sqlite.consumer"),
+      );
+      consumer.exec(
+        "CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('retained consumer');",
+      );
+      consumer.close();
       await writeFile(
         path.join(directory, "execution.sqlite.consumer-journal"),
         "retained evidence",
       );
+    }
     if (kind === "unknown residue")
       await writeFile(
         path.join(directory, "unrecognized.dat"),
         "retained evidence",
       );
     const moved = await f.move();
-    const manifestFile = path.join(moved.stateDir, "install.json"),
-      before = await readFile(manifestFile);
-    await assert.rejects(manager.repair(moved), /active|unknown|evidence/i);
-    assert.deepEqual(await readFile(manifestFile), before);
-    if (kind === "unknown residue")
-      assert.equal(
-        await readFile(
-          path.join(
-            moved.root,
-            ".tmp/runner-device/execution",
-            key,
-            "unrecognized.dat",
-          ),
-          "utf8",
-        ),
-        "retained evidence",
+    const movedDirectory = path.join(
+      moved.root,
+      ".tmp/runner-device/execution",
+      key,
+    );
+    const files = {
+      manifest: path.join(moved.stateDir, "install.json"),
+      ledger: path.join(moved.root, ".tmp/agent-experience/sessions.json"),
+      entry: path.join(moved.stateDir, "agent.ps1"),
+      consumer: path.join(movedDirectory, "execution.sqlite.consumer"),
+      ...(kind === "stale consumer journal"
+        ? {
+            residue: path.join(
+              movedDirectory,
+              "execution.sqlite.consumer-journal",
+            ),
+          }
+        : {}),
+      ...(kind === "unknown residue"
+        ? { residue: path.join(movedDirectory, "unrecognized.dat") }
+        : {}),
+    };
+    const bytes = (file) =>
+      readFile(file).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+    const before = new Map(
+      await Promise.all(
+        Object.entries(files).map(async ([name, file]) => [
+          name,
+          await bytes(file),
+        ]),
+      ),
+    );
+    const attempts = [];
+    // Run both attempts before asserting: a destructive first refusal must not
+    // turn the same retained directory into an accepted second repair.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const rejected = await manager.repair(moved).then(
+        () => false,
+        (error) => {
+          assert.match(error.message, /active|unknown|evidence/i);
+          return true;
+        },
       );
+      const unchanged = Object.fromEntries(
+        await Promise.all(
+          Object.entries(files).map(async ([name, file]) => {
+            const after = await bytes(file),
+              prior = before.get(name);
+            return [
+              name,
+              prior === null
+                ? after === null
+                : after !== null && prior.equals(after),
+            ];
+          }),
+        ),
+      );
+      attempts.push({ rejected, ...unchanged });
+    }
+    const expected = {
+      rejected: true,
+      ...Object.fromEntries(Object.keys(files).map((name) => [name, true])),
+    };
+    assert.deepEqual(attempts, [expected, expected]);
   });
 }
 
@@ -597,11 +656,18 @@ test("relocation reserves the known never-created executor until publication fin
       .update(JSON.stringify([config.ownerId, config.runnerId]))
       .digest("hex"),
   );
-  let protectedDuringPublish = false;
+  let protectedDuringPublish = false,
+    ownJournalDuringPublish = false;
   const originalRename = fsPromises.rename;
   t.mock.method(fsPromises, "rename", async (from, to) => {
     if (to === path.join(moved.stateDir, "install.json")) {
       await mkdir(directory, { recursive: true });
+      ownJournalDuringPublish = await readFile(
+        path.join(directory, "execution.sqlite.consumer-journal"),
+      ).then(
+        () => true,
+        () => false,
+      );
       const competing = new DatabaseSync(
         path.join(directory, "execution.sqlite.consumer"),
       );
@@ -626,6 +692,11 @@ test("relocation reserves the known never-created executor until publication fin
     protectedDuringPublish,
     true,
     "a new executor could start during relocation publication",
+  );
+  assert.equal(
+    ownJournalDuringPublish,
+    true,
+    "the current reservation's own journal was not exercised",
   );
   await assert.rejects(readFile(path.join(directory, "execution.sqlite")), {
     code: "ENOENT",

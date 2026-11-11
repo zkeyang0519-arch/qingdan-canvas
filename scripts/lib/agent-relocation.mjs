@@ -197,6 +197,12 @@ export async function withRelocationEvidence(root, options, work) {
         currentKey,
         receipts,
       });
+      const hadJournal = safeStatePath(root, journalFile),
+        hadRuns = safeStatePath(root, runsFile);
+      // Opening SQLite can recover/delete a pre-existing consumer-journal.
+      // Reject dirty missing evidence before any consumer database is opened,
+      // then check again under our reservation below to cover a changed state.
+      if (hadJournal !== hadRuns || (!hadJournal && !wasNeverCreated)) fail();
       safeStatePath(root, journalFile + ".consumer");
       const reservation = new DatabaseSync(journalFile + ".consumer");
       reservations.push(reservation);
