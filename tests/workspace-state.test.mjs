@@ -21,6 +21,7 @@ const { createRoot } = await import("react-dom/client");
 const { localStorage, sessionStorage } = window;
 let root, result;
 const setItem = window.Storage.prototype.setItem;
+const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto");
 test.beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
@@ -29,7 +30,178 @@ test.beforeEach(() => {
 });
 test.afterEach(async () => {
   window.Storage.prototype.setItem = setItem;
+  Object.defineProperty(globalThis, "crypto", originalCrypto);
   await act(async () => root.unmount());
+});
+
+const stopRequest = (requestId, runId = "original-run") => ({
+  path: "/api/agent/execution/tools",
+  method: "POST",
+  body: {
+    bindingId: "binding",
+    name: "codex_cancel_run",
+    arguments: { runId, requestId },
+  },
+});
+const denyWrites = () => {
+  window.Storage.prototype.setItem = () => {
+    throw new DOMException("full", "QuotaExceededError");
+  };
+};
+
+test("fix1: safe stop uses secure random bytes when both locks and randomUUID are unavailable", async () => {
+  const getRandomValues = crypto.getRandomValues.bind(crypto);
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    value: { getRandomValues },
+  });
+  navigator.locks = undefined;
+  const store = persistence.createWorkspaceRequests("http-stop");
+  const first = await store.prepare("stop", stopRequest, { safeStop: true });
+  assert.match(
+    first.requestId,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  assert.equal(
+    (await store.prepare("stop", stopRequest, { safeStop: true })).requestId,
+    first.requestId,
+  );
+  await assert.rejects(
+    store.prepare("ordinary", (requestId) => ({
+      path: "/api/test",
+      method: "POST",
+      body: { requestId },
+    })),
+    /标签|协调|浏览器/,
+  );
+  assert.equal(store.getSnapshot().durable, false);
+});
+
+test("fix1: a volatile stop is promoted with the original identity only after a successful durable write", async () => {
+  const store = persistence.createWorkspaceRequests("quota-stop");
+  denyWrites();
+  const first = await store.prepare("stop", stopRequest, { safeStop: true });
+  assert.equal(
+    (await store.prepare("stop", stopRequest, { safeStop: true })).requestId,
+    first.requestId,
+  );
+  window.Storage.prototype.setItem = setItem;
+  const promoted = await store.prepare("stop", stopRequest, { safeStop: true });
+  assert.deepEqual(promoted.request, first.request);
+  assert.equal(promoted.requestId, first.requestId);
+  assert.equal(store.getSnapshot().records.length, 1);
+  assert.equal(store.getSnapshot().durable, true);
+  assert.equal(store.getSnapshot().warning, "");
+  const restored = persistence
+    .createWorkspaceRequests("quota-stop")
+    .getSnapshot();
+  assert.equal(restored.records[0].requestId, first.requestId);
+});
+
+test("fix1: unrelated successful writes and reads cannot hide remaining volatile stop warnings", async () => {
+  const store = persistence.createWorkspaceRequests("mixed-stop");
+  denyWrites();
+  const first = await store.prepare("stop-a", stopRequest, { safeStop: true });
+  const second = await store.prepare(
+    "stop-b",
+    (id) => stopRequest(id, "second-run"),
+    { safeStop: true },
+  );
+  window.Storage.prototype.setItem = setItem;
+  const ordinary = await store.prepare("ordinary", (requestId) => ({
+    path: "/api/test",
+    method: "POST",
+    body: { requestId },
+  }));
+  assert.equal(store.getSnapshot().durable, false);
+  assert.match(store.getSnapshot().warning, /暂存|保存|存储/);
+  await store.prepare("stop-a", stopRequest, { safeStop: true });
+  assert.equal(store.getSnapshot().durable, false);
+  await store.checkpoint(ordinary.requestId, { confirmed: true });
+  assert.equal(store.getSnapshot().durable, false);
+  const unsubscribe = store.subscribe(() => {});
+  window.dispatchEvent(new window.StorageEvent("storage", { key: null }));
+  unsubscribe();
+  assert.equal(store.getSnapshot().durable, false);
+  assert.equal(
+    store.getSnapshot().records.filter((r) => r.requestId === first.requestId)
+      .length,
+    1,
+  );
+  assert.equal(
+    store.getSnapshot().records.filter((r) => r.requestId === second.requestId)
+      .length,
+    1,
+  );
+  assert.match(store.getSnapshot().warning, /暂存|保存|存储/);
+});
+
+test("fix1: a conflicting durable identity cannot replace or discard an unresolved volatile stop", async () => {
+  const store = persistence.createWorkspaceRequests("conflicting-stop");
+  denyWrites();
+  const original = await store.prepare("stop", stopRequest, { safeStop: true });
+  window.Storage.prototype.setItem = setItem;
+  const other = persistence.createWorkspaceRequests("conflicting-stop");
+  const persisted = await other.prepare("stop", stopRequest, {
+    safeStop: true,
+  });
+  assert.notEqual(original.requestId, persisted.requestId);
+  await assert.rejects(
+    store.prepare("stop", stopRequest, { safeStop: true }),
+    /身份|冲突/,
+  );
+  assert.deepEqual(
+    new Set(store.getSnapshot().records.map((r) => r.requestId)),
+    new Set([original.requestId, persisted.requestId]),
+  );
+  assert.equal(store.getSnapshot().durable, false);
+  assert.match(store.getSnapshot().warning, /冲突|暂存|保存/);
+  assert.equal(other.getSnapshot().records[0].requestId, persisted.requestId);
+});
+
+test("fix1: legacy stop adoption preserves its original ID without locks or storage and never relaxes ordinary adoption", async () => {
+  for (const mode of ["no-locks", "quota"]) {
+    navigator.locks = mode === "no-locks" ? undefined : browserLocks();
+    if (mode === "quota") denyWrites();
+    const store = persistence.createWorkspaceRequests(`legacy-${mode}`);
+    const legacy = {
+      requestId: `old-${mode}`,
+      request: stopRequest(`old-${mode}`),
+      checkpoint: { runId: "original-run" },
+    };
+    const adopted = await store.adopt("stop", legacy, { safeStop: true });
+    assert.equal(adopted.requestId, legacy.requestId);
+    assert.deepEqual(adopted.request, legacy.request);
+    assert.equal(
+      (await store.prepare("stop", stopRequest, { safeStop: true })).requestId,
+      legacy.requestId,
+    );
+    assert.equal(store.getSnapshot().durable, false);
+    assert.match(store.getSnapshot().warning, /标签|保存|暂存/);
+    const ordinary = {
+      requestId: "ordinary",
+      request: {
+        path: "/api/test",
+        method: "POST",
+        body: { requestId: "ordinary" },
+      },
+    };
+    await assert.rejects(store.adopt("ordinary", ordinary), /标签|保存|存储/);
+    await assert.rejects(
+      store.adopt("forged-stop", ordinary, { safeStop: true }),
+      /停止|通道/,
+    );
+    navigator.locks = browserLocks();
+    window.Storage.prototype.setItem = setItem;
+    await store.adopt("stop", legacy, { safeStop: true });
+    assert.equal(store.getSnapshot().records.length, 1);
+    assert.equal(store.getSnapshot().records[0].requestId, legacy.requestId);
+    assert.deepEqual(
+      store.getSnapshot().records[0].checkpoint,
+      legacy.checkpoint,
+    );
+    assert.equal(store.getSnapshot().durable, true);
+  }
 });
 test.after(() => dom.window.close());
 function Draft({ name = "alice/project/run" }) {

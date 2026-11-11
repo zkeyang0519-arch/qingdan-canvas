@@ -122,10 +122,8 @@ export default function CanvasWorkspace({
 }) {
   const workspace = useRoomWorkspace(room, user);
   const { state, update, readOnly } = workspace;
-  const [observedBatch, setObservedBatch] = useObservedBatchTarget(
-    user.id,
-    room.id,
-  );
+  const [observedBatch, setObservedBatch, observedBatchStorage] =
+    useObservedBatchTarget(user.id, room.id);
   const [agentStartAtBatch, setAgentStartAtBatch] = useState(false);
   const [selection, setSelection] = useState([]),
     [editing, setEditing] = useState(null);
@@ -786,6 +784,15 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
+          {observedBatchStorage.warning && (
+            <p
+              className="agent-error"
+              role="alert"
+              aria-label="批次提醒保存状态"
+            >
+              批次提醒的恢复位置未保存：{observedBatchStorage.warning}
+            </p>
+          )}
           {panel === "agent" && (
             <Suspense
               fallback={

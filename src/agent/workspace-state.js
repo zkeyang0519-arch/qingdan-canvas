@@ -23,6 +23,18 @@ const canonical = (value) =>
       : item;
   });
 const failure = (message, code) => Object.assign(new Error(message), { code });
+function requestUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (!globalThis.crypto?.getRandomValues)
+    throw Error("浏览器无法生成安全的请求编号，请使用支持安全随机数的浏览器。");
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = [...bytes]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export function workspaceScope({
   accountId,
@@ -206,13 +218,37 @@ export function createWorkspaceRequests(scope) {
     }
   }
   function publish(records, warning = "", durable = true) {
+    const volatile = [...memoryStops.values()];
     snapshot = {
-      records: clone([...records, ...memoryStops.values()]),
-      warning,
-      durable,
+      records: clone([
+        ...records,
+        ...volatile.filter(
+          (memory) =>
+            !records.some(
+              (record) =>
+                record.requestId === memory.requestId &&
+                record.operationKey === memory.operationKey &&
+                canonical(record.request) === canonical(memory.request),
+            ),
+        ),
+      ]),
+      warning: volatile.length
+        ? [
+            warning,
+            "仍有停止请求仅暂存在当前页面；请重试原停止请求以保存，关闭页面可能丢失恢复身份。",
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : warning,
+      durable: durable && !volatile.length,
     };
     for (const listener of listeners) listener();
   }
+  const durableSnapshot = () =>
+    snapshot.records.filter(
+      (record) =>
+        memoryStops.get(record.operationKey)?.requestId !== record.requestId,
+    );
   function refresh() {
     try {
       publish(
@@ -221,14 +257,10 @@ export function createWorkspaceRequests(scope) {
         !memoryStops.size,
       );
     } catch (error) {
-      publish(
-        snapshot.records.filter((r) => !memoryStops.has(r.operationKey)),
-        error.message,
-        false,
-      );
+      publish(durableSnapshot(), error.message, false);
     }
   }
-  function write(records) {
+  function write(records, promotedOperation = null) {
     try {
       window.localStorage.setItem(
         key,
@@ -237,6 +269,8 @@ export function createWorkspaceRequests(scope) {
     } catch {
       throw failure(storageWarning, "WORKSPACE_STORAGE");
     }
+    // Retire a volatile identity only after its exact durable write succeeds.
+    if (promotedOperation !== null) memoryStops.delete(promotedOperation);
     publish(records);
     window.dispatchEvent(
       new window.CustomEvent("qingdan-workspace-requests", { detail: key }),
@@ -245,11 +279,7 @@ export function createWorkspaceRequests(scope) {
   async function locked(operation) {
     const locks = globalThis.navigator?.locks;
     if (!locks?.request) {
-      publish(
-        snapshot.records.filter((r) => !memoryStops.has(r.operationKey)),
-        coordinationWarning,
-        false,
-      );
+      publish(durableSnapshot(), coordinationWarning, false);
       throw failure(coordinationWarning, "WORKSPACE_COORDINATION");
     }
     let entered = false;
@@ -260,19 +290,11 @@ export function createWorkspaceRequests(scope) {
       });
     } catch (error) {
       if (!entered) {
-        publish(
-          snapshot.records.filter((r) => !memoryStops.has(r.operationKey)),
-          coordinationWarning,
-          false,
-        );
+        publish(durableSnapshot(), coordinationWarning, false);
         throw failure(coordinationWarning, "WORKSPACE_COORDINATION");
       }
       if (error.code === "WORKSPACE_STORAGE")
-        publish(
-          snapshot.records.filter((r) => !memoryStops.has(r.operationKey)),
-          error.message,
-          false,
-        );
+        publish(durableSnapshot(), error.message, false);
       throw error;
     }
   }
@@ -281,6 +303,55 @@ export function createWorkspaceRequests(scope) {
       throw Error(
         "原操作仍待核对，不能更换请求内容或版本。请核对或重试原操作。",
       );
+  }
+  function existing(records, operationKey, requestId) {
+    const candidates = [...records, ...memoryStops.values()].filter(
+      (record) =>
+        record.operationKey === operationKey ||
+        (requestId && record.requestId === requestId),
+    );
+    const old = candidates[0];
+    if (
+      candidates.some(
+        (record) =>
+          record.requestId !== old.requestId ||
+          record.operationKey !== old.operationKey ||
+          canonical(record.request) !== canonical(old.request),
+      )
+    ) {
+      const message =
+        "原操作的持久记录与当前页面身份冲突，请先核对；两个未确认身份均已保留。";
+      publish(records, message, false);
+      throw Error(message);
+    }
+    return old;
+  }
+  function persistExisting(records, record) {
+    if (memoryStops.has(record.operationKey)) {
+      write(
+        records.some((item) => item.requestId === record.requestId)
+          ? records
+          : [...records, record],
+        record.operationKey,
+      );
+    } else publish(records);
+    return clone(record);
+  }
+  function retainStop(operationKey, record, error) {
+    if (!isSafeStop(record.request))
+      throw Error("仅停止原执行可在存储不可用时继续。");
+    const records = durableSnapshot();
+    const old = existing(records, operationKey, record.requestId);
+    if (old) {
+      if (
+        old.requestId !== record.requestId ||
+        old.operationKey !== operationKey
+      )
+        throw Error("旧请求身份与待核对记录冲突。");
+      compatible(old, record.request);
+    } else memoryStops.set(operationKey, record);
+    publish(records, error.message, false);
+    return clone(old || record);
   }
   refresh();
   const store = {
@@ -304,17 +375,14 @@ export function createWorkspaceRequests(scope) {
         throw Error("缺少操作标识。");
       try {
         return await locked((records) => {
-          const old = records.find(
-            (item) => item.operationKey === operationKey,
-          );
-          const requestId = old?.requestId || crypto.randomUUID();
+          const old = existing(records, operationKey);
+          const requestId = old?.requestId || requestUuid();
           const request = exactRequest(buildRequest(requestId), requestId);
           if (safeStop && !isSafeStop(request))
             throw Error("仅停止原执行可使用安全停止通道。");
           if (old) {
             compatible(old, request);
-            publish(records);
-            return clone(old);
+            return persistExisting(records, old);
           }
           if (records.length >= 100 && !safeStop)
             throw Error(
@@ -336,64 +404,57 @@ export function createWorkspaceRequests(scope) {
           !["WORKSPACE_STORAGE", "WORKSPACE_COORDINATION"].includes(error.code)
         )
           throw error;
-        const old = snapshot.records.find(
-          (item) => item.operationKey === operationKey,
-        );
-        const requestId = old?.requestId || crypto.randomUUID();
+        const old = existing(durableSnapshot(), operationKey);
+        const requestId = old?.requestId || requestUuid();
         const request = exactRequest(buildRequest(requestId), requestId);
-        if (!isSafeStop(request))
-          throw Error("仅停止原执行可在存储不可用时继续。");
-        if (old) {
-          compatible(old, request);
-          return clone(old);
-        }
         const record = {
           operationKey,
           requestId,
           request,
-          checkpoint: null,
-          createdAt: Date.now(),
+          checkpoint: old?.checkpoint ?? null,
+          createdAt: old?.createdAt ?? Date.now(),
         };
-        memoryStops.set(operationKey, record);
-        publish(
-          snapshot.records.filter((r) => !memoryStops.has(r.operationKey)),
-          `${error.message} 本次停止请求仅暂存在当前页面。`,
-          false,
-        );
-        return clone(record);
+        return retainStop(operationKey, record, error);
       }
     },
-    adopt(operationKey, legacy) {
-      return locked((records) => {
-        if (typeof operationKey !== "string" || !operationKey)
-          throw Error("缺少操作标识。");
-        if (!legacy?.requestId || typeof legacy.requestId !== "string")
-          throw Error("旧请求缺少原始身份。");
-        const request = exactRequest(legacy.request, legacy.requestId);
-        const old = records.find(
-          (item) =>
-            item.operationKey === operationKey ||
-            item.requestId === legacy.requestId,
-        );
-        if (old) {
-          if (
-            old.requestId !== legacy.requestId ||
-            old.operationKey !== operationKey
-          )
-            throw Error("旧请求身份与待核对记录冲突。");
-          compatible(old, request);
-          return clone(old);
-        }
-        const record = {
-          operationKey,
-          requestId: legacy.requestId,
-          request,
-          checkpoint: clone(legacy.checkpoint ?? null),
-          createdAt: Date.now(),
-        };
-        write([...records, record]);
-        return clone(record);
-      });
+    async adopt(operationKey, legacy, { safeStop = false } = {}) {
+      if (typeof operationKey !== "string" || !operationKey)
+        throw Error("缺少操作标识。");
+      if (!legacy?.requestId || typeof legacy.requestId !== "string")
+        throw Error("旧请求缺少原始身份。");
+      const request = exactRequest(legacy.request, legacy.requestId);
+      if (safeStop && !isSafeStop(request))
+        throw Error("仅停止原执行可使用安全停止通道。");
+      const record = {
+        operationKey,
+        requestId: legacy.requestId,
+        request,
+        checkpoint: clone(legacy.checkpoint ?? null),
+        createdAt: Date.now(),
+      };
+      try {
+        return await locked((records) => {
+          const old = existing(records, operationKey, legacy.requestId);
+          if (old) {
+            if (
+              old.requestId !== legacy.requestId ||
+              old.operationKey !== operationKey
+            )
+              throw Error("旧请求身份与待核对记录冲突。");
+            compatible(old, request);
+            return persistExisting(records, old);
+          }
+          write([...records, record]);
+          return clone(record);
+        });
+      } catch (error) {
+        if (
+          !safeStop ||
+          !["WORKSPACE_STORAGE", "WORKSPACE_COORDINATION"].includes(error.code)
+        )
+          throw error;
+        return retainStop(operationKey, record, error);
+      }
     },
     checkpoint(requestId, value) {
       return locked((records) => {
