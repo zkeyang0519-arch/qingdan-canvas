@@ -27,13 +27,7 @@ async function ports() {
   assert.ok(values.every((port) => port !== 8790 && port !== 8788));
   return values;
 }
-async function portFree(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.on("error", () => resolve(false));
-    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
-  });
-}
+const portFree = manager.portAvailable;
 export async function lifecycleCheckout(t, source) {
   const workspace = process.cwd();
   await mkdir(path.join(workspace, ".tmp"), { recursive: true });

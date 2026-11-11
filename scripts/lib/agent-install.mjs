@@ -632,11 +632,18 @@ export async function requestControl(manifest, command, options = {}) {
     });
   });
 }
-async function portAvailable(port) {
+export function portAvailable(port) {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+    // Diagnosis runs during startup too. Binding a probe listener can steal the
+    // port from the real launcher; a connection observes it without owning it.
+    const socket = net.createConnection({ port, host: "127.0.0.1" });
+    const finish = (available) => {
+      socket.destroy();
+      resolve(available);
+    };
+    socket.once("connect", () => finish(false));
+    socket.once("error", (error) => finish(error.code === "ECONNREFUSED"));
+    socket.setTimeout(1000, () => finish(false));
   });
 }
 async function applicationReady() {
@@ -824,12 +831,14 @@ export async function stop(options = {}) {
     const response = await requestControl(manifest, "stop", options);
     for (let attempt = 0; attempt < 450; attempt++) {
       const current = await json(runtimeFile);
-      if (!current || !processExists(runtime.pid))
+      // The bridge removes its record before the OS releases the process and
+      // its working-directory handles. Only process exit completes this stop.
+      if (!processExists(runtime.pid))
         return {
           stopped: true,
           interruptedActive: response.interruptedActive === true,
         };
-      if (current.instanceId !== runtime.instanceId)
+      if (current && current.instanceId !== runtime.instanceId)
         throw Error(
           "Instance changed while stopping; no further action was taken.",
         );

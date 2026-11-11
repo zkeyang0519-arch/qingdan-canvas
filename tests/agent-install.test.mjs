@@ -32,6 +32,96 @@ try {
 } catch (error) {
   if (error.code !== "ERR_MODULE_NOT_FOUND") throw error;
 }
+
+test("diagnosis cannot occupy a port while the application starts", async (t) => {
+  const f = await fixture(t);
+  await manager.install({ ...f, checkDependencies: false });
+  const reservation = net.createServer((socket) => socket.destroy());
+  reservation.listen(0, "127.0.0.1");
+  await once(reservation, "listening");
+  const applicationPort = reservation.address().port;
+  await new Promise((resolve) => reservation.close(resolve));
+  const otherPort = net.createServer((socket) => socket.destroy());
+  otherPort.listen(0, "127.0.0.1");
+  await once(otherPort, "listening");
+  const application = net.createServer((socket) => socket.destroy());
+  t.after(async () => {
+    if (application.listening)
+      await new Promise((resolve) => application.close(resolve));
+    await new Promise((resolve) => otherPort.close(resolve));
+  });
+  let startup;
+  const startApplication = () => {
+    if (!startup)
+      startup = new Promise((resolve) => {
+        application.once("error", resolve);
+        application.listen(applicationPort, "127.0.0.1", () => resolve(null));
+      });
+    return startup;
+  };
+  const ports = { 8790: applicationPort, 8788: otherPort.address().port };
+  const listen = net.Server.prototype.listen;
+  const connect = net.createConnection;
+  // Redirect the production diagnostics to isolated ports. Start the real
+  // application during the probe, before a listening probe can release its port.
+  t.mock.method(net.Server.prototype, "listen", function (port, ...args) {
+    if (!ports[port]) return listen.call(this, port, ...args);
+    if (port === 8790) {
+      const callback = args.pop();
+      return listen.call(this, ports[port], ...args, () => {
+        void startApplication().then(() => callback());
+      });
+    }
+    return listen.call(this, ports[port], ...args);
+  });
+  t.mock.method(net, "createConnection", function (options, ...args) {
+    const port = typeof options === "number" ? options : options?.port;
+    if (ports[port]) {
+      if (port === 8790) void startApplication();
+      options =
+        typeof options === "number"
+          ? ports[port]
+          : { ...options, port: ports[port] };
+    }
+    return connect.call(this, options, ...args);
+  });
+  await manager.diagnose({ ...f, probePort: undefined });
+  const error = await startup;
+  assert.equal(error?.code, undefined, "the diagnostic probe blocked application startup");
+  assert.equal(application.listening, true);
+});
+
+test("stop waits for process exit after the authenticated control record disappears", async (t) => {
+  const f = await fixture(t);
+  await writeFile(
+    path.join(f.root, "scripts/dev-agent.mjs"),
+    `
+    import { closeLifecycleControl } from ${JSON.stringify(new URL("../scripts/lib/agent-install-bridge.mjs", import.meta.url).href)};
+    setInterval(() => {}, 1000);
+    process.once('SIGTERM', async () => {
+      await closeLifecycleControl();
+      setTimeout(() => process.exit(0), 750);
+    });
+  `,
+  );
+  await manager.install({ ...f, checkDependencies: false });
+  const running = await manager.start(f);
+  try {
+    const result = await manager.stop(f);
+    assert.equal(result.stopped, true);
+    assert.equal(
+      manager.processExists(running.pid),
+      false,
+      "stop reported success while the launcher still held its working directory",
+    );
+  } finally {
+    const deadline = Date.now() + 5000;
+    while (manager.processExists(running.pid) && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(manager.processExists(running.pid), false);
+  }
+});
+
 test("installation lifecycle module exists", () =>
   assert.ok(manager, "local installation lifecycle is missing"));
 
