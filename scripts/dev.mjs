@@ -52,21 +52,6 @@ try {
     "0",
     "--var",
     "APP_ENV:local",
-    ...(process.env.QINGDAN_RUNNER_ENABLED === "true"
-      ? ["--var", "RUNNER_ENABLED:true"]
-      : []),
-    ...(process.env.QINGDAN_EXECUTION_ENABLED === "true"
-      ? ["--var", "EXECUTION_ENABLED:true"]
-      : []),
-    ...(process.env.QINGDAN_CHAT_ENABLED === "true"
-      ? ["--var", "CHAT_ENABLED:true"]
-      : []),
-    ...(process.env.QINGDAN_PROJECT_SUMMARY_ENABLED === "true"
-      ? ["--var", "PROJECT_SUMMARY_ENABLED:true"]
-      : []),
-    ...(process.env.QINGDAN_BATCH_QUEUE_ENABLED === "true"
-      ? ["--var", "BATCH_QUEUE_ENABLED:true"]
-      : []),
   ]);
 } catch (error) {
   console.error(error.message);

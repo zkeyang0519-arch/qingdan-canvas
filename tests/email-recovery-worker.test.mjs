@@ -28,7 +28,7 @@ test(
       bundle: true,
       platform: "neutral",
       mainFields: ["module", "main"],
-      conditions: ["workerd", "browser"],
+      conditions: ["workerd"],
       format: "esm",
       external: ["node:*", "cloudflare:*"],
       outfile: scriptPath,

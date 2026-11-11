@@ -213,14 +213,6 @@ npm run db:preview
 
 配置依据：[预览配置](https://developers.cloudflare.com/workers/previews/configuration/)、[Durable Object 隔离](https://developers.cloudflare.com/workers/previews/resources/#durable-objects)、[预览 D1 迁移](https://developers.cloudflare.com/workers/previews/resources/#d1-migrations)。
 
-### Agent 版本发布与回滚
-
-本机安装与故障恢复入口见 [本机 Agent 安装](agent-installation.md)。当前安装器管理 checkout 中的本地 8790/8788 服务，不能把本机验收当作远程生产验收。
-
-Agent 发布应先在隔离预览环境完成：对正确 D1 应用全部待执行迁移，再发布匹配的 Worker/DO 代码，随后更新 Runner（使用 `runner/protocol-version.json` 固定的 Codex 版本）。最后才在预览环境启用对应功能开关，重新验证设备绑定、同批次逐项执行、断线和恢复。生产发布继续由用户手动执行。
-
-遇到故障先停止新增派单，保留 D1/DO、运行日志、设备凭据和原生会话记录，核对活动 run/thread/turn、租约及清单回执。不要删除数据或回退存储结构来强制解除占用；只有确认协议和存储兼容后才回滚 Worker/Runner。状态不明的原生执行保持阻断，不能把超时当作未执行而重发。
-
 ### 线上运行日志
 
 ```powershell

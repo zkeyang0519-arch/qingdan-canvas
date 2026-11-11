@@ -13,7 +13,6 @@
       "/api/*",
       "/mcp",
       "/mcp/*",
-      "/executor-mcp",
       "/oauth/*",
       "/.well-known/*",
     ],
@@ -25,8 +24,6 @@
         "name": "ROOMS",
         "class_name": "CanvasRoom",
       },
-      { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
-      { "name": "AGENT_CHATS", "class_name": "AgentChatRouter" },
     ],
   },
   "migrations": [
@@ -34,8 +31,6 @@
       "tag": "v1",
       "new_sqlite_classes": ["CanvasRoom"],
     },
-    { "tag": "v2", "new_sqlite_classes": ["RunnerHub"] },
-    { "tag": "v3", "new_sqlite_classes": ["AgentChatRouter"] },
   ],
   "d1_databases": [
     {
@@ -54,31 +49,14 @@
   "vars": {
     "APP_ENV": "production",
     "MCP_ENABLED": "false",
-    "RUNNER_ENABLED": "false",
-    "EXECUTION_ENABLED": "false",
-    "CHAT_ENABLED": "false",
-    "PROJECT_SUMMARY_ENABLED": "false",
-    "BATCH_QUEUE_ENABLED": "false",
   },
   "observability": {
     "enabled": true,
   },
   "previews": {
-    "vars": {
-      "APP_ENV": "preview",
-      "MCP_ENABLED": "false",
-      "RUNNER_ENABLED": "false",
-      "EXECUTION_ENABLED": "false",
-      "CHAT_ENABLED": "false",
-      "PROJECT_SUMMARY_ENABLED": "false",
-      "BATCH_QUEUE_ENABLED": "false",
-    },
+    "vars": { "APP_ENV": "preview", "MCP_ENABLED": "false" },
     "durable_objects": {
-      "bindings": [
-        { "name": "ROOMS", "class_name": "CanvasRoom" },
-        { "name": "RUNNER_HUBS", "class_name": "RunnerHub" },
-        { "name": "AGENT_CHATS", "class_name": "AgentChatRouter" },
-      ],
+      "bindings": [{ "name": "ROOMS", "class_name": "CanvasRoom" }],
     },
     "d1_databases": [
       {

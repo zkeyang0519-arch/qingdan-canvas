@@ -11,5 +11,5 @@
     "checkJs": false,
     "skipLibCheck": true
   },
-  "include": ["worker/**/*.ts", "shared/agent/**/*.ts"]
+  "include": ["worker/**/*.ts"]
 }
