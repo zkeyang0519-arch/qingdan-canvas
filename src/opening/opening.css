@@ -1,8 +1,17 @@
 .opening-gate {
   min-height: 100dvh;
 }
+.opening-gate:not([data-phase="entered"]) {
+  height: 100dvh;
+  overflow: clip;
+}
 .opening-destination {
   min-height: 100dvh;
+}
+.opening-gate[data-phase="waiting"] .opening-destination {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 .opening-gate[data-phase="entering"] .opening-destination {
   animation: opening-app 1.25s both;
@@ -235,6 +244,16 @@
   font-size: 12px;
   letter-spacing: 1px;
   pointer-events: none;
+  max-width: min(560px, calc(100% - 64px));
+}
+.opening-home {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + var(--entry-height) / 2 + 32px);
+  transform: translateX(-50%);
+  color: #edf0db;
+  font-size: 12px;
+  text-underline-offset: 4px;
 }
 .opening-credit {
   position: absolute;
@@ -290,6 +309,7 @@
     0 16px 45px #0005;
 }
 .opening-entry:focus-visible,
+.opening-home:focus-visible,
 .opening-credit:focus-visible {
   outline: 3px solid #e4b98a;
   outline-offset: 7px;
@@ -345,6 +365,12 @@
   border-top: 1px solid #34583a30;
   font-size: 12px;
   letter-spacing: 1px;
+  gap: 8px;
+}
+.opening-cover[data-status="loading"] .opening-entry-bottom,
+.opening-cover[data-status="error"] .opening-entry-bottom {
+  letter-spacing: 0;
+  font-size: 11px;
 }
 .opening-arrow {
   display: grid;
@@ -355,6 +381,30 @@
   flex-shrink: 0;
   background: #345741;
   color: #f1eedf;
+}
+.opening-spinner {
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid #f1eedf50;
+  border-top-color: #f1eedf;
+  border-radius: 50%;
+  animation: opening-spin 0.9s linear infinite;
+}
+.opening-cover[data-status="ready"] .opening-arrow {
+  animation: opening-ready 0.8s ease-out;
+}
+@keyframes opening-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes opening-ready {
+  40% {
+    box-shadow: 0 0 0 7px #34574120;
+  }
+  100% {
+    box-shadow: 0 0 0 12px #34574100;
+  }
 }
 .opening-announcement {
   position: absolute;

@@ -23,6 +23,7 @@ export function useRoomWorkspace(room, user) {
   latestRoomName.current = room.name;
   const [state, setState] = useState(null),
     [status, setStatus] = useState("loading");
+  const [startupReady, setStartupReady] = useState(false);
   const [error, setError] = useState(""),
     [conflict, setConflict] = useState(null);
   const [members, setMembers] = useState([]),
@@ -237,7 +238,12 @@ export function useRoomWorkspace(room, user) {
               setProfiles(message.profiles);
               void persist().catch(persistError);
             }
-          } else engine.current.receive(message);
+          } else {
+            engine.current.receive(message);
+            // Cached drafts render before the socket connects. Only a processed
+            // server snapshot establishes that the destination is prepared.
+            if (message.type === "snapshot") setStartupReady(true);
+          }
         } catch (err) {
           setError(err.message);
           setStatus("error");
@@ -529,6 +535,7 @@ export function useRoomWorkspace(room, user) {
   };
   return {
     state,
+    startupReady,
     current,
     update,
     begin,

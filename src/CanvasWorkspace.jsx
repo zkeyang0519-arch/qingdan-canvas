@@ -38,6 +38,7 @@ import {
 } from "./canvas/TaskAuthors.jsx";
 import UserAvatar from "./UserAvatar.jsx";
 import RoomNameDialog from "./RoomNameDialog.jsx";
+import OpeningPreparation from "./opening/OpeningPreparation.jsx";
 import {
   CollectionPanel,
   SearchPanel,
@@ -519,9 +520,21 @@ export default function CanvasWorkspace({
     if (share)
       sessionStorage.setItem(`qingdan.invite.${user.id}/${room.id}`, share);
   }, [user.id, room.id, share]);
+  const preparationError =
+    workspace.error ||
+    (workspace.status === "offline" ? "画布连接暂时中断，请重试。" : "");
+  const preparationStatus = workspace.startupReady
+    ? "ready"
+    : preparationError
+      ? "error"
+      : "loading";
   if (!state)
     return (
       <div className="loading-screen">
+        <OpeningPreparation
+          status={preparationStatus}
+          error={preparationError}
+        />
         <span className="brand-mark" />
         <p>{workspace.error || "正在打开画布…"}</p>
         <button onClick={onLeave}>返回画布列表</button>
@@ -547,6 +560,10 @@ export default function CanvasWorkspace({
       members={members}
       profiles={workspace.profiles}
     >
+      <OpeningPreparation
+        status={preparationStatus}
+        error={workspace.startupReady ? "" : preparationError}
+      />
       <TodoToolsProvider
         workspace={workspace}
         scope={`${room.id}:${arranged ? "arranged" : "canvas"}`}
