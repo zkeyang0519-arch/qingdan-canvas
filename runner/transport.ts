@@ -63,6 +63,7 @@ export type ExecutionAction =
   | "report"
   | "batch-gate"
   | "recover-lease"
+  | "reconcile"
   | "responses"
   | "response-ack";
 /** Native-only outbound connection. The device credential stays in this transport. */
@@ -503,6 +504,7 @@ export class RunnerTransport {
         "report",
         "batch-gate",
         "recover-lease",
+        "reconcile",
         "responses",
         "response-ack",
       ].includes(action)

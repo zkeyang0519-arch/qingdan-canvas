@@ -26,15 +26,21 @@ async function terminalIds(client: CodexClient, threadId: string) {
 export async function stopThreadTerminals(
   client: CodexClient,
   threadId: string,
+  guard?: () => void,
 ): Promise<void> {
   // IDs are obtained only from the mapped task's thread. Never use OS process
   // names, arbitrary model-provided PIDs, or another Codex client's threads.
   for (const processId of await terminalIds(client, threadId)) {
+    guard?.();
     await client.request("thread/backgroundTerminals/terminate", {
       threadId,
       processId,
     });
   }
+  await confirmThreadTerminalsStopped(client, threadId);
+}
+
+export async function confirmThreadTerminalsStopped(client: CodexClient, threadId: string) {
   if ((await terminalIds(client, threadId)).size)
     throw new RunnerError(
       "RECONCILIATION_REQUIRED",

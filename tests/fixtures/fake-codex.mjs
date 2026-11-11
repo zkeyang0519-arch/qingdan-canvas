@@ -251,6 +251,15 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
     state.threads.push(thread);
     save();
     if (mode() === "exit-thread-start") return process.exit(2);
+    if (mode() === "delayed-thread-start") {
+      const timer = setInterval(() => {
+        if (!existsSync(`${statePath}.release-thread`)) return;
+        clearInterval(timer);
+        notify("thread/started", { thread });
+        reply({ thread, cwd: params.cwd, sandbox: { type: "workspaceWrite" } });
+      }, 5);
+      return;
+    }
     notify("thread/started", { thread });
     return reply({
       thread,

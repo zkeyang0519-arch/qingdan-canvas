@@ -42,7 +42,7 @@ class DurableRows {
   close() { this.db.close(); }
 }
 
-export async function recoveryHarness(t, { mode = "normal" } = {}) {
+export async function recoveryHarness(t, { mode = "normal", requestTimeoutMs = 900 } = {}) {
   await mkdir(path.join(root, ".tmp"), { recursive: true });
   const base = await mkdtemp(path.join(root, ".tmp/agent-recovery-"));
   const apiPath = path.join(base, "api.mjs");
@@ -74,7 +74,9 @@ export async function recoveryHarness(t, { mode = "normal" } = {}) {
         bind(...values) { args = values; return this; },
         async first() {
           if (sql.includes("agent_workspace_leases")) {
-            const lease = await storage.get(`fixture:lease:${args[2]}`);
+            const lease = args.length === 2
+              ? [...(await storage.list({ prefix: "fixture:lease:" })).values()].find(lease => lease.workspaceId === args[1])
+              : await storage.get(`fixture:lease:${args[2]}`);
             return lease && { workspace_id: lease.workspaceId, run_id: lease.runId, lease_epoch: lease.leaseEpoch, expires_at: lease.expiresAt };
           }
           if (sql.includes("agent_execution_requests")) return storage.get(`fixture:reservation:${args.slice(0, 2).join(":")}`);
@@ -124,12 +126,22 @@ export async function recoveryHarness(t, { mode = "normal" } = {}) {
     dispatch = new api.ExecutionDispatch(storage, env);
   }
   const request = async (route, fields) => {
-    try { return await (await dispatch.fetch(new Request(`https://isolated/execution/${route}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) }))).json(); }
-    catch (error) { errors.push({ route, error: error.message }); throw error; }
+    try {
+      const response = await dispatch.fetch(new Request(`https://isolated/execution/${route}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) }));
+      const value = await response.json();
+      if (!response.ok) throw Object.assign(Error(value.error), { code: `EXECUTION_HTTP_${response.status}` });
+      return value;
+    }
+    catch (error) {
+      // The in-process dispatch throws HttpError; the real HTTP transport maps
+      // its status to this code. Keep the consumer fixture on that contract.
+      if (error.status) error.code = `EXECUTION_HTTP_${error.status}`;
+      errors.push({ route, error: error.message }); throw error;
+    }
   };
   const native = (action, input) => request(`native/${action}`, { runnerId: principal.runnerId, authEpoch: 1, input: { ...input, connectionEpoch: epoch } });
   async function openDevice() {
-    controller = new api.RunnerDeviceController({ stateDir, serverOrigin: "http://127.0.0.1:8788", locksDir: path.join(base, "locks"), executionEnabled: true, credentials: { read: async () => "isolated-test-only" }, executionCodex: { command: process.execPath, args: [path.join(root, "tests/fixtures/fake-codex.mjs")], env: { ...process.env, FAKE_CODEX_STATE: nativePath, FAKE_CODEX_MODE: mode }, requestTimeoutMs: 900, shutdownTimeoutMs: 100 }, transportFactory(options) {
+    controller = new api.RunnerDeviceController({ stateDir, serverOrigin: "http://127.0.0.1:8788", locksDir: path.join(base, "locks"), executionEnabled: true, credentials: { read: async () => "isolated-test-only" }, executionCodex: { command: process.execPath, args: [path.join(root, "tests/fixtures/fake-codex.mjs")], env: { ...process.env, FAKE_CODEX_STATE: nativePath, FAKE_CODEX_MODE: mode }, requestTimeoutMs, shutdownTimeoutMs: 100 }, transportFactory(options) {
       transport = {
         status: { connectionStatus: "offline", connectionEpoch: ++epoch, lastHeartbeatAt: null, error: null },
         async start() { this.status.connectionStatus = "online"; },

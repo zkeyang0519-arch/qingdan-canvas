@@ -519,6 +519,7 @@ export class RunnerDeviceController {
       if (this.config!.enabled) {
         if (this.transport) this.transport.reconnect();
         else this.startTransport();
+        this.execution?.executor.requestReconciliation();
       }
       return this.status(ownerId);
     });

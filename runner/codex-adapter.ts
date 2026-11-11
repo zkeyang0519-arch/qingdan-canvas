@@ -43,7 +43,7 @@ import {
   runPrompt,
   runTitle,
 } from "./prompt";
-import { stopThreadTerminals } from "./process-cleanup";
+import { confirmThreadTerminalsStopped, stopThreadTerminals } from "./process-cleanup";
 import { currentSnapshot, finishBatchItem, initialBatch } from "./batch";
 import {
   requestResponseSchema,
@@ -73,6 +73,9 @@ export type AdapterOptions = ProcessOptions & {
   approvalsReviewer?: "user" | "auto_review";
   now?: () => number;
   desktopProjectSync?: (root: string) => Promise<void>;
+  // Synchronous durable fence at the actual RPC send, including after awaits.
+  assertDispatchAllowed?: (runId: string) => void;
+  canStop?: (runId: string) => boolean;
 };
 export function parseApprovalsReviewer(
   value?: unknown,
@@ -374,6 +377,7 @@ export class CodexAdapter {
     );
     try {
       await guard?.("thread");
+      this.options.assertDispatchAllowed?.(run.runId);
       this.store.patchRun(run.runId, { launchIntent: "thread_requested" });
       const result = await this.client.request("thread/start", {
         cwd: root,
@@ -385,6 +389,9 @@ export class CodexAdapter {
         dynamicTools: [resultTool(snapshot.kind)],
         ...(this.options.model ? { model: this.options.model } : {}),
       });
+      // A reconciliation may finish while thread/start is pending. Its late
+      // reply must not revive the run or proceed to name/turn/start.
+      this.options.assertDispatchAllowed?.(run.runId);
       if (!result.thread?.id || rootKey(result.thread.cwd) !== rootKey(root))
         throw new RunnerError(
           "CODEX_PROTOCOL_ERROR",
@@ -396,6 +403,7 @@ export class CodexAdapter {
       });
       this.attachedThreads.add(result.thread.id);
       await guard?.("name");
+      this.options.assertDispatchAllowed?.(run.runId);
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
         name: runTitle(snapshot),
@@ -410,18 +418,14 @@ export class CodexAdapter {
               capturedAt: new Date().toISOString(),
             }
           : undefined;
+      const summaryEvidence = summaryContext
+        ? await readSummaryEvidence(root, summaryContext.gitBaseline) : undefined;
+      this.options.assertDispatchAllowed?.(run.runId);
       const prepared = this.store.patchRun(run.runId, {
         launchIntent: "turn_sent",
         pendingRequestId: requestId,
         ...(summaryContext ? { summaryContext } : {}),
-        ...(summaryContext
-          ? {
-              summaryEvidence: await readSummaryEvidence(
-                root,
-                summaryContext.gitBaseline,
-              ),
-            }
-          : {}),
+        ...(summaryEvidence ? { summaryEvidence } : {}),
       });
       const response = await this.client.request(
         "turn/start",
@@ -440,12 +444,12 @@ export class CodexAdapter {
       return launch;
     } catch (error) {
       const current = this.getRun(run.runId);
-      if (
+      if (!current.terminal && (
         current.launchIntent === "prepared" ||
         current.launchIntent === "thread_created" ||
         (error instanceof RpcError &&
           current.launchIntent === "thread_requested")
-      )
+      ))
         this.store.patchRun(run.runId, {
           status: "failed",
           active: false,
@@ -1000,6 +1004,7 @@ export class CodexAdapter {
       ).details.allowedDecisions?.includes((response as any).decision)
     )
       throw new RunnerError("ACCESS_DENIED", "当前权限不允许此审批决定。");
+    this.options.assertDispatchAllowed?.(run.runId);
     this.client.respond(request.wireId, response);
     this.resolveRequest(run.runId, requestId, "responded");
     this.store.patchRun(run.runId, {
@@ -1130,6 +1135,7 @@ export class CodexAdapter {
       batch.items[nextIndex].status = "running";
       batch.items[nextIndex].summary = "";
       delete batch.items[nextIndex].completedTurnId;
+      this.options.assertDispatchAllowed?.(runId);
       run = this.store.patchRun(runId, {
         batch,
         batchPhase: "running",
@@ -1261,6 +1267,7 @@ export class CodexAdapter {
       if (input.mode === "steer" && !readySupplement) {
         await guard?.("steer");
         this.assertBatchItemUnsealed(this.getRun(run.runId));
+        this.options.assertDispatchAllowed?.(run.runId);
         this.store.patchRun(run.runId, { reportedResult: null });
         const result = await this.client.request("turn/steer", {
           threadId: run.threadId,
@@ -1300,6 +1307,7 @@ export class CodexAdapter {
           item.summary = "";
           delete item.completedTurnId;
         }
+        this.options.assertDispatchAllowed?.(run.runId);
         run = this.store.patchRun(run.runId, {
           active: true,
           terminal: false,
@@ -1359,6 +1367,7 @@ export class CodexAdapter {
       );
   }
   async cancelRun(runId: string): Promise<CommandReceipt> {
+    this.assertStopAllowed(runId);
     const run = this.getRun(runId);
     this.resolveRequests(
       runId,
@@ -1430,6 +1439,7 @@ export class CodexAdapter {
       cancelRequested: true,
     });
     try {
+      this.assertStopAllowed(runId);
       await this.client.request("turn/interrupt", {
         threadId: run.threadId,
         turnId: run.activeTurnId,
@@ -1608,7 +1618,28 @@ export class CodexAdapter {
       };
     }
   }
-  async confirmRunStopped(runId: string, guard?: () => Promise<void>) {
+  /** Recover only a uniquely recorded request identity; no completion cleanup
+   * or interrupt is allowed on the inspect_only path. */
+  async identifyRunTurn(runId: string) {
+    const run = this.getRun(runId);
+    if (!run.threadId) throw new RunnerError("RECONCILIATION_REQUIRED", "原会话 ID 未知，不能猜测匹配。");
+    const history = await this.readThread(run.threadId, run.snapshot.workspaceId);
+    const current = this.getRun(runId);
+    if (current.threadId !== run.threadId || current.activeTurnId !== run.activeTurnId || current.pendingRequestId !== run.pendingRequestId)
+      throw new RunnerError("RECONCILIATION_REQUIRED", "核对期间原轮次已改变。");
+    const matches = history.turns.filter(turn => run.pendingRequestId
+      ? turn.items.some(item => item.type === "userMessage" && item.clientId === run.pendingRequestId)
+      : turn.id === run.activeTurnId);
+    if (matches.length !== 1)
+      throw new RunnerError("RECONCILIATION_REQUIRED", "历史中没有唯一匹配轮次，不能声明已停止。");
+    if (run.pendingRequestId) this.mapTurn(runId, matches[0].id);
+    return { status: matches[0].status };
+  }
+  private assertStopAllowed(runId: string) {
+    if (this.options.canStop?.(runId) === false)
+      throw new RunnerError("RECONCILIATION_REQUIRED", "当前票据仅允许只读核对；请先请求停止。");
+  }
+  async confirmRunStopped(runId: string, guard?: () => Promise<void>, options?: { readOnly: boolean }) {
     const run = this.getRun(runId);
     const unchanged = () => {
       const current = this.getRun(runId);
@@ -1648,7 +1679,10 @@ export class CodexAdapter {
       await checkHistory();
       this.attachedThreads.add(run.threadId!);
     }
-    await stopThreadTerminals(this.client, run.threadId!);
+    if (options?.readOnly || this.options.canStop?.(runId) === false)
+      await confirmThreadTerminalsStopped(this.client, run.threadId!);
+    else
+      await stopThreadTerminals(this.client, run.threadId!, () => this.assertStopAllowed(runId));
     await checkHistory();
   }
   async confirmPausedCheckpoint(runId: string, guard: () => Promise<void>) {

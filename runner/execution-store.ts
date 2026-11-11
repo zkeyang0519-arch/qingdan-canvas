@@ -7,7 +7,7 @@ import type {
   ExecutionSnapshot,
   RunnerEvent,
 } from "../shared/agent/contracts";
-import type { ExecutionAck, ExecutionReport } from "../shared/agent/execution";
+import type { ExecutionAck, ExecutionReport, ExecutionReconcileRequest, ExecutionReconcileTicket } from "../shared/agent/execution";
 import { digest } from "./store";
 import { RunnerError } from "./errors";
 import type { NativeRequestResponse } from "../shared/agent/permissions";
@@ -18,7 +18,17 @@ export type HeldRun = {
   runId: string;
   workspaceId: string;
   lockToken: string;
+  // Original claim identity survives a missing/expired transport lease.
+  leaseEpoch?: number;
   phase: "reserving" | "locked" | "claimed" | "releasing" | "local_release";
+};
+export type ReconciliationRequest = Omit<Extract<ExecutionReconcileRequest, { phase: "confirm" }>, "connectionEpoch">;
+export type NativeReconciliation = {
+  claim: { runId: string; workspaceId: string; leaseEpoch: number; lockToken: string };
+  ticket?: ExecutionReconcileTicket;
+  request?: ReconciliationRequest;
+  settled?: boolean;
+  error?: string;
 };
 export type JournalEntry = {
   envelope: CommandEnvelope;
@@ -159,6 +169,70 @@ export class ExecutionStore {
       if (current?.lockToken === held.lockToken && current.phase === held.phase)
         this.db.prepare("DELETE FROM state WHERE key='held'").run();
     });
+  }
+  bindClaim(held: HeldRun, leaseEpoch: number) {
+    return this.transaction(() => {
+      const current = this.held();
+      if (!current || current.lockToken !== held.lockToken ||
+          (current.leaseEpoch !== undefined && current.leaseEpoch !== leaseEpoch))
+        throw new RunnerError("LEASE_MISMATCH", "原占用的租约身份已改变。");
+      const next = { ...current, leaseEpoch };
+      this.write("state", "held", next);
+      return next;
+    });
+  }
+  commandsForRun(runId: string): JournalEntry[] {
+    return this.db.prepare("SELECT data FROM commands WHERE json_extract(data,'$.envelope.runId')=?")
+      .all(runId).map(row => JSON.parse(String(row.data)));
+  }
+  reconciliation(runId: string) {
+    return this.read<NativeReconciliation>("state", `reconciliation:${runId}`);
+  }
+  requestReconciliation(runId: string) {
+    this.write("state", `manual-reconciliation:${runId}`, true);
+  }
+  reconciliationRequested(runId: string) {
+    return this.read<boolean>("state", `manual-reconciliation:${runId}`) === true;
+  }
+  clearReconciliationRequest(runId: string) {
+    this.db.prepare("DELETE FROM state WHERE key=?").run(`manual-reconciliation:${runId}`);
+  }
+  beginReconciliation(held: HeldRun): NativeReconciliation {
+    return this.transaction(() => {
+      const current = this.held(), old = this.reconciliation(held.runId);
+      if (!current || current.phase !== "claimed" || current.lockToken !== held.lockToken || !current.leaseEpoch)
+        throw new RunnerError("RECONCILIATION_REQUIRED", "缺少原占用与租约记录，不能声明已停止。");
+      const claim = { runId: current.runId, workspaceId: current.workspaceId, leaseEpoch: current.leaseEpoch, lockToken: current.lockToken };
+      if (old && digest(old.claim) !== digest(claim))
+        throw new RunnerError("LEASE_MISMATCH", "核对记录不属于当前占用。");
+      if (old) return old;
+      const record = { claim };
+      // Freeze BEFORE inspect: its server-side seal may commit without an ACK.
+      this.write("state", `reconciliation:${held.runId}`, record);
+      return record;
+    });
+  }
+  saveReconciliation(runId: string, patch: Partial<Omit<NativeReconciliation, "claim">>) {
+    return this.transaction(() => {
+      const old = this.reconciliation(runId);
+      if (!old) throw new RunnerError("RECONCILIATION_REQUIRED", "缺少持久核对记录。");
+      if (patch.request) {
+        const key = `reconciliation-request:${patch.request.requestId}`;
+        const prior = this.read<ReconciliationRequest>("state", key);
+        if (prior && digest(prior) !== digest(patch.request))
+          throw new RunnerError("IDEMPOTENCY_KEY_REUSED", "停止证明请求不能更改。");
+        this.write("state", key, patch.request);
+      }
+      if (patch.ticket)
+        this.write("state", `sealed-command:${patch.ticket.originalCommandId}`, { runId, snapshotHash: patch.ticket.snapshotHash });
+      const next = { ...old, ...patch };
+      this.write("state", `reconciliation:${runId}`, next);
+      return next;
+    });
+  }
+  assertDispatchAllowed(runId: string, commandId?: string) {
+    if (this.reconciliation(runId) || this.reconciliationRequested(runId) || (commandId && this.read("state", `sealed-command:${commandId}`)))
+      throw new RunnerError("COMMAND_SEALED", "运行正在核对或已经封存，不能发送新的轮次。");
   }
   command(commandId: string) {
     return this.read<JournalEntry>("commands", commandId);

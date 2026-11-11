@@ -1411,6 +1411,9 @@ if (api) {
     assert.equal(requests[0].headers.Origin, undefined);
     assert.equal(requests[0].redirect, "error");
     assert.deepEqual(JSON.parse(requests[0].body), { connectionEpoch: 7 });
+    await transport.executionRequest("reconcile", { phase: "inspect", runId: "run-a", workspaceId: "workspace-a", leaseEpoch: 1, connectionEpoch: 999 });
+    assert.equal(requests[1].url, "http://127.0.0.1:8788/api/runner/execution/reconcile");
+    assert.equal(JSON.parse(requests[1].body).connectionEpoch, 7);
     assert.ok(!JSON.stringify(transport.status).includes("private-bearer"));
   });
 }

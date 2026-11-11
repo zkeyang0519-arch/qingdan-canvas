@@ -402,7 +402,7 @@ test("final report interrupted between queue observation and receipt commit is r
   assert.ok(await f.storage.get(`exec:report:${f.runId}:${pending.revision}`));
 });
 
-test("lost thread identity remains recoverably blocked after restart and never creates a replacement chat", async t => {
+test("lost thread identity settles only with durable never-dispatched proof and never creates a replacement chat", async t => {
   const f = await recoveryHarness(t, { mode: "exit-thread-start" });
   await f.create();
   await f.until(() => f.journal.latest(f.runId)?.phase === "uncertain");
@@ -414,9 +414,9 @@ test("lost thread identity remains recoverably blocked after restart and never c
   assert.equal(state.calls.filter(call => call.method === "thread/start").length, 1);
   assert.equal(state.calls.filter(call => call.method === "turn/start").length, 0);
   const view = await f.view();
-  assert.equal(view.status, "reconciliation_required");
-  assert.equal(view.queue.phase, "blocked");
-  assert.equal(view.stopConfirmed, false);
+  assert.equal(view.status, "cancelled");
+  assert.equal(view.queue.phase, "cancelled");
+  assert.equal(view.stopConfirmed, true);
   assert.equal((await f.storage.list({ prefix: "fixture:done:" })).size, 0);
-  assert.equal(f.executor.hasHold, true);
+  assert.equal(f.executor.hasHold, false);
 });
