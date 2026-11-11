@@ -148,6 +148,69 @@ test("a contradictory duplicate identity quarantines all variants before adoptin
   assert.deepEqual(JSON.parse(window.sessionStorage.getItem(oldKey)), entries);
 });
 
+for (const malformedKey of ["not-json", null])
+  for (const reversed of [false, true])
+    test(`a malformed legacy key collision stays wholly read-only (${typeof malformedKey}, reversed=${reversed})`, async () => {
+      const entries = [
+        entry("create", { tasks: [item] }, "collision"),
+        [malformedKey, { requestId: "collision", input: null }],
+      ];
+      if (reversed) entries.reverse();
+      const original = JSON.stringify(entries);
+      window.sessionStorage.setItem(oldKey, original);
+      const requests = store(),
+        adoptedIds = [];
+      const result = await migrateChecklistRequests(
+        {
+          ...requests,
+          adopt: (...args) => {
+            adoptedIds.push(args[1].requestId);
+            return requests.adopt(...args);
+          },
+        },
+        context,
+      );
+      assert.deepEqual(adoptedIds, []);
+      assert.deepEqual(requests.getSnapshot().records, []);
+      assert.deepEqual(result.quarantined, entries);
+      assert.equal(window.sessionStorage.getItem(oldKey), original);
+    });
+
+test("a malformed legacy key collision does not prevent unrelated valid migration", async () => {
+  const collision = [
+    ["not-json", { requestId: "collision", input: null }],
+    entry("create", { tasks: [item] }, "collision"),
+  ];
+  const unrelated = entry(
+    "create",
+    { tasks: [{ ...item, text: "unrelated" }] },
+    "unrelated",
+  );
+  window.sessionStorage.setItem(
+    oldKey,
+    JSON.stringify([collision[0], unrelated, collision[1]]),
+  );
+  const requests = store(),
+    adoptedIds = [];
+  const result = await migrateChecklistRequests(
+    {
+      ...requests,
+      adopt: (...args) => {
+        adoptedIds.push(args[1].requestId);
+        return requests.adopt(...args);
+      },
+    },
+    context,
+  );
+  assert.deepEqual(adoptedIds, ["unrelated"]);
+  assert.deepEqual(
+    requests.getSnapshot().records.map((record) => record.requestId),
+    ["unrelated"],
+  );
+  assert.deepEqual(result.quarantined, collision);
+  assert.equal(window.sessionStorage.getItem(oldKey), JSON.stringify(collision));
+});
+
 test("malformed payloads and contradictory intent facts are read-only; other scopes remain untouched", async () => {
   const entries = [
     entry("create", {}, "missing"),

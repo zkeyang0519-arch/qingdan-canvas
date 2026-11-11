@@ -263,25 +263,24 @@ export async function migrateChecklistRequests(store, context) {
     byOperation = new Map(),
     contradictory = new Set();
   for (const entry of entries) {
+    // Even an unreadable payload key is evidence about its declared identity.
+    // Index that identity before validating the rest of the old Map entry.
+    const id = entry?.[1]?.requestId;
+    if (typeof id === "string" && id)
+      byId.set(id, [...(byId.get(id) || []), entry]);
     if (
       !Array.isArray(entry) ||
       typeof entry[0] !== "string" ||
-      !entry[1]?.requestId
+      !id
     )
       continue;
-    const id = entry[1].requestId;
     let op;
     try {
       op = exact(JSON.parse(entry[0]));
     } catch {
       continue;
     }
-    for (const [map, key] of [
-      [byId, id],
-      [byOperation, op],
-    ]) {
-      map.set(key, [...(map.get(key) || []), entry]);
-    }
+    byOperation.set(op, [...(byOperation.get(op) || []), entry]);
   }
   for (const group of [...byId.values(), ...byOperation.values()])
     if (new Set(group.map(exact)).size > 1)
