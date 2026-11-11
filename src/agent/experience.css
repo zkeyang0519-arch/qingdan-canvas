@@ -383,6 +383,61 @@
 .agent-execution-run {
   margin-top: 18px;
 }
+.agent-batch-draft {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 0 12px 12px;
+  border: 1px solid #e6e5df;
+  border-radius: 8px;
+}
+.agent-batch-draft legend {
+  padding: 0 5px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.agent-batch-progress {
+  margin: 14px 0;
+}
+.agent-batch-progress h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.agent-batch-progress ol {
+  margin: 0;
+  padding-left: 27px;
+}
+.agent-batch-progress li {
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.agent-batch-progress li[aria-current="step"] {
+  background: #f0f6f1;
+}
+.agent-batch-item-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-batch-item-heading span {
+  flex: none;
+  color: #57534e;
+  font-size: 12px;
+}
+.agent-batch-progress li p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  color: #57534e;
+}
+.agent-codex-link {
+  color: #407b60;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .agent-execution-summary {
   font-size: 13px;
   padding: 12px;
@@ -401,7 +456,235 @@
   font-size: 12px;
   line-height: 1.7;
 }
+.agent-checklist-tasks {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding-left: 25px;
+}
+.agent-checklist-tasks > li {
+  padding: 8px 10px;
+  border: 1px solid #e6e5df;
+  border-radius: 8px;
+}
+.agent-checklist-row,
+.agent-checklist-row label,
+.agent-checklist-panel .agent-checklist-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.agent-checklist-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.agent-checklist-row label {
+  min-width: 0;
+  margin: 3px 0 8px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.agent-checklist-panel input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  accent-color: #407b60;
+}
+.agent-checklist-editor,
+.agent-checklist-dispatch {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid #e6e5df;
+}
+.agent-chat-panel > .agent-device-card + .agent-device-card {
+  margin-top: 16px;
+}
+.agent-chat-messages,
+.agent-memory-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 12px 0;
+  list-style: none;
+}
+.agent-chat-message,
+.agent-memory-list li {
+  padding: 10px 12px;
+  border: 1px solid #e6e5df;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.agent-chat-user {
+  background: #f0f6f1;
+}
+.agent-chat-copy,
+.agent-memory-list p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+.agent-chat-proposal {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e6e5df;
+}
+.agent-chat-proposal h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.agent-memory-panel button[aria-pressed="true"] {
+  background: #e7f2e9;
+  color: #35664f;
+}
+.agent-project-summary {
+  margin: 16px 0;
+}
+.agent-project-overview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agent-summary-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.agent-summary-sections section {
+  padding: 12px;
+  background: #f8f8f5;
+  border-radius: 8px;
+  min-width: 0;
+}
+.agent-summary-sections h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.agent-summary-sections ul {
+  padding-left: 18px;
+  margin: 0;
+}
+.agent-summary-sections li {
+  overflow-wrap: anywhere;
+  margin-top: 6px;
+}
+.agent-summary-sections small {
+  display: block;
+  color: #6b6b61;
+}
+.agent-summary-source dl {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 6px 12px;
+  font-size: 12px;
+}
+.agent-summary-source dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.agent-file-check,
+.agent-batch-stop-confirm,
+.agent-batch-followup {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #e6e5df;
+  border-radius: 8px;
+  background: #f8f8f5;
+}
+.agent-permissions {
+  margin: 12px 0;
+}
+.agent-permission-options,
+.agent-native-question {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #deded4;
+  border-radius: 8px;
+}
+.agent-permission-options > label,
+.agent-native-question > label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 12px 0;
+}
+.agent-permission-options small,
+.agent-native-question small {
+  display: block;
+  margin-top: 4px;
+  color: #65675b;
+}
+.agent-request-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: #17221c66;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.agent-request-dialog {
+  width: min(620px, 100%);
+  max-height: calc(100dvh - 36px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: #fffefa;
+  border: 1px solid #dddccf;
+  border-radius: 14px;
+  box-shadow: 0 20px 65px #14291e33;
+  padding: 22px;
+  overflow-wrap: anywhere;
+}
+.agent-request-dialog h3 {
+  margin: 0;
+}
+.agent-request-dialog pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: #f1f2ec;
+  border-radius: 6px;
+}
+.agent-request-dialog textarea,
+.agent-request-dialog input[type="password"] {
+  width: 100%;
+}
+.agent-pending-request,
+.agent-pending-notice {
+  margin: 12px 0;
+}
+.agent-pending-toast {
+  position: fixed;
+  z-index: 950;
+  right: 20px;
+  bottom: 20px;
+  width: min(360px, calc(100vw - 40px));
+  box-shadow: 0 8px 32px #233b2326;
+}
+.agent-pending-notice {
+  padding: 12px;
+  border: 1px solid #d6ac60;
+  background: #fff7df;
+  border-radius: 8px;
+}
+.agent-batch-stop-confirm {
+  background: #fff7ed;
+  border-color: #ead5bc;
+}
+.agent-batch-reason,
+.agent-batch-evidence li {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.agent-managed-batch > details {
+  margin-top: 12px;
+}
+.agent-batch-evidence ul {
+  padding-left: 20px;
+}
 @media (max-width: 600px) {
+  .agent-summary-sections {
+    grid-template-columns: 1fr;
+  }
   .agent-experience.modal.wide {
     padding: 16px;
     max-height: calc(100dvh - 20px);

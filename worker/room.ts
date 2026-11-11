@@ -1,12 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Asset, CanvasData, Change, Commit, Env, Row } from "./types";
-import { check, failure, HttpError, json, validId } from "./http";
+import { body, check, failure, HttpError, json, validId } from "./http";
 import { membership } from "./auth";
 import { sharedObject } from "../shared/canvas-contract.js";
 import { taskAuthor, withTaskAuthor } from "../shared/task-authors.js";
 import { recoverTaskAuthorsFromReceipts } from "./task-author-recovery.js";
 import { planCanvasCommand, planRestoreBlocks } from "./canvas-commands";
 import { queryCanvas } from "./canvas-queries";
+import {
+  initializeAgentChecklist,
+  runAgentChecklist,
+  trackAgentTaskVersions,
+} from "./agent-checklist";
+import {
+  authorizeExecution,
+  type ExecutionPrincipal,
+} from "./execution/execution-auth";
 import type {
   CanvasQuery,
   DeletionSnapshot,
@@ -76,6 +85,7 @@ export class CanvasRoom extends DurableObject<Env> {
       `);
       recoverTaskAuthorsFromReceipts(ctx.storage.sql);
       initializeMcpStorage(ctx.storage.sql);
+      initializeAgentChecklist(ctx.storage.sql, () => this.rows());
     });
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
@@ -129,6 +139,8 @@ export class CanvasRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      if (path === "/internal/agent-checklist")
+        return await this.internalAgentChecklist(request);
       if (path === "/internal/mcp" || path === "/internal/mcp-operations")
         return await this.internalMcp(
           request,
@@ -265,7 +277,14 @@ export class CanvasRoom extends DurableObject<Env> {
       deleted: change.data === null,
       data: change.data,
     }));
-    for (const row of nextRows) current.set(row.id, row);
+    for (const row of nextRows) {
+      trackAgentTaskVersions(
+        this.ctx.storage.sql,
+        current.get(row.id)?.data ?? null,
+        row.data,
+      );
+      current.set(row.id, row);
+    }
     this.validateTree(current, member.room);
     for (const row of nextRows) this.save(row);
     if (nextRows.length)
@@ -281,6 +300,68 @@ export class CanvasRoom extends DurableObject<Env> {
     } catch (error) {
       console.error("Committed canvas broadcast failed", error);
     }
+  }
+  private async internalAgentChecklist(request: Request) {
+    check(request.method === "POST", "方法不支持。", 405);
+    const { principal, input } = await body(request, 1024 * 1024);
+    const p = principal as ExecutionPrincipal;
+    check(
+      p &&
+        validId(p.ownerId) &&
+        validId(p.bindingId) &&
+        validId(p.runnerId) &&
+        Number.isSafeInteger(p.bindingRevision) &&
+        Number.isSafeInteger(p.authEpoch),
+      "执行授权无效。",
+      403,
+    );
+    const { binding } = await authorizeExecution(this.env, p);
+    const room = binding.canvas_id;
+    check(
+      this.ctx.id.equals(this.env.ROOMS.idFromName(room)),
+      "清单不属于此画布。",
+      403,
+    );
+    const member = await membership(this.env, room, p.ownerId);
+    check(
+      member.owner_id === p.ownerId && member.role === "owner",
+      "只有画布所有者可以操作执行清单。",
+      403,
+    );
+    const account = await this.env.DB.prepare(
+      "SELECT name FROM accounts WHERE id=?",
+    )
+      .bind(p.ownerId)
+      .first<{ name: string }>();
+    check(account, "执行账号不存在。", 403);
+    // Membership/name reads above can yield; recheck the pinned execution
+    // binding and device epoch at the final boundary before the local commit.
+    await authorizeExecution(this.env, p);
+    const result = this.ctx.storage.transactionSync(() => {
+      if ((input as { action?: unknown } | null)?.action !== "create_receipt")
+        this.ensureRoom(room);
+      return runAgentChecklist(
+        {
+          sql: this.ctx.storage.sql,
+          canvasId: room,
+          sectionId: binding.section_id,
+          accountId: p.ownerId,
+          accountName: account.name,
+          bindingId: binding.binding_id,
+          rows: () => this.rows(),
+          sequence: () => this.sequence(),
+          commit: (changes) =>
+            this.commitChanges(changes, {
+              room,
+              user: p.ownerId,
+              name: account.name,
+            }),
+        },
+        input,
+      );
+    });
+    await this.safeBroadcast(result.rows);
+    return json(result.value);
   }
   async internalMcp(request: Request, browser: boolean): Promise<Response> {
     check(request.method === "POST", "方法不支持。", 405);

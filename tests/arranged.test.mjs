@@ -154,6 +154,19 @@ test("排列新建灵感板可以立即用作独立页面且不移动原内容",
   );
 });
 
+test("Agent 视图只保存个人导航，返回排列保留项目和画布坐标", () => {
+  const f = fixture();
+  const before = setSurface(f.state, f.boardId, "arranged");
+  const selected = choosePanePage(before, f.boardId, "left", "right");
+  const next = setSurface(selected, f.boardId, "agent");
+  assert.equal(next.preferences.views[f.boardId].surface, "agent");
+  assert.strictEqual(next.objects, selected.objects);
+  assert.deepEqual(prepareEdit(next), prepareEdit(selected));
+  const restored = setSurface(JSON.parse(JSON.stringify(next)), f.boardId, "arranged");
+  assert.equal(panePages(restored, f.boardId).page.id, "right");
+  assert.equal(restored.preferences.views[f.boardId].scale, selected.preferences.views[f.boardId].scale);
+});
+
 test("添加到右栏只写入右灵感板，保留左栏和引用块的身份", () => {
   const f = fixture();
   const incoming = {

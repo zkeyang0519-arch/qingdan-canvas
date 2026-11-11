@@ -188,7 +188,7 @@ try {
       );
       await writeFile(
         path.join(workspace, "AGENTS.md"),
-        "本目录是独立自动化接入验收项目。只处理当前消息指定的简单任务，直接执行，无需扩展设计。只可创建 task-a.txt 或 task-b.txt；其他文件只读。最终按消息给出的 outputSchema 返回 JSON。\n",
+        "本目录是独立自动化接入验收项目。只处理当前消息指定的简单任务，直接执行，无需扩展设计。只可创建 task-a.txt 或 task-b.txt；其他文件只读。使用轻单提供的回执工具记录结果，最终用自然语言回复。\n",
       );
       const git = (args) =>
         exec("git", ["-C", workspace, ...args], { windowsHide: true });

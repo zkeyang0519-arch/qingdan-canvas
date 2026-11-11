@@ -34,7 +34,8 @@ const { default: ExecutionPanel } = await import(
 rmSync(dir, { recursive: true, force: true });
 const button = (text) =>
   [...document.querySelectorAll("button")].find(
-    (b) => b.textContent.trim() === text,
+    (b) =>
+      b.textContent.trim() === text || b.getAttribute("aria-label") === text,
   );
 const click = async (text) => {
   const b = button(text);
@@ -221,6 +222,9 @@ function fixture() {
         stopConfirmed: true,
       };
     },
+    setRun(value) {
+      run = value;
+    },
   };
 }
 async function mount(f) {
@@ -395,13 +399,198 @@ test("named project result cannot redirect creation to an existing checklist bin
   }
 });
 
+test("batch draft requires all fields and submits reordered items once through MCP", async () => {
+  const f = fixture(),
+    unmount = await mount(f);
+  try {
+    await edit("执行要求", "  写说明  ");
+    await edit("完成标准", "包含使用步骤");
+    await click("添加待办");
+    await edit("第 2 项执行要求", "创建示例");
+    assert.equal(button("提交批次").disabled, true);
+    await edit("第 2 项完成标准", "示例可运行");
+    await click("添加待办");
+    await click("下移第 1 项");
+    await click("上移第 3 项");
+    await click("删除第 2 项");
+    await click("提交批次");
+    const intents = f.calls.filter((c) => c.route.endsWith("/intents"));
+    assert.equal(intents.length, 1);
+    const { requestId, ...body } = intents[0].options.body;
+    assert.ok(requestId);
+    assert.deepEqual(body, {
+      bindingId: "binding",
+      bindingRevision: 1,
+      kind: "task",
+      items: [
+        { instruction: "创建示例", acceptance: "示例可运行" },
+        { instruction: "写说明", acceptance: "包含使用步骤" },
+      ],
+    });
+    assert.equal(
+      f.calls.filter((c) => c.options.body?.name === "codex_create_run").length,
+      1,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("batch progress displays its paused item and uses one conversation for continuation", async () => {
+  const f = fixture();
+  const batchRun = {
+    runId: "run",
+    kind: "task",
+    status: "verifying",
+    threadId: "chat-1",
+    turnId: "turn-2",
+    terminal: true,
+    stopConfirmed: true,
+    batch: {
+      currentIndex: 1,
+      items: [
+        {
+          taskId: "task-a",
+          text: "创建示例",
+          status: "done",
+          summary: "示例已生成",
+        },
+        {
+          taskId: "task-b",
+          text: "写说明",
+          status: "blocked",
+          summary: "等待环境说明",
+        },
+        {
+          taskId: "task-c",
+          text: "核对输出",
+          status: "pending",
+          summary: "",
+        },
+      ],
+    },
+  };
+  f.setRun(batchRun);
+  const unmount = await mount(f);
+  try {
+    const progress = document.querySelector('[aria-label="批次进度"]');
+    assert.ok(progress, "batch progress is visible");
+    assert.match(progress.textContent, /第 2 项.*共 3 项/);
+    const rows = [...progress.querySelectorAll("li")].map(
+      (li) => li.textContent,
+    );
+    assert.match(rows[0], /创建示例.*执行完毕.*示例已生成/);
+    assert.match(rows[1], /写说明.*暂停.*等待环境说明/);
+    assert.match(rows[2], /核对输出.*待执行/);
+    assert.equal(
+      document.querySelectorAll('a[href="codex://threads/chat-1"]').length,
+      1,
+    );
+    assert.match(document.body.textContent, /补充后重做当前项/);
+    await edit("补充说明", "使用本地环境");
+    await click("发送补充说明");
+    const follow = f.calls.findLast(
+      (c) => c.options.body?.name === "codex_continue_run",
+    );
+    assert.equal(follow.options.body.arguments.mode, "reply");
+    assert.equal(follow.options.body.arguments.expectedTurnId, "turn-2");
+
+    f.setRun({
+      ...batchRun,
+      status: "failed",
+      batch: {
+        ...batchRun.batch,
+        items: batchRun.batch.items.map((item) =>
+          item.taskId === "task-b" ? { ...item, status: "failed" } : item,
+        ),
+      },
+    });
+    await click("刷新状态");
+    assert.match(document.body.textContent, /批次已暂停，等待补充说明/);
+    assert.match(document.body.textContent, /补充后重做当前项/);
+
+    f.setRun({
+      ...batchRun,
+      status: "succeeded",
+      batch: {
+        currentIndex: 2,
+        items: batchRun.batch.items.map((item) => ({
+          ...item,
+          status: "done",
+        })),
+      },
+    });
+    await click("刷新状态");
+    assert.match(document.body.textContent, /批次执行完毕，待你验收/);
+    assert.equal(
+      document.querySelector('[aria-label="补充说明"]').disabled,
+      true,
+    );
+    assert.match(document.body.textContent, /新的工作可提交新批次/);
+  } finally {
+    await unmount();
+  }
+});
+
+test("confirmed batch stop overrides older progress without discarding completed items", async () => {
+  const f = fixture();
+  const stoppedRun = {
+    runId: "run",
+    kind: "task",
+    status: "cancelled",
+    threadId: "chat-1",
+    turnId: "turn-2",
+    terminal: true,
+    stopConfirmed: true,
+  };
+  const runWithProgress = (...statuses) => ({
+    ...stoppedRun,
+    batch: {
+      currentIndex: statuses.length - 1,
+      items: statuses.map((status, index) => ({
+        taskId: `task-${index}`,
+        text: `执行待办 ${index + 1}`,
+        status,
+        summary: status === "done" ? "完成记录" : "",
+      })),
+    },
+  });
+  f.setRun(runWithProgress("done", "done"));
+  const unmount = await mount(f);
+  try {
+    assert.match(document.body.textContent, /批次已停止/);
+    assert.doesNotMatch(document.body.textContent, /批次执行完毕，待你验收/);
+    for (const statuses of [
+      ["done", "blocked"],
+      ["pending", "pending"],
+    ]) {
+      f.setRun(runWithProgress(...statuses));
+      await click("刷新状态");
+      const progress = document.querySelector('[aria-label="批次进度"]');
+      assert.match(document.body.textContent, /批次已停止/);
+      assert.doesNotMatch(document.body.textContent, /批次已暂停/);
+      assert.doesNotMatch(progress.textContent, /当前第|待执行/);
+      assert.equal(progress.querySelector('[aria-current="step"]'), null);
+      const rows = [...progress.querySelectorAll("li")];
+      if (statuses[0] === "done") {
+        assert.match(rows[0].textContent, /执行完毕.*完成记录/);
+      } else {
+        assert.match(rows[0].textContent, /已停止/);
+      }
+      assert.match(rows[1].textContent, /已停止/);
+    }
+  } finally {
+    await unmount();
+  }
+});
+
 test("panel submits through MCP, follows up in the same turn and shows requested stop honestly", async () => {
   const f = fixture(),
     unmount = await mount(f);
   try {
     await edit("执行要求", "在项目里创建 hello.txt");
     await edit("完成标准", "文件包含 hello");
-    await click("提交任务");
+    await click("提交批次");
     assert.match(document.body.textContent, /收到执行要求/);
     assert.match(document.body.textContent, /chat-1/);
     await edit("补充说明", "补上一行 world");
@@ -425,9 +614,9 @@ test("lost dispatch receipt retries the same authorized intent and request ID", 
     await edit("执行要求", "创建 hello.txt");
     await edit("完成标准", "检查 hello.txt");
     f.loseReceipt();
-    await click("提交任务");
+    await click("提交批次");
     assert.match(document.body.textContent, /回执暂未收到/);
-    await click("提交任务");
+    await click("提交批次");
     const creates = f.calls.filter(
       (c) => c.options.body?.name === "codex_create_run",
     );
@@ -443,7 +632,7 @@ test("completed turn can be continued and stays attached to its original chat", 
   try {
     await edit("执行要求", "创建 hello.txt");
     await edit("完成标准", "检查文件");
-    await click("提交任务");
+    await click("提交批次");
     f.complete();
     await click("刷新状态");
     assert.match(document.body.textContent, /本轮结束，待你验收/);
@@ -466,7 +655,7 @@ test("stale intent target is rejected before MCP create", async () => {
     f.rebindBeforeIntent();
     await edit("执行要求", "写入文件");
     await edit("完成标准", "文件存在");
-    await click("提交任务");
+    await click("提交批次");
     assert.match(document.body.textContent, /关联已变化/);
     assert.equal(
       f.calls.some((c) => c.options.body?.name === "codex_create_run"),
@@ -489,6 +678,14 @@ test("summary retries ignore task-only drafts and task retries normalize whitesp
     await click("只总结项目");
     await edit("执行要求", "不相关的草稿");
     await click("只总结项目");
+    const summary = f.calls.find((c) => c.route.endsWith("/intents"));
+    const { requestId, ...summaryBody } = summary.options.body;
+    assert.ok(requestId);
+    assert.deepEqual(summaryBody, {
+      bindingId: "binding",
+      bindingRevision: 1,
+      kind: "summary",
+    });
     let creates = f.calls.filter(
       (c) => c.options.body?.name === "codex_create_run",
     );
@@ -496,9 +693,9 @@ test("summary retries ignore task-only drafts and task retries normalize whitesp
     await edit("执行要求", "  写入文件  ");
     await edit("完成标准", "文件存在");
     f.loseReceipt();
-    await click("提交任务");
+    await click("提交批次");
     await edit("执行要求", "写入文件");
-    await click("提交任务");
+    await click("提交批次");
     creates = f.calls.filter(
       (c) => c.options.body?.name === "codex_create_run",
     );
@@ -513,7 +710,7 @@ test("a definitive turn conflict refreshes the turn while an uncertain reply reu
   try {
     await edit("执行要求", "写入文件");
     await edit("完成标准", "文件存在");
-    await click("提交任务");
+    await click("提交批次");
     await edit("补充说明", "补上一行");
     f.conflictFollow();
     await click("发送补充说明");
@@ -544,7 +741,7 @@ test("confirmed cancellation does not retain a waiting-for-confirmation banner",
   try {
     await edit("执行要求", "写入文件");
     await edit("完成标准", "文件存在");
-    await click("提交任务");
+    await click("提交批次");
     f.immediateCancel();
     await click("请求停止");
     assert.match(document.body.textContent, /已确认停止/);
@@ -560,7 +757,7 @@ test("removing the visible checklist invalidates its old binding before any new 
     await edit("执行要求", "写入文件");
     await edit("完成标准", "文件存在");
     await unmount.pages([]);
-    assert.equal(button("提交任务").disabled, true);
+    assert.equal(button("提交批次").disabled, true);
     assert.equal(
       document.querySelector('[aria-label="清单关联"]').value,
       "agent-execution-trial",

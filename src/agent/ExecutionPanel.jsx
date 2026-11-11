@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
 import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
 
@@ -18,6 +19,34 @@ const statusText = {
   cancel_requested: "正在请求停止",
   reconciliation_required: "需要核对本机进度",
 };
+const batchItemStatusText = {
+  pending: "待执行",
+  running: "执行中",
+  done: "执行完毕",
+  blocked: "已暂停",
+  needs_input: "需要补充说明",
+  failed: "执行失败",
+  cancelled: "已停止",
+};
+const batchFinished = (run) =>
+  run?.terminal &&
+  run.status !== "cancelled" &&
+  run.batch?.items.every((item) => item.status === "done");
+const batchPaused = (run) =>
+  run?.terminal &&
+  run.stopConfirmed &&
+  run.status !== "cancelled" &&
+  ["blocked", "needs_input", "failed"].includes(
+    run.batch?.items[run.batch.currentIndex]?.status,
+  );
+const runStatus = (run) =>
+  run.batch && run.status === "cancelled"
+    ? "批次已停止"
+    : batchFinished(run)
+      ? "批次执行完毕，待你验收"
+      : batchPaused(run)
+        ? "批次已暂停，等待补充说明"
+        : statusText[run.status] || run.status;
 const clock = (time) =>
   time ? new Date(time).toLocaleString("zh-CN", { hour12: false }) : "";
 
@@ -40,8 +69,9 @@ export default function ExecutionPanel({
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState(null);
-  const [instruction, setInstruction] = useState("");
-  const [acceptance, setAcceptance] = useState("");
+  const [drafts, setDrafts] = useState([
+    { id: 0, instruction: "", acceptance: "" },
+  ]);
   const [followup, setFollowup] = useState("");
   const [projectName, setProjectName] = useState("轻单测试项目");
   const [loaded, setLoaded] = useState(false);
@@ -51,6 +81,7 @@ export default function ExecutionPanel({
   const mounted = useRef(false),
     busyRef = useRef(false),
     epoch = useRef(0);
+  const nextDraftId = useRef(1);
   const selected = useRef(""),
     details = useRef(null),
     activeBinding = useRef(null);
@@ -62,6 +93,13 @@ export default function ExecutionPanel({
     sectionId === trialSection ||
     pages.some((page) => page.id === sectionId) ||
     namedProjects.some((item) => item.sectionId === sectionId);
+  const items = drafts.map(({ instruction, acceptance }) => ({
+    instruction: instruction.trim(),
+    acceptance: acceptance.trim(),
+  }));
+  const incompleteDraft = items.some(
+    (item) => !item.instruction || !item.acceptance,
+  );
   const valid = (version) => mounted.current && version === epoch.current;
 
   const callTool = useCallback(
@@ -313,25 +351,55 @@ export default function ExecutionPanel({
       accountId: userId,
       items: nextLocal.executionProjects,
     });
-    setInstruction(
-      "在当前测试项目中创建 hello.txt，内容为：你好，轻单 MCP！只修改这个文件。",
+    setDrafts((current) =>
+      current.length === 1 && !current[0].instruction && !current[0].acceptance
+        ? [
+            {
+              ...current[0],
+              instruction:
+                "在当前测试项目中创建 hello.txt，内容为：你好，轻单 MCP！只修改这个文件。",
+              acceptance: "hello.txt 存在，内容为：你好，轻单 MCP！",
+            },
+          ]
+        : current,
     );
-    setAcceptance("hello.txt 存在，内容为：你好，轻单 MCP！");
-    setMessage(
-      `项目“${trial.workspace.name}”已准备。可以提交示例任务，也可以修改执行要求。`,
-    );
+    setMessage(`项目“${trial.workspace.name}”已准备，可以编辑并提交待办。`);
     if (sectionId === targetSection) await refresh(version);
     else setSectionId(targetSection);
   }
+  function addDraft() {
+    const id = nextDraftId.current++;
+    setDrafts((current) =>
+      current.length < MAX_PLAN_TASKS
+        ? [...current, { id, instruction: "", acceptance: "" }]
+        : current,
+    );
+  }
+  function editDraft(id, field, value) {
+    setDrafts((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, [field]: value } : item,
+      ),
+    );
+  }
+  function moveDraft(index, offset) {
+    setDrafts((current) => {
+      const next = index + offset;
+      if (next < 0 || next >= current.length) return current;
+      const updated = [...current];
+      [updated[index], updated[next]] = [updated[next], updated[index]];
+      return updated;
+    });
+  }
   async function submit(kind, version) {
     if (!binding || !sectionValid || !loaded) return;
+    if (kind === "task" && incompleteDraft)
+      throw Error("请填写每项待办的执行要求和完成标准。");
     const target = {
       bindingId: binding.bindingId,
       bindingRevision: binding.revision,
       kind,
-      ...(kind === "task"
-        ? { instruction: instruction.trim(), acceptance: acceptance.trim() }
-        : {}),
+      ...(kind === "task" ? { items } : {}),
     };
     const key = JSON.stringify([userId, roomId, target]);
     if (!pendingCreates.has(key)) {
@@ -377,7 +445,11 @@ export default function ExecutionPanel({
     pendingCreates.delete(key);
     if (!valid(version)) return;
     selectRun(receipt.runId);
-    setMessage("派单已保存。下方会持续显示本机执行进度。");
+    setMessage(
+      kind === "task"
+        ? "批次已提交。下方会显示每项待办的执行进度。"
+        : "派单已保存。下方会持续显示本机执行进度。",
+    );
     await refresh(version);
   }
   async function sendFollowup(version) {
@@ -435,6 +507,11 @@ export default function ExecutionPanel({
   }
 
   const run = detail?.run;
+  const batch = run?.batch;
+  const finished = batchFinished(run);
+  const paused = batchPaused(run);
+  const cancelled = batch && run.status === "cancelled";
+  const showCurrent = !finished && !cancelled;
   const completion = detail?.events?.findLast(
     (event) => event.type === "turn.completed",
   );
@@ -448,6 +525,7 @@ export default function ExecutionPanel({
     completion?.payload?.summary?.overview;
   const canFollow =
     run?.turnId &&
+    !finished &&
     ![
       "queued",
       "preparing",
@@ -463,7 +541,8 @@ export default function ExecutionPanel({
       <div className="agent-intro">
         <h3>把任务交给本机 Codex</h3>
         <p>
-          提交任务后，在这里查看进度、补充说明或请求停止。每个新任务会新建会话，补充说明会接着原会话执行。
+          每次提交新建一个 Codex
+          会话。批次里的待办在同一会话中按顺序执行，可以在这里查看进度、补充说明或请求停止。
         </p>
       </div>
       {error && (
@@ -554,50 +633,96 @@ export default function ExecutionPanel({
             创建项目
           </button>
           <span className="agent-note">
-            文件夹使用这个名称；同名项目会继续使用原目录，保留已有结果。
+            创建项目会准备同名文件夹。提交批次或项目总结后会新建 Codex
+            会话。同名项目保留已有结果。
           </span>
         </div>
       </section>
-      <section className="agent-device-card" aria-label="提交任务">
-        <h4>执行要求</h4>
-        <label>
-          <span className="sr-only">执行要求</span>
-          <textarea
-            aria-label="执行要求"
-            value={instruction}
-            onChange={(event) => setInstruction(event.target.value)}
-            placeholder="描述希望 Codex 在这个项目里完成的工作"
-            rows={3}
-            maxLength={32000}
-            disabled={busy}
-          />
-        </label>
-        <label>
-          怎样算完成
-          <textarea
-            aria-label="完成标准"
-            value={acceptance}
-            onChange={(event) => setAcceptance(event.target.value)}
-            placeholder="写明你验收时要看到的结果"
-            rows={2}
-            maxLength={4000}
-            disabled={busy}
-          />
-        </label>
+      <section className="agent-device-card" aria-label="提交批次">
+        <div className="agent-card-heading">
+          <h4>编排待办</h4>
+          <button
+            disabled={busy || drafts.length >= MAX_PLAN_TASKS}
+            onClick={addDraft}
+          >
+            添加待办
+          </button>
+        </div>
+        {drafts.map((item, index) => (
+          <fieldset key={item.id} className="agent-batch-draft">
+            <legend>第 {index + 1} 项待办</legend>
+            <label>
+              执行要求
+              <textarea
+                aria-label={
+                  index === 0 ? "执行要求" : `第 ${index + 1} 项执行要求`
+                }
+                value={item.instruction}
+                onChange={(event) =>
+                  editDraft(item.id, "instruction", event.target.value)
+                }
+                placeholder="描述希望 Codex 在这个项目里完成的工作"
+                rows={3}
+                maxLength={32000}
+                disabled={busy}
+              />
+            </label>
+            <label>
+              完成标准
+              <textarea
+                aria-label={
+                  index === 0 ? "完成标准" : `第 ${index + 1} 项完成标准`
+                }
+                value={item.acceptance}
+                onChange={(event) =>
+                  editDraft(item.id, "acceptance", event.target.value)
+                }
+                placeholder="写明你验收时要看到的结果"
+                rows={2}
+                maxLength={4000}
+                disabled={busy}
+              />
+            </label>
+            {drafts.length > 1 && (
+              <div className="agent-actions">
+                <button
+                  aria-label={`上移第 ${index + 1} 项`}
+                  disabled={busy || index === 0}
+                  onClick={() => moveDraft(index, -1)}
+                >
+                  上移
+                </button>
+                <button
+                  aria-label={`下移第 ${index + 1} 项`}
+                  disabled={busy || index === drafts.length - 1}
+                  onClick={() => moveDraft(index, 1)}
+                >
+                  下移
+                </button>
+                <button
+                  aria-label={`删除第 ${index + 1} 项`}
+                  disabled={busy}
+                  onClick={() =>
+                    setDrafts((current) =>
+                      current.filter((draft) => draft.id !== item.id),
+                    )
+                  }
+                >
+                  删除
+                </button>
+              </div>
+            )}
+          </fieldset>
+        ))}
         <div className="agent-actions">
           <button
             className="primary"
             disabled={
-              busy ||
-              !binding ||
-              !instruction.trim() ||
-              !acceptance.trim() ||
-              !sectionValid ||
-              !loaded
+              busy || !binding || incompleteDraft || !sectionValid || !loaded
             }
             onClick={() => perform((version) => submit("task", version))}
           >
-            提交任务
+            提交批次
           </button>
           <button
             disabled={busy || !binding || !sectionValid || !loaded}
@@ -607,7 +732,7 @@ export default function ExecutionPanel({
           </button>
         </div>
         <p className="agent-note">
-          本步骤验证派单与控制。执行结束后由你检查结果，正式清单的完成状态会在后续步骤接入。
+          执行结束后由你检查结果。这里的执行进度仅用于本次派单。
         </p>
       </section>
       <section className="agent-device-card" aria-label="派单记录">
@@ -632,9 +757,12 @@ export default function ExecutionPanel({
               >
                 {runs.map((item) => (
                   <option value={item.runId} key={item.runId}>
-                    {item.kind === "summary" ? "项目总结" : "执行任务"} ·{" "}
-                    {clock(item.createdAt)} ·{" "}
-                    {statusText[item.status] || item.status}
+                    {item.kind === "summary"
+                      ? "项目总结"
+                      : item.batch
+                        ? "执行批次"
+                        : "执行任务"}{" "}
+                    · {clock(item.createdAt)} · {runStatus(item)}
                   </option>
                 ))}
               </select>
@@ -642,12 +770,11 @@ export default function ExecutionPanel({
             {run && (
               <div className="agent-execution-run">
                 <div className="agent-card-heading">
-                  <strong role="status">
-                    {statusText[run.status] || run.status}
-                  </strong>
+                  <strong role="status">{runStatus(run)}</strong>
                   <button
                     disabled={
                       busy ||
+                      cancelled ||
                       run.stopConfirmed ||
                       run.status === "cancel_requested"
                     }
@@ -657,7 +784,55 @@ export default function ExecutionPanel({
                   </button>
                 </div>
                 {run.threadId && (
-                  <p className="agent-path">Codex 会话：{run.threadId}</p>
+                  <>
+                    <div className="agent-actions">
+                      <a
+                        className="agent-codex-link"
+                        href={`codex://threads/${encodeURIComponent(run.threadId)}`}
+                      >
+                        在 Codex 中查看
+                      </a>
+                      <span className="agent-note">
+                        补充说明、继续和停止仍在轻单操作。
+                      </span>
+                    </div>
+                    <p className="agent-path">Codex 会话：{run.threadId}</p>
+                  </>
+                )}
+                {batch && (
+                  <section
+                    className="agent-batch-progress"
+                    aria-label="批次进度"
+                  >
+                    <h5>
+                      {showCurrent
+                        ? `当前第 ${batch.currentIndex + 1} 项 · 共 ${batch.items.length} 项`
+                        : `共 ${batch.items.length} 项`}
+                    </h5>
+                    <ol>
+                      {batch.items.map((item, index) => (
+                        <li
+                          key={item.taskId}
+                          aria-current={
+                            showCurrent && index === batch.currentIndex
+                              ? "step"
+                              : undefined
+                          }
+                        >
+                          <div className="agent-batch-item-heading">
+                            <strong>{item.text}</strong>
+                            <span>
+                              {cancelled && item.status !== "done"
+                                ? batchItemStatusText.cancelled
+                                : batchItemStatusText[item.status] ||
+                                  item.status}
+                            </span>
+                          </div>
+                          {item.summary && <p>{item.summary}</p>}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
                 )}
                 {run.error && <p className="agent-error">{run.error}</p>}
                 {run.status === "cancel_requested" && (
@@ -691,7 +866,7 @@ export default function ExecutionPanel({
                           .join("；")}
                     </p>
                   ))}
-                {resultSummary && (
+                {!batch && resultSummary && (
                   <p className="agent-execution-summary">{resultSummary}</p>
                 )}
                 <details open>
@@ -725,9 +900,13 @@ export default function ExecutionPanel({
                     发送补充说明
                   </button>
                   <span className="agent-note">
-                    {run.terminal
-                      ? "继续原会话的新一轮"
-                      : "补充到正在执行的这一轮"}
+                    {finished || cancelled
+                      ? "新的工作可提交新批次。"
+                      : paused
+                        ? "补充后重做当前项，完成后继续后续待办。"
+                        : run.terminal
+                          ? "继续原会话的新一轮"
+                          : "补充到正在执行的这一轮"}
                   </span>
                 </div>
               </div>

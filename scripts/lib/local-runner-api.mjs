@@ -42,6 +42,7 @@ export function createLocalRunnerApi({
   upstream,
   prepareTrial,
   listTrials,
+  getDiagnostics,
 }) {
   const sessionUrl = new URL("/api/session", upstream);
   if (sessionUrl.protocol !== "http:" || sessionUrl.hostname !== "127.0.0.1")
@@ -78,6 +79,18 @@ export function createLocalRunnerApi({
     if (!controller) throw reject(503, "本机 Runner 正在准备，请稍后重试。");
     const route = url.pathname.slice("/api/local-runner".length);
     try {
+      if (req.method === "GET" && route === "/diagnostics" && getDiagnostics) {
+        await controller.status(ownerId);
+        const diagnostics = await getDiagnostics();
+        // Installation probes can outlive a connection or pairing change.
+        // Recheck both ownership and connection before returning this snapshot.
+        const state = await controller.status(ownerId);
+        return {
+          ...diagnostics,
+          connectionStatus: state.connectionStatus,
+          checkedAt: new Date().toISOString(),
+        };
+      }
       if (req.method === "GET" && route === "/status") {
         const state = await controller.status(ownerId);
         return listTrials
@@ -87,7 +100,31 @@ export function createLocalRunnerApi({
             }
           : state;
       }
+      if (req.method === "GET" && route === "/codex/sessions") {
+        const query = Object.fromEntries(url.searchParams);
+        if (
+          Object.keys(query).some(
+            (key) => !["cursor", "searchTerm"].includes(key),
+          )
+        )
+          throw reject(400, "会话查询包含不支持的字段。");
+        return await controller.listCodexSessions(ownerId, {
+          ...(query.cursor
+            ? { cursor: stringField(query, "cursor", 4096) }
+            : {}),
+          ...(query.searchTerm?.trim()
+            ? { searchTerm: stringField(query, "searchTerm", 200) }
+            : {}),
+        });
+      }
       if (req.method !== "POST") throw reject(404, "找不到本机 Runner 操作。");
+      if (route === "/codex/select") {
+        const body = await readBody(req, ["threadId"]);
+        return await controller.selectCodexSession(
+          ownerId,
+          stringField(body, "threadId", 128),
+        );
+      }
       if (route === "/execution/context") {
         const body = await readBody(req, ["workspaceId"]);
         return await controller.executionContext(
@@ -144,12 +181,11 @@ export function createLocalRunnerApi({
       throw reject(404, "找不到本机 Runner 操作。");
     } catch (error) {
       if (!error.status)
-        error.status =
-          error.code === "ACCESS_DENIED"
-            ? 403
-            : error.code === "VALIDATION_ERROR"
-              ? 400
-              : 409;
+        error.status = ["ACCESS_DENIED", "OWNER_MISMATCH"].includes(error.code)
+          ? 403
+          : error.code === "VALIDATION_ERROR"
+            ? 400
+            : 409;
       throw error;
     }
   };

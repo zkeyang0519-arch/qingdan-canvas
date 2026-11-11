@@ -4,6 +4,7 @@ import { requireSession } from "../auth";
 import { executionToolsRequestSchema } from "../../shared/agent/execution";
 import { parse } from "./dispatch";
 import { bindingPrincipal, nativePrincipal } from "./execution-auth";
+import { callAgentChecklist } from "../checklist-client";
 import {
   bridgeExecutionTool,
   callExecutionHub,
@@ -71,8 +72,21 @@ export async function executionRoute(
   const input = await body(request, 100000);
   check(typeof input.bindingId === "string", "绑定无效。");
   const principal = await bindingPrincipal(env, user.id, input.bindingId);
+  if (p === "/api/agent/execution/checklist") {
+    check(
+      ["list", "create", "save", "reorder"].includes(String(input.action)),
+      "清单操作无效。",
+      400,
+    );
+    const { bindingId: _, ...action } = input;
+    return json(await callAgentChecklist(env, principal, action));
+  }
   if (p === "/api/agent/execution/intents")
     return json(await callExecutionHub(env, principal, "intent", input));
+  if (p === "/api/agent/execution/queue")
+    return json(await callExecutionHub(env, principal, "queue", input));
+  if (p === "/api/agent/execution/respond")
+    return json(await callExecutionHub(env,principal,"respond",input));
   if (p === "/api/agent/execution/tools") {
     const data = parse(executionToolsRequestSchema, input);
     return json(

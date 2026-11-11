@@ -176,7 +176,7 @@ export async function loadAgentModules() {
     await build({
       stdin: {
         contents:
-          "export * from './shared/agent/schemas.ts'; export * from './shared/agent/sort-plan.ts'; export * from './shared/agent/deadlines.ts';",
+          "export * from './shared/agent/schemas.ts'; export * from './shared/agent/sort-plan.ts'; export * from './shared/agent/deadlines.ts'; export * from './shared/agent/execution.ts';",
         resolveDir: root,
       },
       bundle: true,

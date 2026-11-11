@@ -9,7 +9,11 @@ import {
   executionSnapshotSchema,
 } from "../shared/agent/schemas";
 import { projectContextSchema } from "../shared/agent/execution";
-import { CodexAdapter, type AdapterOptions } from "./codex-adapter";
+import {
+  CodexAdapter,
+  parseApprovalsReviewer,
+  type AdapterOptions,
+} from "./codex-adapter";
 import type { DeviceStore } from "./device-store";
 import { RunnerError } from "./errors";
 import {
@@ -24,6 +28,9 @@ import type { RunnerTransport } from "./transport";
 import type { RunRecord } from "./types";
 import { readGitBaseline, rootKey } from "./workspace";
 import { WorkspaceRegistry } from "./workspaces";
+import { verifyAcceptance } from "./verification";
+import { currentSnapshot } from "./batch";
+import { requestResponseSchema } from "../shared/agent/permissions";
 
 export type ExecutionTransport = Pick<
   RunnerTransport,
@@ -66,6 +73,36 @@ const result = z.strictObject({
   settled: z.literal(true).optional(),
 });
 const eventResult = z.strictObject({ eventIds: z.array(id).max(50) });
+const responsesResult = z.strictObject({
+  responses: z
+    .array(
+      z.strictObject({
+        responseId: id,
+        pendingRequestId: id,
+        runId: id,
+        threadId: id,
+        turnId: id,
+        response: requestResponseSchema,
+      }),
+    )
+    .max(20),
+});
+const batchGateResult = z.strictObject({
+  decision: z.enum(["wait", "advance", "finish", "repair", "blocked"]),
+  queueRevision: z.number().int().min(1),
+  permitId: id.optional(),
+  nextIndex: z.number().int().min(0).max(99).optional(),
+  reason: z.string().max(2000).optional(),
+});
+const leaseRecoveryResult = z.discriminatedUnion("decision",[
+  z.strictObject({decision:z.literal("wait")}),
+  z.strictObject({decision:z.literal("cancel")}),
+  z.strictObject({decision:z.literal("inspect"),recoveryId:id}),
+  z.strictObject({decision:z.literal("recovered"),recoveryId:id,lease:z.strictObject({workspaceId:id,runId:id,leaseEpoch:z.number().int().positive(),expiresAt:z.number().int().positive()})}),
+]);
+// Only these pre-recovery versions' safety-stop messages may migrate their
+// nonterminal checkpoint. User cancellation and lifecycle stop remain final.
+const legacyCheckpointStop = new Set(["批次后续待办的执行授权已失效。","运行租约已过期。"]);
 const errorCode = (error: unknown) => (error as { code?: string })?.code;
 const denied = (error: unknown) =>
   ["EXECUTION_REVOKED", "EXECUTION_DISABLED"].includes(errorCode(error) ?? "");
@@ -191,12 +228,16 @@ export class RunnerExecutor {
           command: process.env.QINGDAN_CODEX_BIN || "codex",
           requestTimeoutMs: 8000,
           ...this.o.codex,
+          approvalsReviewer: parseApprovalsReviewer(
+            this.o.codex?.approvalsReviewer ??
+              process.env.QINGDAN_CODEX_APPROVALS_REVIEWER,
+          ),
           runnerId: this.o.runnerId,
           store: this.o.runs,
           workspaces: [],
         });
         this.connecting = (async () => {
-          await previous?.close({ stopRuns: false });
+          await previous?.close({ stopRuns: false, waitDesktop: false });
           await adapter.connect();
           this.adapter = adapter;
           return adapter;
@@ -260,6 +301,8 @@ export class RunnerExecutor {
   private async step() {
     let held = this.o.store.held();
     const t = this.online;
+    this.adapter?.expireRequests();
+    if (t) await this.flushInteractionAcks(t).catch(() => {});
     if (held?.phase === "releasing" || held?.phase === "local_release") {
       await this.release(held, t);
       return;
@@ -268,14 +311,30 @@ export class RunnerExecutor {
       const active = this.o.runs.getRun(held.runId);
       const entry = this.o.store.latest(held.runId);
       const status = this.o.transport()?.status.connectionStatus;
+      if(entry?.phase==="applied"&&this.recoverableCheckpoint(active)&&!this.disabled&&status!=="revoked"&&(!this.liveLease(held)||active!.cancelRequested)) {
+        if(active!.cancelRequested&&legacyCheckpointStop.has(active!.resultError??""))
+          this.o.store.markCheckpointRecovery(held.runId,entry.envelope.commandId,active!.activeTurnId!);
+        if(!active!.cancelRequested)this.o.runs.patchRun(held.runId,{status:"reconciliation_required",resultError:"暂停点租约已过期，请核对并恢复连接。"});
+        if(t)await this.recoverCheckpoint(held,t,entry).catch(()=>{});
+        await this.sync(held,t).catch(()=>{});
+        return;
+      }
       if (active && !terminal(active)) {
+        const intent=this.o.store.stopIntent(held.runId);
         let stopReason =
-          this.disabled || status === "revoked"
+          intent&&intent.commandId===(entry?.envelope.commandId??null)
+            ? intent.reason
+            : this.disabled || status === "revoked"
             ? "设备执行已停用。"
             : undefined;
-        if (!this.liveLease(held)) stopReason = "运行租约已过期。";
+        if (!stopReason&&!this.liveLease(held)) stopReason = "运行租约已过期。";
         if (
-          entry?.startedAt &&
+          !stopReason&&entry?.startedAt &&
+          !(
+            active.snapshot.kind === "task" &&
+            active.snapshot.batch?.managed &&
+            active.batchPhase === "ready"
+          ) &&
           this.now() >=
             entry.startedAt +
               (entry.snapshot.kind === "summary" ? 5 : 30) * 60_000
@@ -289,7 +348,7 @@ export class RunnerExecutor {
             held.lockToken,
           );
         } catch {
-          stopReason = "本地项目目录已变化。";
+          stopReason ??= "本地项目目录已变化。";
         }
         if (
           t &&
@@ -319,7 +378,13 @@ export class RunnerExecutor {
         if (stopReason) await this.stop(held, stopReason).catch(() => {});
         else await this.recover(held).catch(() => {});
       }
-      if (entry?.phase === "dispatching") this.finishInterruptedDispatch(entry);
+      if (
+        entry?.phase === "dispatching" ||
+        (entry?.phase === "uncertain" &&
+          this.o.runs.getRun(held.runId)?.batch &&
+          this.confirmedDispatch(entry))
+      )
+        this.finishInterruptedDispatch(entry);
       if (
         await this.sync(held, t).catch(async (error) => {
           if (denied(error))
@@ -386,6 +451,34 @@ export class RunnerExecutor {
     const lease = this.o.device.lease(held.runId);
     if (entry?.phase === "staged") await this.dispatch(held, t, entry);
     else if (
+      entry?.phase === "applied" &&
+      this.o.runs.getRun(held.runId)?.batchPhase === "ready"
+    ) {
+      try {
+        await this.gate(held, t, entry, true);
+        const adapter = await this.codex(held.workspaceId);
+        const run = this.o.runs.getRun(held.runId)!;
+        if (run.snapshot.kind === "task" && run.snapshot.batch?.managed)
+          await this.managedBatch(held, t, entry, adapter);
+        else
+          await adapter.advanceBatchRun(held.runId, async () => {
+            await this.gate(held!, t, entry, true);
+          });
+      } catch (error) {
+        if (
+          denied(error) ||
+          [
+            "DISPATCH_EXPIRED",
+            "WORKSPACE_CHANGED",
+            "ACCESS_DENIED",
+            "GIT_BASELINE_CHANGED",
+          ].includes(errorCode(error) ?? "")
+        )
+          await this.stop(held, "批次后续待办的执行授权已失效。").catch(
+            () => {},
+          );
+      }
+    } else if (
       !delivery &&
       !response.offers.length &&
       (!entry || (lease && entry.envelope.leaseEpoch < lease.leaseEpoch)) &&
@@ -393,7 +486,172 @@ export class RunnerExecutor {
         terminal(this.o.runs.getRun(held.runId)))
     )
       await this.release(this.o.store.updateHold(held, "releasing") ?? held, t);
+    await this.processInteractionResponses(held, t).catch(() => {});
     await this.sync(held, t).catch(() => {});
+  }
+  private async flushInteractionAcks(t: ExecutionTransport) {
+    for (const pending of this.o.store.unackedInteractionResponses()) {
+      const status =
+        pending.status === "dispatching" ? "expired" : pending.status;
+      if (pending.status === "dispatching") {
+        this.adapter?.expireRequest(pending.pendingRequestId);
+        this.o.store.finishInteractionResponse(pending.responseId, "expired");
+      }
+      result.parse(
+        await t.executionRequest("response-ack", {
+          runId: pending.runId,
+          responseId: pending.responseId,
+          status,
+          ...(status === "expired"
+            ? { reason: "本机请求已失效或原响应发送状态无法确认，未重复回答。" }
+            : {}),
+        }),
+      );
+      this.o.store.acknowledgeInteractionResponse(pending.responseId);
+    }
+  }
+  private async processInteractionResponses(
+    held: HeldRun,
+    t: ExecutionTransport,
+  ) {
+    const run = this.o.runs.getRun(held.runId),
+      entry = this.o.store.latest(held.runId);
+    if (
+      !run ||
+      run.terminal ||
+      run.cancelRequested ||
+      !run.activeTurnId ||
+      !this.adapter?.available ||
+      entry?.phase !== "applied" ||
+      entry.envelope.payload.type === "cancel_run"
+    )
+      return;
+    const data = responsesResult.parse(
+      await t.executionRequest("responses", { runId: held.runId }),
+    );
+    for (const response of data.responses) {
+      if (response.runId !== held.runId) continue;
+      await this.gate(held, t, entry, false, true);
+      const record = this.o.store.beginInteractionResponse(response);
+      if (!record.created) continue;
+      try {
+        await this.adapter.respondToCloudRequest(response);
+        this.o.store.finishInteractionResponse(response.responseId, "applied");
+      } catch {
+        const latest = this.o.runs.getRun(held.runId);
+        this.o.store.finishInteractionResponse(
+          response.responseId,
+          latest?.cancelRequested ? "cancelled" : "expired",
+        );
+      }
+    }
+    await this.flushInteractionAcks(t);
+  }
+  private async managedBatch(
+    held: HeldRun,
+    t: ExecutionTransport,
+    entry: JournalEntry,
+    adapter: CodexAdapter,
+  ) {
+    let run = this.o.runs.getRun(held.runId)!;
+    const index = run.batch!.currentIndex,
+      turnId = run.activeTurnId;
+    if (
+      !turnId ||
+      run.batch!.items[index].completedTurnId !== turnId ||
+      !run.resultValid
+    )
+      return;
+    if (run.verification?.turnId !== turnId) {
+      const snapshot = currentSnapshot(run);
+      if (snapshot.kind !== "task") return;
+      const results = await verifyAcceptance(
+        run.root,
+        snapshot.task.acceptance,
+      );
+      await this.gate(held, t, entry, true);
+      const latest = this.o.runs.getRun(held.runId);
+      if (
+        latest?.activeTurnId !== turnId ||
+        latest.batchPhase !== "ready" ||
+        latest.cancelRequested
+      )
+        return;
+      // Evidence and its exact native turn provenance commit atomically. A
+      // restart may replay delivery, but can never substitute a model receipt.
+      this.o.runs.appendEvent(
+        this.o.runnerId,
+        run.runId,
+        "verification.completed",
+        { results },
+        `verification:${turnId}`,
+        {
+          verification: {
+            turnId,
+            itemIndex: index,
+            results,
+            capturedAt: new Date(this.now()).toISOString(),
+          },
+        },
+      );
+      run = this.o.runs.getRun(held.runId)!;
+    }
+    await this.sync(held, t);
+    const state = this.o.store.run(held.runId),
+      report = state?.report;
+    if (
+      !report ||
+      !state.reportSent ||
+      report.commandId !== entry.envelope.commandId ||
+      report.turnId !== turnId ||
+      report.batch?.currentIndex !== index
+    )
+      return;
+    const decision = batchGateResult.parse(
+      await t.executionRequest("batch-gate", {
+        runId: held.runId,
+        commandId: entry.envelope.commandId,
+        fromIndex: index,
+        completedTurnId: turnId,
+        reportRevision: report.revision,
+      }),
+    );
+    if (["wait", "blocked"].includes(decision.decision)) return;
+    if (!decision.permitId)
+      throw new RunnerError("BATCH_NOT_READY", "服务端未返回有效的继续许可。");
+    const guard = async () => {
+      await this.gate(held, t, entry, true);
+      const current = this.o.runs.getRun(held.runId);
+      if (
+        current?.batch?.currentIndex !== index ||
+        current.activeTurnId !== turnId
+      )
+        throw new RunnerError("BATCH_NOT_READY", "当前完成项已改变。");
+    };
+    if (decision.decision === "finish") {
+      await adapter.finishManagedBatch(run.runId, guard);
+      return;
+    }
+    if (
+      decision.nextIndex !==
+      index + (decision.decision === "advance" ? 1 : 0)
+    )
+      throw new RunnerError("BATCH_NOT_READY", "许可指向的待办顺序不匹配。");
+    await adapter.advanceBatchRun(
+      run.runId,
+      async (stage) => {
+        await guard();
+        if (stage === "turn")
+          this.o.store.transition(entry, { startedAt: this.now() });
+      },
+      {
+        permitId: decision.permitId,
+        decision: decision.decision as "advance" | "repair",
+        fromIndex: index,
+        fromTurnId: turnId,
+        nextIndex: decision.nextIndex,
+      },
+    );
   }
   private liveLease(held: HeldRun, envelope?: CommandEnvelope) {
     const lease = this.o.device.lease(held.runId);
@@ -496,13 +754,26 @@ export class RunnerExecutor {
     held: HeldRun,
     t: ExecutionTransport,
     entry: JournalEntry,
+    batchAdvance = false,
+    interactionResponse = false,
   ) {
     const { envelope } = entry;
+    if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
+    const current = this.o.runs.getRun(held.runId);
+    // The original delivery expires after acceptance, but a running batch is
+    // authorized by its immutable snapshot and a freshly checked live lease.
+    const appliedBatch =
+      (interactionResponse ||
+        (batchAdvance && current?.batchPhase === "ready" && !!current.batch)) &&
+      entry.phase === "applied" &&
+      current?.active &&
+      !current.terminal &&
+      !current.cancelRequested &&
+      envelope.payload.type !== "cancel_run";
     if (
       this.disabled ||
-      this.online !== t ||
       !this.liveLease(held, envelope) ||
-      Date.parse(envelope.expiresAt) <= this.now() ||
+      (!appliedBatch && Date.parse(envelope.expiresAt) <= this.now()) ||
       Date.parse(envelope.issuedAt) > this.now() + 30_000 ||
       this.o.store.held()?.lockToken !== held.lockToken
     )
@@ -520,13 +791,78 @@ export class RunnerExecutor {
     if (ack.superseded)
       throw new RunnerError("COMMAND_SUPERSEDED", "执行命令已被取消或替换。");
     if (
+      appliedBatch &&
+      current?.snapshot.kind === "task" &&
+      current.snapshot.batch?.managed
+    ) {
+      // Revalidate after the network round trip, immediately before the
+      // adapter persists/sends its turn. A granted permit cannot authorize a
+      // replacement checkout that appeared while the ACK was in flight.
+      await this.o.registry.resolve(held.workspaceId, true);
+      await this.o.registry.assertLock(
+        held.workspaceId,
+        held.runId,
+        held.lockToken,
+      );
+      const actual = await readGitBaseline(current.root),
+        expected = current.snapshot.context.gitBaseline;
+      if (
+        actual.commit !== expected.commit ||
+        actual.branch !== expected.branch
+      )
+        throw new RunnerError(
+          "GIT_BASELINE_CHANGED",
+          "项目 Git 分支或 HEAD 已改变；后续任务需要重新确认。",
+        );
+    }
+    if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
+    if (
       this.disabled ||
-      this.online !== t ||
       !this.liveLease(held, envelope) ||
-      Date.parse(envelope.expiresAt) <= this.now() ||
+      (!appliedBatch && Date.parse(envelope.expiresAt) <= this.now()) ||
       this.o.store.held()?.lockToken !== held.lockToken
     )
       throw new RunnerError("DISPATCH_EXPIRED", "执行租约或命令已过期。");
+  }
+  private recoverableCheckpoint(run?:RunRecord|null) {
+    const stop=run&&this.o.store.stopIntent(run.runId);
+    if(stop&&stop.commandId===(this.o.store.latest(run!.runId)?.envelope.commandId??null))return false;
+    const migrated=run&&this.o.store.checkpointRecovery(run.runId);
+    return !!(run&&run.active&&!run.terminal&&run.snapshot.kind==="task"&&run.snapshot.batch?.managed&&run.batchPhase==="ready"&&!run.pendingRequestId&&run.threadId&&run.activeTurnId&&run.batch?.items[run.batch.currentIndex].completedTurnId===run.activeTurnId&&run.resultValid&&(!run.cancelRequested||legacyCheckpointStop.has(run.resultError??"")||(migrated?.turnId===run.activeTurnId&&migrated.commandId===this.o.store.latest(run.runId)?.envelope.commandId)));
+  }
+  private async recoverCheckpoint(held:HeldRun,t:ExecutionTransport,entry:JournalEntry) {
+    const run=this.o.runs.getRun(held.runId)!;
+    const connectionEpoch=t.status.connectionEpoch;
+    const input={runId:held.runId,commandId:entry.envelope.commandId,threadId:run.threadId!,completedTurnId:run.activeTurnId!,leaseEpoch:entry.envelope.leaseEpoch};
+    const decision=leaseRecoveryResult.parse(await t.executionRequest("recover-lease",{...input,phase:"inspect"}));
+    if(decision.decision==="cancel") {await this.stop(held,"用户请求停止。");return;}
+    if(decision.decision!=="inspect")return;
+    const guard=async()=>{
+      const assertCurrent=()=>{
+        const current=this.o.runs.getRun(held.runId), latest=this.o.store.latest(held.runId);
+        if(this.disabled||this.online!==t||t.status.connectionEpoch!==connectionEpoch||!this.recoverableCheckpoint(current)||current!.threadId!==input.threadId||current!.activeTurnId!==input.completedTurnId||latest?.envelope.commandId!==input.commandId||latest.phase!=="applied"||this.o.store.held()?.lockToken!==held.lockToken)
+          throw new RunnerError("RECONCILIATION_REQUIRED","原暂停点或执行连接已改变。");
+        return current!;
+      };
+      const current=assertCurrent();
+      await this.o.registry.resolve(held.workspaceId,true);
+      await this.o.registry.assertLock(held.workspaceId,held.runId,held.lockToken);
+      const actual=await readGitBaseline(current!.root),expected=current!.snapshot.context.gitBaseline;
+      if(actual.commit!==expected.commit||actual.branch!==expected.branch)
+        throw new RunnerError("GIT_BASELINE_CHANGED","项目 Git 身份已改变，不能恢复旧暂停点。");
+      assertCurrent();
+    };
+    await guard();
+    const adapter=await this.codex(held.workspaceId);
+    await adapter.confirmPausedCheckpoint(held.runId,guard);
+    await guard();
+    const receipt=leaseRecoveryResult.parse(await t.executionRequest("recover-lease",{...input,phase:"confirm",recoveryId:decision.recoveryId}));
+    await guard();
+    if(receipt.decision!=="recovered"||receipt.recoveryId!==decision.recoveryId||receipt.lease.runId!==held.runId||receipt.lease.workspaceId!==held.workspaceId||receipt.lease.leaseEpoch!==input.leaseEpoch||receipt.lease.expiresAt<=this.now())return;
+    this.o.device.saveLease(receipt.lease);
+    this.o.runs.patchRun(held.runId,{cancelRequested:false,status:"verifying",resultError:null});
+    this.o.store.clearCheckpointRecovery(held.runId);
+    this.attached.add(held.runId);
   }
   private outcome(
     entry: JournalEntry,
@@ -628,6 +964,25 @@ export class RunnerExecutor {
           );
       }
     } catch (error) {
+      if (errorCode(error) === "ITEM_SEALED") {
+        await this.stop(
+          held,
+          "已完成的清单待办已封存，请从未完成项创建新提交。",
+          entry.envelope.commandId,
+        ).catch(() => {});
+        const current = this.o.runs.getRun(held.runId);
+        if (current)
+          this.o.runs.patchRun(held.runId, {
+            resultError:
+              "ITEM_SEALED：已完成的清单待办已封存，请从未完成项创建新提交。",
+          });
+        this.outcome(
+          entry,
+          terminal(current) ? "rejected" : "uncertain",
+          "ITEM_SEALED",
+        );
+        return;
+      }
       const current = this.o.runs.getRun(held.runId);
       this.outcome(
         entry,
@@ -636,13 +991,26 @@ export class RunnerExecutor {
       );
     }
   }
+  private confirmedDispatch(entry: JournalEntry) {
+    const run = this.o.runs.getRun(entry.envelope.runId),
+      cmd = entry.envelope.payload;
+    if (cmd.type === "create_run")
+      return run?.launchResult?.status === "started";
+    if (cmd.type === "cancel_run") return !run || terminal(run);
+    const receipt = this.o.runs.acceptedCommandReceipt(
+      cmd.requestId,
+      entry.envelope.runId,
+    );
+    return (
+      !!receipt &&
+      receipt.threadId === run?.threadId &&
+      receipt.turnId === run?.activeTurnId
+    );
+  }
   private finishInterruptedDispatch(entry: JournalEntry) {
     const run = this.o.runs.getRun(entry.envelope.runId);
     const cmd = entry.envelope.payload;
-    if (cmd.type === "create_run" && run?.launchResult?.status === "started")
-      this.outcome(entry, "applied");
-    else if (cmd.type === "cancel_run" && (!run || terminal(run)))
-      this.outcome(entry, "applied");
+    if (this.confirmedDispatch(entry)) this.outcome(entry, "applied");
     else if (!run || terminal(run))
       this.outcome(entry, "rejected", "INTERRUPTED_BEFORE_CONFIRMED_DISPATCH");
     else this.outcome(entry, "uncertain", "DISPATCH_RECONCILIATION_REQUIRED");
@@ -674,6 +1042,11 @@ export class RunnerExecutor {
     if (recovered.status === "running") this.attached.add(run.runId);
   }
   private async stop(held: HeldRun, reason: string, cancelCommandId?: string) {
+    // Persist explicit stop intent before any await or cross-store cleanup.
+    // Old safety-stop display text must never recreate recovery eligibility if
+    // this process dies while a later user/lifecycle stop is being handled.
+    this.o.store.recordStopIntent(held.runId,reason,this.o.store.latest(held.runId)?.envelope.commandId??null);
+    this.o.store.clearCheckpointRecovery(held.runId);
     let run = this.o.runs.getRun(held.runId);
     if (!run || terminal(run)) return;
     if (
@@ -745,6 +1118,10 @@ export class RunnerExecutor {
       terminal: stopped,
       stopConfirmed: stopped,
       ...(error ? { error: shorten(error, 2000) } : {}),
+      ...(run?.batch ? { batch: run.batch } : {}),
+      ...(run?.snapshot.kind === "summary" && run.summaryContext
+        ? { summaryContext: run.summaryContext }
+        : {}),
     };
   }
   private async sync(held: HeldRun, t?: ExecutionTransport) {

@@ -2,6 +2,7 @@ export { CodexAdapter } from "./codex-adapter";
 export { RunnerStore } from "./store";
 export { readGitBaseline } from "./workspace";
 export { RunnerError } from "./errors";
+export { createDesktopProjectSync } from "./desktop-project-sync";
 export type { AdapterOptions } from "./codex-adapter";
 export type {
   LaunchResult,

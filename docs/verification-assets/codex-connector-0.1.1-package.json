@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "version": "0.1.1",
+  "runtime": "v24.18.0",
+  "files": 17,
+  "sourceHashesMatch": true,
+  "manifestMatches": true,
+  "containsUserData": false,
+  "zipSha256": "5ec10e124e3b6403d7c20b0c0ab85e565b12e50659a41972077dbd4da0e8a961",
+  "zipBytes": 35704910
+}

@@ -4,11 +4,17 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
-    "dev": "node scripts/dev.mjs",
+    "dev": "node scripts/dev-agent.mjs",
     "dev:agent": "node scripts/dev-agent.mjs",
+    "agent:install": "node scripts/agent-install.mjs install",
+    "agent:start": "node scripts/agent-install.mjs start",
+    "agent:stop": "node scripts/agent-install.mjs stop",
+    "agent:restart": "node scripts/agent-install.mjs restart",
+    "agent:diagnose": "node scripts/agent-install.mjs diagnose",
+    "agent:uninstall": "node scripts/agent-install.mjs uninstall",
     "dev:ui": "vite --host 127.0.0.1",
     "build": "vite build",
     "check": "tsc --noEmit",

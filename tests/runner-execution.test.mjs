@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -77,6 +84,11 @@ if (api) {
       partialEventAck = false;
     let onStored = () => {},
       dispatchRequest;
+    let onGate = () => ({ decision: "wait", queueRevision: 1 });
+    const gates = [];
+    let pendingResponses = [],
+      failResponseAck = false;
+    const responseAcks = [];
     let revoked = false;
     const transport = {
       get status() {
@@ -87,6 +99,19 @@ if (api) {
       },
       async executionRequest(action, body) {
         if (dispatchRequest) return dispatchRequest(action, body);
+        if (action === "batch-gate") {
+          gates.push(body);
+          return onGate(body);
+        }
+        if (action === "responses") return { responses: pendingResponses };
+        if (action === "response-ack") {
+          if (failResponseAck) throw Error("response ACK lost");
+          responseAcks.push(body);
+          pendingResponses = pendingResponses.filter(
+            (r) => r.responseId !== body.responseId,
+          );
+          return { ok: true };
+        }
         if (revoked && action !== "poll")
           throw Object.assign(Error("binding revoked"), {
             code: "EXECUTION_REVOKED",
@@ -248,6 +273,17 @@ if (api) {
       releases,
       contexts,
       eventPages,
+      gates,
+      responseAcks,
+      responses(value) {
+        pendingResponses = value;
+      },
+      failResponseAck(value) {
+        failResponseAck = value;
+      },
+      onGate(fn) {
+        onGate = fn;
+      },
       base,
       delivery,
       useDispatch(intercept) {
@@ -405,6 +441,9 @@ if (api) {
       revoke() {
         revoked = true;
       },
+      setMode(value) {
+        mode = value;
+      },
       async restart() {
         await executor.close({ stop: false });
         journal.close();
@@ -413,6 +452,476 @@ if (api) {
       },
     };
   }
+
+  function orderedBatch() {
+    const base = makeSnapshot();
+    const items = [1, 2, 3].map((n) => ({
+      taskId: `item-${n}`,
+      text: `待办 ${n}`,
+      instruction: `执行第 ${n} 项`,
+      acceptance: [
+        {
+          id: `check-${n}`,
+          kind: "human",
+          required: true,
+          description: `第 ${n} 项完成`,
+        },
+      ],
+    }));
+    return {
+      batch: { items },
+      task: {
+        ...base.task,
+        text: items[0].text,
+        instruction: items[0].instruction,
+        acceptance: items[0].acceptance,
+        taskRef: { ...base.task.taskRef, taskId: items[0].taskId },
+      },
+    };
+  }
+  for (const mode of ["approval", "input"]) {
+    test(`native ${mode} delivery survives ACK loss and restart without repeating wire response or storing answer text`, async (t) => {
+      const f = await fixture(t, mode);
+      f.queue(f.delivery());
+      await f.tickUntil(() =>
+        f.events.some(
+          (e) =>
+            e.type ===
+            (mode === "approval" ? "approval.requested" : "input.requested"),
+        ),
+      );
+      const event = f.events.find(
+        (e) =>
+          e.type ===
+          (mode === "approval" ? "approval.requested" : "input.requested"),
+      );
+      const response = {
+        responseId: "response-once",
+        pendingRequestId: event.payload.requestId,
+        runId: event.runId,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        response:
+          mode === "approval"
+            ? { decision: "decline" }
+            : { answers: { choice: { answers: ["private-answer-fixture"] } } },
+      };
+      f.responses([response]);
+      f.failResponseAck(true);
+      await f.tickUntil(
+        async () => (await f.calls("server-response")).length === 1,
+      );
+      await f.restart();
+      f.failResponseAck(false);
+      await f.tickUntil(() =>
+        f.responseAcks.some((a) => a.responseId === response.responseId),
+      );
+      assert.equal(f.responseAcks.at(-1).status, "applied");
+      assert.equal((await f.calls("server-response")).length, 1);
+      assert.ok(!JSON.stringify(f.events).includes("private-answer-fixture"));
+      for (const name of [
+        "execution.sqlite",
+        "execution.sqlite-wal",
+        "adapter.sqlite",
+        "adapter.sqlite-wal",
+      ]) {
+        const bytes = await readFile(path.join(f.base, name)).catch(() =>
+          Buffer.alloc(0),
+        );
+        assert.equal(
+          bytes.includes(Buffer.from("private-answer-fixture")),
+          false,
+          name,
+        );
+      }
+    });
+  }
+  test("native cloud response cannot target a different turn and cancellation wins before pending approval delivery", async (t) => {
+    const f = await fixture(t, "approval");
+    const delivery = f.delivery();
+    f.queue(delivery);
+    await f.tickUntil(() =>
+      f.events.some((e) => e.type === "approval.requested"),
+    );
+    const event = f.events.find((e) => e.type === "approval.requested");
+    const response = {
+      responseId: "wrong-turn-response",
+      pendingRequestId: event.payload.requestId,
+      runId: event.runId,
+      threadId: event.threadId,
+      turnId: "foreign-turn",
+      response: { decision: "accept" },
+    };
+    f.responses([response]);
+    await f.tickUntil(() => f.responseAcks.length === 1);
+    assert.equal(f.responseAcks[0].status, "expired");
+    assert.equal((await f.calls("server-response")).length, 0);
+    f.responses([
+      { ...response, responseId: "cancel-race-response", turnId: event.turnId },
+    ]);
+    f.queue(
+      f.delivery({ type: "cancel_run", commandId: "cancel-with-answer" }),
+    );
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("server-response")).length, 0);
+    assert.ok(
+      f.events.some(
+        (e) =>
+          e.type === "request.resolved" && e.payload.status === "cancelled",
+      ),
+    );
+  });
+  test("a persisted interaction dispatch marker is expired after restart rather than replayed to a new wire callback", async (t) => {
+    const f = await fixture(t, "approval");
+    f.queue(f.delivery());
+    await f.tickUntil(() =>
+      f.events.some((e) => e.type === "approval.requested"),
+    );
+    const event = f.events.find((e) => e.type === "approval.requested");
+    const response = {
+      responseId: "crashed-answer",
+      pendingRequestId: event.payload.requestId,
+      runId: event.runId,
+      threadId: event.threadId,
+      turnId: event.turnId,
+      response: { decision: "accept" },
+    };
+    // Model a crash after durable intent but before delivery acknowledgement.
+    f.journal.beginInteractionResponse(response);
+    f.responses([response]);
+    await f.restart();
+    await f.tickUntil(() => f.responseAcks.length > 0);
+    assert.equal(f.responseAcks[0].status, "expired");
+    assert.equal((await f.calls("server-response")).length, 0);
+  });
+  async function firstItemReady(f) {
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      if (f.runner.getRun("run-a")?.batchPhase === "ready") return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail("first batch item never completed");
+  }
+  test("managed batch verifies real artifacts and waits for durable server permission between every item and final release", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    batch.batch.managed = true;
+    for (const [i, item] of batch.batch.items.entries()) {
+      item.acceptance = [
+        {
+          id: `artifact-${i}`,
+          kind: "artifact",
+          required: true,
+          description: "exists",
+          relativePath: `result-${i}.txt`,
+          predicate: { type: "exists" },
+        },
+      ];
+      await writeFile(path.join(f.workspace, `result-${i}.txt`), "ok");
+    }
+    batch.task.acceptance = batch.batch.items[0].acceptance;
+    // These files are part of the initial authorized baseline.
+    const delivery = f.delivery({ type: "create_run" }, batch);
+    delivery.snapshot.context.gitBaseline = await api.readGitBaseline(
+      f.workspace,
+    );
+    delivery.snapshot.payloadHash = api.digest({
+      ...delivery.snapshot,
+      payloadHash: undefined,
+    });
+    delivery.envelope.payload.payloadHash = delivery.snapshot.payloadHash;
+    delivery.envelope.payloadHash = api.digest(delivery.envelope.payload);
+    f.queue(delivery);
+    await f.tickUntil(() => f.gates.length > 0);
+    assert.equal((await f.calls("turn/start")).length, 1);
+    const proof = f.events.find((e) => e.type === "verification.completed");
+    assert.equal(proof.turnId, f.gates[0].completedTurnId);
+    assert.equal(proof.payload.results[0].status, "passed");
+    assert.match(proof.payload.results[0].outputHash, /^[a-f0-9]{64}$/);
+    await f.restart();
+    await f.executor.tick();
+    assert.equal((await f.calls("turn/start")).length, 1);
+    f.onGate((input) =>
+      input.fromIndex < 2
+        ? {
+            decision: "advance",
+            queueRevision: input.fromIndex + 2,
+            permitId: `permit-${input.fromIndex}`,
+            nextIndex: input.fromIndex + 1,
+          }
+        : { decision: "wait", queueRevision: 4 },
+    );
+    await f.tickUntil(() => f.gates.some((g) => g.fromIndex === 2));
+    assert.equal((await f.calls("turn/start")).length, 3);
+    assert.equal(f.releases.length, 0);
+    assert.equal(f.runner.getRun("run-a").terminal, false);
+    f.onGate(() => ({
+      decision: "finish",
+      queueRevision: 5,
+      permitId: "finish",
+    }));
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal(f.runner.getRun("run-a").batchPhase, "complete");
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.equal(
+      f.events.filter((e) => e.type === "verification.completed").length,
+      3,
+    );
+  });
+  test("managed batch repairs the same item only once and re-verifies the repaired turn after restart", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    batch.batch.managed = true;
+    batch.batch.items = [batch.batch.items[0]];
+    batch.batch.items[0].acceptance = [
+      {
+        id: "missing",
+        kind: "artifact",
+        required: true,
+        description: "file exists",
+        relativePath: "missing.txt",
+        predicate: { type: "exists" },
+      },
+      {
+        id: "review",
+        kind: "human",
+        required: true,
+        description: "Review repaired artifact",
+      },
+    ];
+    batch.task.acceptance = batch.batch.items[0].acceptance;
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.tickUntil(() => f.gates.length > 0);
+    assert.equal(
+      f.events.find((e) => e.type === "verification.completed").payload
+        .results[0].failureKind,
+      "predicate",
+    );
+    f.setMode("batch-exit-second");
+    await f.restart();
+    f.onGate(() => ({
+      decision: "repair",
+      queueRevision: 2,
+      permitId: "repair-once",
+      nextIndex: 0,
+    }));
+    await f.tickUntil(async () => (await f.calls("turn/start")).length === 2);
+    await f.restart();
+    await f.tickUntil(
+      () =>
+        f.events.filter((e) => e.type === "verification.completed").length ===
+        2,
+    );
+    for (let n = 0; n < 3; n++) await f.executor.tick();
+    const starts = await f.calls("turn/start");
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1].params.clientUserMessageId, "repair-once");
+    assert.match(starts[1].params.input[0].text, /missing/);
+    assert.equal(new Set(starts.map((c) => c.params.threadId)).size, 1);
+    assert.equal(f.runner.getRun("run-a").batch.currentIndex, 0);
+    assert.equal(f.releases.length, 0);
+  });
+  test("managed human checks remain waiting across a long pause and immediate stop prevents the next item", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    batch.batch.managed = true;
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.tickUntil(() => f.gates.length > 0);
+    assert.equal(
+      f.events.find((e) => e.type === "verification.completed").payload
+        .results[0].status,
+      "needs_input",
+    );
+    f.advance(31 * 60_000);
+    const lease = f.device.lease("run-a");
+    f.device.saveLease({ ...lease, expiresAt: lease.expiresAt + 35 * 60_000 });
+    await f.executor.tick();
+    assert.equal(f.releases.length, 0);
+    assert.equal(f.runner.getRun("run-a").batchPhase, "ready");
+    // Even a malformed remote repair decision cannot turn human review into an
+    // unbounded model retry loop on the native side.
+    f.onGate(() => ({
+      decision: "repair",
+      queueRevision: 2,
+      permitId: "bad-repair",
+      nextIndex: 0,
+    }));
+    await f.executor.tick();
+    assert.equal((await f.calls("turn/start")).length, 1);
+    f.queue(
+      f.delivery({ type: "cancel_run", commandId: "stop-managed" }, batch),
+    );
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("turn/start")).length, 1);
+    assert.equal(f.runner.getRun("run-a").batchPhase, "cancelled");
+  });
+  test("managed continuation rejects a changed Git branch while ordinary task output dirtiness is allowed", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    batch.batch.managed = true;
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.tickUntil(() => f.gates.length > 0);
+    await writeFile(path.join(f.workspace, "task-output.txt"), "new output");
+    await f.executor.tick();
+    assert.equal(f.runner.getRun("run-a").batchPhase, "ready");
+    execFileSync("git", [
+      "-C",
+      f.workspace,
+      "symbolic-ref",
+      "HEAD",
+      "refs/heads/changed",
+    ]);
+    f.onGate(() => ({
+      decision: "advance",
+      queueRevision: 2,
+      permitId: "advance-after-rebind",
+      nextIndex: 1,
+    }));
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("turn/start")).length, 1);
+  });
+  test("managed turn dispatch rechecks Git identity after the final authorization round trip", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    batch.batch.managed = true;
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.tickUntil(() => f.gates.length > 0);
+    let calls = 0;
+    f.onGate(() => {
+      f.onStored(() => {
+        if (++calls === 2)
+          execFileSync("git", [
+            "-C",
+            f.workspace,
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/raced-change",
+          ]);
+      });
+      return {
+        decision: "advance",
+        queueRevision: 2,
+        permitId: "raced-permit",
+        nextIndex: 1,
+      };
+    });
+    await f.executor.tick();
+    assert.equal((await f.calls("turn/start")).length, 1);
+  });
+  test("executor reads an explicit local approval reviewer option only for its isolated Codex process", async (t) => {
+    const previous = process.env.QINGDAN_CODEX_APPROVALS_REVIEWER;
+    process.env.QINGDAN_CODEX_APPROVALS_REVIEWER = "auto_review";
+    t.after(() => {
+      if (previous === undefined)
+        delete process.env.QINGDAN_CODEX_APPROVALS_REVIEWER;
+      else process.env.QINGDAN_CODEX_APPROVALS_REVIEWER = previous;
+    });
+    const f = await fixture(t);
+    f.queue(f.delivery());
+    await f.tickUntil(() => f.releases.length === 1);
+    const [thread] = await f.calls("thread/start"),
+      [turn] = await f.calls("turn/start");
+    assert.equal(thread.params.approvalsReviewer, "auto_review");
+    assert.equal(turn.params.approvalsReviewer, "auto_review");
+    assert.equal(turn.params.approvalPolicy, "on-request");
+    assert.equal(turn.params.sandboxPolicy.type, "workspaceWrite");
+    assert.equal(turn.params.sandboxPolicy.networkAccess, false);
+  });
+  test("executor advances the batch under a live lease after the original delivery expired", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.executor.tick();
+    await firstItemReady(f);
+    assert.equal(f.releases.length, 0);
+    f.advance(61000);
+    const lease = f.device.lease("run-a");
+    f.device.saveLease({ ...lease, expiresAt: lease.expiresAt + 120000 });
+    await f.tickUntil(() => f.releases.length === 1);
+    const starts = await f.calls("turn/start");
+    assert.equal(starts.length, 3);
+    assert.equal(new Set(starts.map((c) => c.params.threadId)).size, 1);
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.equal(f.reports.at(-1).status, "verifying");
+    assert.deepEqual(
+      f.reports.at(-1).batch.items.map((i) => i.status),
+      ["done", "done", "done"],
+    );
+  });
+  test("executor polls cancellation before automatically dispatching the next batch item", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.executor.tick();
+    await firstItemReady(f);
+    f.queue(
+      f.delivery({ type: "cancel_run", commandId: "cancel-batch" }, batch),
+    );
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("turn/start")).length, 1);
+    assert.equal(f.reports.at(-1).status, "cancelled");
+    assert.deepEqual(
+      f.reports.at(-1).batch.items.map((i) => i.status),
+      ["done", "cancelled", "cancelled"],
+    );
+  });
+  test("executor restart between batch items resumes the same chat without repeating the first item", async (t) => {
+    const f = await fixture(t),
+      batch = orderedBatch();
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.executor.tick();
+    await firstItemReady(f);
+    await f.restart();
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.deepEqual(
+      (await f.calls("turn/start")).map((c) => c.params.input[0].text),
+      ["执行第 1 项", "执行第 2 项", "执行第 3 项"],
+    );
+  });
+
+  test("an uncertain initial batch dispatch recovers its original turn and advances the remaining items", async (t) => {
+    const f = await fixture(t, "exit-turn-start");
+    f.queue(f.delivery({ type: "create_run" }, orderedBatch()));
+    await f.executor.tick();
+    assert.equal(f.journal.latest("run-a").phase, "uncertain");
+    // Every turn loses its transport reply in this fixture; history proves each
+    // accepted turn, so none may be resent and the original create ACK recovers.
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.equal((await f.calls("turn/start")).length, 3);
+    assert.equal(f.runner.getRun("run-a").batchPhase, "complete");
+  });
+
+  test("a lost reply to a paused batch recovers accepted continuation and resumes later todos", async (t) => {
+    const f = await fixture(t, "batch-block-second"),
+      batch = orderedBatch();
+    f.queue(f.delivery({ type: "create_run" }, batch));
+    await f.tickUntil(() => f.releases.length === 1);
+    const paused = f.runner.getRun("run-a");
+    assert.equal(paused.batchPhase, "paused");
+    f.setMode("batch-exit-third");
+    await f.restart();
+    f.queue(
+      f.delivery(
+        {
+          type: "continue_run",
+          commandId: "batch-retry",
+          expectedTurnId: paused.activeTurnId,
+          mode: "reply",
+          message: "已解决，请完成当前项。",
+        },
+        batch,
+      ),
+    );
+    await f.executor.tick();
+    assert.equal(f.journal.latest("run-a").phase, "uncertain");
+    await f.tickUntil(() => f.releases.length === 2);
+    assert.equal(f.runner.getRun("run-a").batchPhase, "complete");
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.equal((await f.calls("turn/start")).length, 4);
+    assert.equal(f.journal.latest("run-a").phase, "applied");
+  });
 
   test("duplicate delivery and report loss survive restart; reply uses same chat and new lease", async (t) => {
     const f = await fixture(t);
@@ -728,6 +1237,76 @@ if (api) {
     await assert.rejects(f.executor.context(f.workspaceId), {
       code: "RUNNER_OFFLINE",
     });
+  });
+
+  test("queued read-only summary captures its native start baseline without changing the snapshot", async (t) => {
+    const f = await fixture(t);
+    // The preceding task completes while the already requested summary waits.
+    f.queue(f.delivery());
+    await f.tickUntil(() => f.releases.length === 1);
+    const summary = f.delivery(
+      { type: "create_run", commandId: "summary-create" },
+      { kind: "summary", task: null },
+      "summary-run",
+    );
+    const originalSnapshot = structuredClone(summary.snapshot);
+    await writeFile(
+      path.join(f.workspace, "prior-task.txt"),
+      "preceding task result",
+    );
+    f.queue(summary);
+    await f.tickUntil(() => f.releases.length === 2);
+    const report = f.reports.at(-1);
+    assert.equal(report.status, "verifying");
+    assert.deepEqual(
+      report.summaryContext.gitBaseline,
+      await api.readGitBaseline(f.workspace),
+    );
+    assert.equal(report.summaryContext.gitBaseline.dirty, true);
+    assert.equal(report.summaryContext.workspaceId, f.workspaceId);
+    assert.ok(
+      Date.parse(report.summaryContext.capturedAt) >
+        Date.parse(originalSnapshot.capturedAt),
+    );
+    assert.deepEqual(f.runner.getRun("summary-run").snapshot, originalSnapshot);
+    assert.equal(
+      (await f.calls("thread/start")).at(-1).params.sandbox,
+      "read-only",
+    );
+    const turn = (await f.calls("turn/start")).at(-1).params;
+    assert.equal(turn.approvalPolicy, "on-request");
+    assert.equal(turn.sandboxPolicy.type, "readOnly");
+    const evidence = JSON.parse(
+      turn.additionalContext.qingdan_project_evidence.value,
+    );
+    assert.ok(
+      evidence.files.some(
+        (file) =>
+          file.path === "prior-task.txt" &&
+          file.content === "preceding task result",
+      ),
+    );
+    assert.equal(evidence.gitBaseline.dirty, true);
+    await f.restart();
+    assert.deepEqual(
+      f.runner.getRun("summary-run").summaryContext,
+      report.summaryContext,
+    );
+  });
+
+  test("write tasks still reject a changed baseline before creating any chat", async (t) => {
+    const f = await fixture(t),
+      delivery = f.delivery();
+    await writeFile(
+      path.join(f.workspace, "external-change.txt"),
+      "changed after authorization",
+    );
+    f.queue(delivery);
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal(f.reports.at(-1).status, "failed");
+    assert.equal(f.reports.at(-1).error, "GIT_BASELINE_CHANGED");
+    assert.equal((await f.calls("thread/start")).length, 0);
+    assert.equal(f.reports.at(-1).summaryContext, undefined);
   });
 
   test("one device state cannot be consumed by overlapping launcher instances", async (t) => {

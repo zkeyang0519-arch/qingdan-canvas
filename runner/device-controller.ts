@@ -18,11 +18,16 @@ import {
   type TransportStatus,
 } from "./transport";
 import { RunnerError } from "./errors";
-import { validDeviceName } from "./metadata";
+import { validDeviceName, WORKSPACE_NAME_MAX } from "./metadata";
 import { ExecutionStore } from "./execution-store";
 import { RunnerExecutor, type ExecutionTransport } from "./executor";
 import { digest, RunnerStore } from "./store";
 import type { AdapterOptions } from "./codex-adapter";
+import {
+  listCodexSessions,
+  readCodexSession,
+  type SessionQuery,
+} from "./codex-sessions";
 export type LocalDeviceView = {
   paired: boolean;
   runnerId: string | null;
@@ -125,8 +130,8 @@ export class RunnerDeviceController {
       );
     if (this.config && this.config.ownerId !== ownerId)
       throw new RunnerError(
-        "ACCESS_DENIED",
-        "Runner belongs to another owner account.",
+        "OWNER_MISMATCH",
+        "这台电脑已绑定其他轻单账号。请先在原账号解除绑定，再使用当前账号连接。",
       );
   }
   status(ownerId: string): LocalDeviceView {
@@ -422,6 +427,51 @@ export class RunnerDeviceController {
       await this.registry.register(input);
       await this.transport?.updateWorkspaces();
       return this.status(ownerId);
+    });
+  }
+  async listCodexSessions(ownerId: string, query: SessionQuery) {
+    this.owner(ownerId);
+    const generation = this.generation;
+    const result = await listCodexSessions(
+      {
+        command: process.env.QINGDAN_CODEX_BIN || "codex",
+        ...this.options.executionCodex,
+      },
+      query,
+    );
+    this.owner(ownerId);
+    if (generation !== this.generation)
+      throw new RunnerError(
+        "ACCESS_DENIED",
+        "电脑连接已变化，请重新读取会话。",
+      );
+    return result;
+  }
+  selectCodexSession(ownerId: string, threadId: string) {
+    return this.exclusive(async () => {
+      this.owner(ownerId);
+      this.requirePaired();
+      const generation = this.generation;
+      const session = await readCodexSession(
+        {
+          command: process.env.QINGDAN_CODEX_BIN || "codex",
+          ...this.options.executionCodex,
+        },
+        threadId,
+      );
+      this.owner(ownerId);
+      if (generation !== this.generation)
+        throw new RunnerError(
+          "ACCESS_DENIED",
+          "电脑连接已变化，请重新选择会话。",
+        );
+      const workspace = await this.registry.register({
+        root: session.cwd,
+        name: session.projectName.slice(0, WORKSPACE_NAME_MAX),
+      });
+      await this.transport?.updateWorkspaces();
+      this.owner(ownerId);
+      return { runnerId: this.config!.runnerId, workspace, session };
     });
   }
   removeWorkspace(ownerId: string, workspaceId: string) {

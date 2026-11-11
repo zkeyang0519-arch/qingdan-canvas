@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "../types";
 import { ExecutionDispatch } from "./dispatch";
+import { scheduleExecutionAlarm } from "./checklist-writeback";
 import { body, check, failure, HttpError, json, validId } from "../http";
 import { digest } from "../auth";
 import { parseRunnerEvent } from "../../shared/agent/schemas";
@@ -84,8 +85,14 @@ export class RunnerHub extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       try {
         if (new URL(request.url).pathname.startsWith("/execution/")) {
-          check(this.env.EXECUTION_ENABLED === "true", "执行服务尚未启用。", 404);
-          return await new ExecutionDispatch(this.ctx.storage, this.env).fetch(request);
+          check(
+            this.env.EXECUTION_ENABLED === "true",
+            "执行服务尚未启用。",
+            404,
+          );
+          return await new ExecutionDispatch(this.ctx.storage, this.env).fetch(
+            request,
+          );
         }
         const url = new URL(request.url),
           state = await this.state();
@@ -100,13 +107,13 @@ export class RunnerHub extends DurableObject<Env> {
           }
           return json({ ok: true });
         }
-        if (url.pathname === "/occupied")
+        if (url.pathname === "/occupied") {
+          const workspaceId = url.searchParams.get("workspaceId") || "";
+          const busy = state?.leases[workspaceId] || await this.ctx.storage.get("exec:queue-workspace:" + workspaceId);
           return json(
-            { ok: !state?.leases[url.searchParams.get("workspaceId") || ""] },
-            state?.leases[url.searchParams.get("workspaceId") || ""]
-              ? 409
-              : 200,
+            { ok: !busy }, busy ? 409 : 200,
           );
+        }
         if (url.pathname === "/binding") {
           const input = await body(request);
           check(
@@ -128,7 +135,7 @@ export class RunnerHub extends DurableObject<Env> {
             409,
           );
           check(
-            !state?.leases[input.workspaceId],
+            !state?.leases[input.workspaceId] && !await this.ctx.storage.get("exec:queue-workspace:" + input.workspaceId),
             "项目仍有未确认停止的运行。",
             409,
           );
@@ -137,6 +144,8 @@ export class RunnerHub extends DurableObject<Env> {
           )
             .bind(input.canvasId, input.sectionId)
             .first<BindingRow>();
+          if (old?.runner_id === input.runnerId)
+            check(!await this.ctx.storage.get("exec:queue-workspace:" + old.workspace_id), "原项目仍有未完成的批次。", 409);
           check(
             input.expectedRevision === (old?.revision ?? null),
             "绑定已更改，请刷新。",
@@ -217,7 +226,7 @@ export class RunnerHub extends DurableObject<Env> {
         )
           .bind(current.connectionEpoch, current.lastHeartbeat, runnerId)
           .run();
-        await this.ctx.storage.setAlarm(current.lastHeartbeat + 45000);
+        await scheduleExecutionAlarm(this.ctx.storage);
         this.send(server, "welcome", {
           runnerId,
           connectionEpoch: current.connectionEpoch,
@@ -314,7 +323,7 @@ export class RunnerHub extends DurableObject<Env> {
           )
             .bind(state.lastHeartbeat, state.runnerId)
             .run();
-          await this.ctx.storage.setAlarm(state.lastHeartbeat + 45000);
+          await scheduleExecutionAlarm(this.ctx.storage);
           this.send(ws, "heartbeat_ack", {
             connectionEpoch: epoch,
             serverTime: Date.now(),
@@ -331,6 +340,11 @@ export class RunnerHub extends DurableObject<Env> {
             409,
           );
           const old = JSON.parse(device.workspaces_json) as WorkspaceView[];
+          for (const previous of old) {
+            const next = workspaces.find(w => w.workspaceId === previous.workspaceId);
+            if (!next || canonical(next) !== canonical(previous))
+              check(!await this.ctx.storage.get("exec:queue-workspace:" + previous.workspaceId), "批次未完成，不能更改项目注册信息。", 409);
+          }
           for (const item of workspaces) {
             const previous = old.find(
               (w) => w.workspaceId === item.workspaceId,
@@ -530,6 +544,7 @@ export class RunnerHub extends DurableObject<Env> {
   }
   async alarm() {
     await this.ctx.blockConcurrencyWhile(async () => {
+      await new ExecutionDispatch(this.ctx.storage, this.env).retryWritebacks();
       const state = await this.state();
       if (!state) return;
       if (Date.now() - state.lastHeartbeat >= 45000) {
@@ -542,7 +557,8 @@ export class RunnerHub extends DurableObject<Env> {
         )
           .bind(state.runnerId)
           .run();
-      } else await this.ctx.storage.setAlarm(state.lastHeartbeat + 45000);
+      }
+      await scheduleExecutionAlarm(this.ctx.storage);
     });
   }
 }

@@ -28,7 +28,7 @@ function savedArrangedView(state, boardId) {
 }
 
 export function setSurface(state, boardId, surface) {
-  if (!["canvas", "arranged"].includes(surface)) return state;
+  if (!["canvas", "arranged", "agent"].includes(surface)) return state;
   if (surface === "arranged") {
     const { page, active } = panePages(state, boardId);
     return changeView(state, boardId, {

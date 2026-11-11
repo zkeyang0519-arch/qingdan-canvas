@@ -2,19 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 实现选定本地项目、独立会话总结、记忆聊天、生成排序待办、每项新建 Codex 会话并验收后自动推进的闭环。
+**Goal:** 实现选定本地项目、独立会话总结、记忆聊天、生成排序待办、按批次在同一 Codex 会话依次执行并验收后自动推进的闭环。用户后续确认：一次提交为一个批次，下一次提交再新建会话，暂不处理侧栏归组。
 
 **Architecture:** Cloudflare RouterAgent 处理聊天与记忆，ProjectQueue 以持久化状态机推进任务。执行网关提供异步 MCP，Windows Runner 主动连接云端并通过本地 app-server 创建会话；CanvasRoom 保持清单权威数据。
 
 **Tech Stack:** 现有 React 19、Workers、SQLite Durable Objects、D1、R2；agents 0.30.1；MCP client/server 2.3.1；Zod 4；Node.js 24；Codex app-server 固定版本。
 
-**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。截至 2026-11-04 已按用户要求完成 Task 1–4，并提供轻单内体验入口；Task 5–10 尚未执行。实现说明和验证记录见 [任务规则](../../agent-task-rules.md)、[本机 Codex 验收](../../agent-codex-compatibility.md)、[设备绑定验收](../../agent-device-verification-2026-11-04.md) 与 [MCP 派单验收](../../agent-execution-verification-2026-11-04.md)。
+**Spec:** [完整设计](D:/TODO/qingdan-canvas/docs/superpowers/specs/2026-11-03-qingdan-router-design.md)。本文件所有相对源码路径均以 `D:/TODO/qingdan-canvas` 为根。截至 2026-11-05 已按用户后续确认的范围完成 Task 1–10 的本机版本。第8步沿用同批次同会话及现有 RunnerHub 队列，第9步整合为正式工作区，第10步完成安装、诊断与恢复验收。实际范围、验收和剩余限制以[第八步验收](../../agent-batch-queue-verification-2026-11-05.md)、[第九步验收](../../agent-workspace-verification-2026-11-05.md)和[第十步验收](../../agent-install-recovery-verification-2026-11-05.md)为准，原计划细项不代表未经执行的能力已完成。操作入口见 [体验说明](../../agent-experience.md)。早期验证记录见 [任务规则](../../agent-task-rules.md)、[本机 Codex 验收](../../agent-codex-compatibility.md)、[设备绑定验收](../../agent-device-verification-2026-11-04.md) 与 [MCP 派单验收](../../agent-execution-verification-2026-11-04.md)。
 
 ## Global Constraints
 
 - 用户补充验收标准（2026-11-03）：每一步完成时，必须在轻单里提供可操作入口、可观察结果和体验步骤，不能仅交付接口或测试脚本。第 9 步改为整合、完善已有界面。第 1/2 步的入口补齐见 [体验计划](2026-11-03-agent-experience.md)。
 - 后续 Task 3–10 完成前，逐项落实 [各步骤界面验收表](../../agent-experience.md#后续每一步的界面验收)，并记录页面实测结果。
-- 总结独立新建会话；不同待办分别新建会话；同一待办的澄清、修复和恢复沿用其会话。
+- 总结独立新建会话；同一次提交的所有待办在同一会话按顺序执行，下一次提交新建会话；批次内澄清、修复和恢复沿用其会话。本规则按用户后续确认更新，优先于早期设计中的逐项新会话描述。
 - 绑定本机项目目录，workspaceId 由本机注册；模型不能指定任意 cwd 或伪造账号。
 - 初始使用 Node.js 24 系列；本机基线为 24.18.0、Codex CLI 0.166.0-alpha.5.1。先通过真机验证再固定安装与生成类型。
 - 沿用 agents 0.30.1 / MCP client 2.3.1 / MCP server 2.3.1；不附带大版本升级。
@@ -216,34 +216,34 @@ assert.equal(outbox.filter(x => x.type === 'create_run_for_next_task').length, 0
 
 ## Task 9: Agent、项目与清单 UI
 
-**Files:** 新增 src/agent/AgentPanel.jsx、ProjectPicker.jsx、MemoryPanel.jsx、TaskRunCard.jsx、useAgentChat.js、agent.css；tests/agent-ui.test.mjs、tests/agent-workflow-ui.test.mjs。修改 src/CanvasWorkspace.jsx、src/canvas/ArrangedWorkspace.jsx、src/canvas/arranged-model.js、src/api.js。
+**状态：已完成本机正式界面整合。** 按用户后续确认，复用前八步已有能力，具体实现采用 [正式工作区计划](2026-11-05-agent-workspace.md)，不另建一套聊天或队列后端。
 
-**Interfaces:** useAgentChat({canvasId,sectionId,bindingId}) 返回消息、项目状态、连接状态和 sendMessage；ProjectPicker 只提交 workspaceId；TaskRunCard 用 taskRef 查映射；记忆和队列操作调用有 expectedRevision 的 API，不直接修改 DO 状态。
+**Files:** 新增 `AgentWorkspace.jsx`、`WorkspaceDrawer.jsx`、`workspace-state.js`、`agent.css`；在 ChatPanel、ChecklistPanel、BatchPanel、DevicePanel、MemoryPanel 增加嵌入方式，复用 PermissionControls。CanvasWorkspace 增加正式 Agent 视图。新增工作区、联动与弹窗测试，扩展已有面板测试。
 
-- [ ] 写交互测试：项目选择 -> 同步中 -> 摘要卡片 -> 聊天；失败显示重试或显式使用旧摘要；刷新恢复相同初始化请求。
-- [ ] 写清单交互测试：生成后未完成列表出现真实块；拖动合法排序保存且多端同步；依赖冲突保留原序；运行中新增项目不会自动获执行授权。
-- [ ] 写控制测试：开始只提交一次，按钮重复点击使用同 commandId；普通暂停文案为“做完当前项后暂停”；立即停止显示等待确认；过期审批按钮不可提交。
-- [ ] 写跨项目测试：切换页面项目后原队列显示在原项目，事件不会被错误归属；协作者不看到私人聊天和完整本地日志。
-- [ ] 运行 `node --test tests/agent-ui.test.mjs tests/agent-workflow-ui.test.mjs` 验证失败。
-- [ ] 实现项目、摘要、聊天、记忆来源、任务要求和检查证据界面；每个执行任务显示其独立 threadId 或已验证的打开方式。不要编造未验证的桌面深链。
-- [ ] 排序和内容写入复用业务 API 与 source-aware 同步。无 Agent 计划时 DDL 排序维持原行为；有计划且依赖冲突时保留原序并说明，提供独立的依赖优先排序入口。正文改动后展示“执行说明需更新”，不能悄悄使用旧规格。
-- [ ] 测试通过后实际浏览器检查窄屏、中文长标题、断线恢复、正常聊天流式输出和三项执行过程；保存检查记录并提交。
+- [x] 顶部视图、项目选择、桌面并排聊天与待办/执行、窄屏导航；画布与排列原有状态保留。
+- [x] 项目摘要与记忆抽屉、来源与验收记录、真实目录和权限设置；打开界面不自行派发任务。
+- [x] 提案保存后刷新真实清单；排序沿用上移/下移及业务 API，执行回写后自动刷新，保留未提交草稿。
+- [x] 同批次同会话，下一次提交新会话；准确批次跳转、历史切换、暂停继续和原生审批/提问。
+- [x] 账号/项目/聊天草稿隔离、后台请求提醒、跨项目重试去重、上层弹窗键盘优先权。
+- [x] 实际 DeepSeek 三项提案保存与排序、记忆增改删、390px 窄屏和刷新恢复；读取第八步真实完成批次显示三项验收及清单更新。
+- [x] 最终 821 项测试、类型检查、Runner 类型检查、构建预检通过，保存截图与[验收记录](../../agent-workspace-verification-2026-11-05.md)。按本轮范围未提交、未部署。
+
+当前聊天显示真实异步回复与等待状态，不模拟逐字流式；本轮没有新增依赖计划或拖动排序。上述原规划中的独立任务会话已被用户确认的批次模式替代。
 
 ## Task 10: 故障注入、安装与发布验收
 
-**Files:** 新增 tests/agent-recovery.test.mjs、tests/agent-end-to-end.test.mjs；scripts/install-runner.ps1、scripts/uninstall-runner.ps1；docs/agent-setup.md、docs/agent-acceptance.md。补齐前述模块的清理、日志、保留期和版本检查；修改 README.md、docs/cloudflare-setup.md。
+**状态：本机实现、三待办真机验收与最终回归完成。** 采用 [第十步实施范围](2026-11-05-agent-install-recovery.md)，记录见 [安装与恢复验收](../../agent-install-recovery-verification-2026-11-05.md)。沿用用户后来确认的同批次同会话，不采用旧草案每项新建会话。
 
-**Interfaces:** 对外协议沿用 Task 1；实现 recoverPendingWork(): Promise<RecoveryReport> 与 cleanupExpiredData(now): Promise<CleanupReport>。安装器只管理自己创建的用户登录任务和数据路径，卸载默认保留运行日志，删除数据是独立明确操作。
+- [x] checkout 内安装/隐藏启动/停止/重启/诊断/卸载入口，认证实例身份、重复启动复用、应用就绪检查；卸载保留数据与凭据。
+- [x] SQLite 生命周期互斥、Windows 路径和 PowerShell 中文编码、损坏控制密钥拒绝；隔离安装测试与独立审查。
+- [x] 派单、原生接收、事件、报告、推进许可、清单写回的丢 ACK 和崩溃恢复；未知执行保持阻断，不按超时重发。
+- [x] 重连立即续有效租约；过期的已验收暂停点显式核对原生历史、回写、目录与 Git 后恢复原租约；恢复回执幂等；停止意图跨崩溃保留。
+- [x] 正式界面诊断与原批次跳转；异常暂停点显示核对并恢复连接，恢复后再明确继续。
+- [x] 三个现有待办实测执行器断网、暂停点进程崩溃、原批次恢复、完成后的普通服务重启、旧创建请求重放；同 run/thread、三任务轮次、三次确认回写、报告哈希不变。
+- [x] 类型检查、构建与本地部署 dry-run；发布和回滚步骤写入部署指南。
+- [x] 最终冻结版本完整回归 882/882 通过，结果补入验收记录。
 
-- [ ] 用故障注入覆盖四个崩溃点：保存派单之后、turn 接收但应答之前、执行完成之后、画布保存之后；每次重启后断言没有第二次实际执行。
-- [ ] 覆盖 lease 到期时仍有子进程、设备撤销、旧连接回传、缺段事件、CLI 版本变化和模型配额不足；不能用固定超时直接推断任务已停止。
-- [ ] 覆盖真实 workerd 的 DO 重启、outbox 重投、R2 临时失败和记忆派生摘要失效；状态最终收敛且队列不越过 finalizing。
-- [ ] 运行 `node --test tests/agent-recovery.test.mjs tests/agent-end-to-end.test.mjs`，对新增缺口先观察失败再修复。
-- [ ] 完成隐藏启动、正常退出、Credential Manager 清理、版本报告、观测日志脱敏和 30/90 天保留任务。Windows 安装/卸载脚本验证所有目标均属于已登记安装目录。
-- [ ] 在隔离环境运行 `npm test`、`npm run check`、`npm run deploy:check`，记录真实输出和版本；失败修复后只重复受影响检查。
-- [ ] 真机验收：用户测试项目总结 S0；聊天创建 3 个待办；开始后分别在 S1/S2/S3 执行；中途关闭网页并恢复；再模拟一次 Runner 断线。逐项记录 cwd、threadId、turnId、验证证据与清单写回回执。
-- [ ] 编写发布顺序：D1 migration -> Worker/DO 版本 -> Runner -> preview 开关 -> 真机验收 -> 用户手工生产发布。回滚先停止新派单并对账，保留存储。
-- [ ] 提交本任务文件与验收文档；产品发布状态只能根据实际部署与真机结果填写。
+范围决定：安装在当前 checkout 的 `.tmp/agent-install`，不注册全局服务/登录计划任务，不生成独立发行包；不自动删除凭据、任务记录或按30/90天清理恢复证据。本次未重启整台电脑、未提交 Git、未发布生产；这些不能据本机验收标成已完成。正常 stop/restart 保守拒绝活动/未知任务（包括暂停批次），`--interrupt-active` 是中断语义，不是续跑命令。
 
 ## 需求到任务的覆盖
 
@@ -254,17 +254,17 @@ assert.equal(outbox.filter(x => x.type === 'create_run_for_next_task').length, 0
 | 正常聊天和可管理记忆 | 6、9 |
 | 直接生成未完成清单和排序 | 1、5、6、9 |
 | MCP 派发，本机新建会话执行 | 2、3、4、8 |
-| 每条待办一个新会话 | 2、8、10 |
+| 同批次共用一个会话，下一批次新建会话 | 2、8、10 |
 | 完成后自动执行下一项 | 5、8、10 |
 | 失败暂停、重启恢复、防重复 | 2、3、4、8、10 |
 
 ## 方案交付自检
 
-- [x] 项目绑定与历史会话区别明确，正常运行中每个任务新建线程。
+- [x] 项目绑定与历史会话区别明确，同批次沿用同一线程，下一批次新建线程。
 - [x] Codex 执行成功、验收通过、画布写回和下一项派发有独立阶段。
 - [x] 定义了现有代码的连接点，排序与规格不会被旧 schema 静默丢弃。
 - [x] 聊天记忆有来源、版本、检索范围和遗忘机制。
 - [x] MCP 是真实异步工具契约，Runner 事件与 MCP 请求回执分开。
-- [x] 真实 API 状态与模拟测试区分；第一项真机验证未被描述为已通过。
+- [x] 真实 API 状态与模拟测试区分，三个真实待办的执行、验收、回写与恢复均有原始记录。
 
-实现者可以决定模块内部的小型辅助函数、UI 细节和日志后端。产品流程、默认阈值、权限边界、状态权威和接口名称按设计与本计划执行；改变这些内容先更新设计。当前没有执行上述开发步骤、部署服务或向真实 Codex 会话发送任务。
+实现者可以决定模块内部的小型辅助函数、UI 细节和日志后端。产品流程、默认阈值、权限边界、状态权威和接口名称按设计与本计划执行；改变这些内容先更新设计。当前已完成上述限定范围的本机实现与真实 Codex 验收，未提交 Git、未部署生产。

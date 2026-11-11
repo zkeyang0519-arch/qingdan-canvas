@@ -5,24 +5,42 @@ export async function localRunnerRequest(
   route,
   { body, accountId, ...options } = {},
 ) {
-  const response = await fetch(`/api/local-runner${route}`, {
-    ...options,
-    credentials: "same-origin",
-    signal: AbortSignal.timeout(45000),
-    headers: {
-      "X-Qingdan-Local": "1",
-      "X-QD-Account": accountId,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  const origin = globalThis.window?.location?.origin;
+  const needsBridge = [
+    "http://127.0.0.1:8788",
+    "http://127.0.0.1:5178",
+  ].includes(origin);
+  const base = needsBridge ? "http://127.0.0.1:8790" : "";
+  let response;
+  try {
+    response = await fetch(`${base}/api/local-runner${route}`, {
+      ...options,
+      credentials: needsBridge ? "include" : "same-origin",
+      signal: AbortSignal.timeout(45000),
+      headers: {
+        "X-Qingdan-Local": "1",
+        "X-QD-Account": accountId,
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (cause) {
+    throw Error(
+      "无法连接本机 Agent 服务。请在轻单目录运行 npm run dev，再重试。",
+      { cause },
+    );
+  }
   let data;
   try {
     data = await response.json();
   } catch {
-    throw Error("本机 Runner 尚未启动，请使用本机体验入口。");
+    throw Error("本机服务尚未启动，请启动后重新连接。");
   }
-  if (!response.ok) throw Error(data.error || "本机 Runner 请求失败。");
+  if (!response.ok)
+    throw Object.assign(Error(data.error || "本机 Runner 请求失败。"), {
+      status: response.status,
+      ...(typeof data.code === "string" ? { code: data.code } : {}),
+    });
   return data;
 }
 
@@ -39,17 +57,21 @@ const heartbeatLabel = (value) =>
     ? new Date(value).toLocaleTimeString("zh-CN", { hour12: false })
     : "等待首次心跳";
 
-export default function DevicePanel({
+function DeviceScope({
   roomId,
   userId,
   pages = [],
   requestCloud = api,
   requestLocal = localRunnerRequest,
+  embedded = false,
+  initialPageId,
+  onBindingChanged,
 }) {
   const [local, setLocal] = useState(null);
   const [devices, setDevices] = useState([]);
   const [cloudReady, setCloudReady] = useState(false);
   const [localError, setLocalError] = useState("");
+  const [localErrorCode, setLocalErrorCode] = useState("");
   const [cloudError, setCloudError] = useState("");
   const [actionError, setActionError] = useState("");
   const [message, setMessage] = useState("");
@@ -57,7 +79,9 @@ export default function DevicePanel({
   const [loaded, setLoaded] = useState(false);
   const [deviceName, setDeviceName] = useState("");
   const [root, setRoot] = useState("");
-  const [sectionId, setSectionId] = useState(pages[0]?.id || "");
+  const [sectionId, setSectionId] = useState(
+    initialPageId || pages[0]?.id || "",
+  );
   const [workspaceId, setWorkspaceId] = useState("");
   const [binding, setBinding] = useState(null);
   const [bindingReady, setBindingReady] = useState(false);
@@ -70,11 +94,14 @@ export default function DevicePanel({
     const epoch = ++version.current;
     const results = await Promise.allSettled([
       requestLocal("/status", { accountId: userId }),
-      requestCloud("/api/agent/devices", { accountId: userId }),
+      requestCloud("/api/agent/devices", {
+        accountId: userId,
+        isCurrentSession: () => mounted.current,
+      }),
       sectionId
         ? requestCloud(
             `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(sectionId)}`,
-            { accountId: userId },
+            { accountId: userId, isCurrentSession: () => mounted.current },
           )
         : Promise.resolve({ binding: null }),
     ]);
@@ -83,9 +110,11 @@ export default function DevicePanel({
     if (localResult.status === "fulfilled") {
       setLocal(localResult.value);
       setLocalError("");
+      setLocalErrorCode("");
     } else {
       setLocal(null);
       setLocalError(localResult.reason.message);
+      setLocalErrorCode(localResult.reason.code || "");
     }
     if (devicesResult.status === "fulfilled") {
       setDevices(devicesResult.value.devices || []);
@@ -137,6 +166,10 @@ export default function DevicePanel({
   const workspaces = local?.workspaces || [];
   const selectedWorkspace =
     workspaces.find((workspace) => workspace.workspaceId === workspaceId) ||
+    (binding?.runnerId === local?.runnerId &&
+      workspaces.find(
+        (workspace) => workspace.workspaceId === binding?.workspaceId,
+      )) ||
     workspaces[0];
   const device = devices.find((item) => item.runnerId === local?.runnerId);
   const paired = local?.paired === true;
@@ -149,10 +182,19 @@ export default function DevicePanel({
       (workspace) => workspace.workspaceId === binding.workspaceId,
     );
 
-  const localAction = (route, body = {}) =>
-    requestLocal(route, { method: "POST", body, accountId: userId });
-  const cloudAction = (route, body = {}) =>
-    requestCloud(route, { method: "POST", body, accountId: userId });
+  const localAction = (route, body = {}) => {
+    if (!mounted.current) throw Error("当前设置页面已关闭。");
+    return requestLocal(route, { method: "POST", body, accountId: userId });
+  };
+  const cloudAction = (route, body = {}) => {
+    if (!mounted.current) throw Error("当前设置页面已关闭。");
+    return requestCloud(route, {
+      method: "POST",
+      body,
+      accountId: userId,
+      isCurrentSession: () => mounted.current,
+    });
+  };
   async function perform(operation, success) {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -174,12 +216,14 @@ export default function DevicePanel({
 
   return (
     <div className="agent-trial agent-device-panel">
-      <div className="agent-intro">
-        <h3>把这台电脑连接到轻单</h3>
-        <p>
-          绑定当前账号，选择允许执行的项目，再把项目关联到清单。关闭网页后，本机服务仍会保持连接。
-        </p>
-      </div>
+      {!embedded && (
+        <div className="agent-intro">
+          <h3>把这台电脑连接到轻单</h3>
+          <p>
+            绑定当前账号，选择允许执行的项目，再把项目关联到清单。关闭网页后，本机服务仍会保持连接。
+          </p>
+        </div>
+      )}
       {!loaded && (
         <p className="agent-note" role="status">
           正在读取电脑状态…
@@ -187,11 +231,17 @@ export default function DevicePanel({
       )}
       {localError && (
         <div className="agent-setup">
-          <strong>需要启动本机 Runner</strong>
-          <p className="agent-note">
-            在轻单项目目录运行 <code>npm run dev:agent</code>，然后打开{" "}
-            <a href="http://127.0.0.1:8790">本机体验入口</a>。
-          </p>
+          <strong>
+            {localErrorCode === "OWNER_MISMATCH"
+              ? "电脑绑定账号不一致"
+              : "需要启动本机服务"}
+          </strong>
+          {localErrorCode !== "OWNER_MISMATCH" && (
+            <p className="agent-note">
+              在轻单项目目录运行 <code>npm run agent:start</code>，然后打开{" "}
+              <a href="http://127.0.0.1:8790">本机工作区</a>。
+            </p>
+          )}
           <p className="agent-note">{localError}</p>
         </div>
       )}
@@ -225,14 +275,17 @@ export default function DevicePanel({
         </div>
         {paired ? (
           <>
-            <p className="agent-note">
-              已绑定当前轻单账号 · 轻单识别状态：
-              {device ? statusLabel[device.status] : "等待同步"}
-            </p>
-            <p className="agent-note">
-              最近心跳：{heartbeatLabel(local.lastHeartbeatAt)} · 设备凭据保存在
-              Windows 凭据管理器
-            </p>
+            <details className="agent-connection-details">
+              <summary>连接详情</summary>
+              <p className="agent-note">
+                已绑定当前轻单账号 · 轻单识别状态：
+                {device ? statusLabel[device.status] : "等待同步"}
+              </p>
+              <p className="agent-note">
+                最近心跳：{heartbeatLabel(local.lastHeartbeatAt)} ·
+                设备凭据保存在 Windows 凭据管理器
+              </p>
+            </details>
             {local.error && <p className="agent-error">{local.error}</p>}
             <div className="agent-actions">
               <button
@@ -333,7 +386,9 @@ export default function DevicePanel({
           <section className="agent-device-card" aria-label="允许的项目">
             <h4>允许执行的项目</h4>
             <p className="agent-note">
-              添加你允许 Runner 使用的目录。之后只能向已授权的项目派发任务。
+              {embedded
+                ? "添加你允许 Codex 执行任务的目录，再关联到当前项目。"
+                : "添加你允许 Runner 使用的目录。之后只能向已授权的项目派发任务。"}
             </p>
             <div className="agent-device-add">
               <label>
@@ -393,29 +448,31 @@ export default function DevicePanel({
           <section className="agent-device-card" aria-label="清单关联">
             <h4>关联到清单</h4>
             <div className="agent-field-grid">
-              <label>
-                当前画布中的清单
-                <select
-                  aria-label="选择清单"
-                  value={sectionId}
-                  disabled={busy || !pages.length}
-                  onChange={(event) => {
-                    version.current++;
-                    setSectionId(event.target.value);
-                    setBinding(null);
-                    setBindingReady(false);
-                  }}
-                >
-                  <option value="" disabled>
-                    请选择清单
-                  </option>
-                  {pages.map((page) => (
-                    <option key={page.id} value={page.id}>
-                      {page.title || "未命名清单"}
+              {!embedded && (
+                <label>
+                  当前画布中的清单
+                  <select
+                    aria-label="选择清单"
+                    value={sectionId}
+                    disabled={busy || !pages.length}
+                    onChange={(event) => {
+                      version.current++;
+                      setSectionId(event.target.value);
+                      setBinding(null);
+                      setBindingReady(false);
+                    }}
+                  >
+                    <option value="" disabled>
+                      请选择清单
                     </option>
-                  ))}
-                </select>
-              </label>
+                    {pages.map((page) => (
+                      <option key={page.id} value={page.id}>
+                        {page.title || "未命名清单"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label>
                 执行项目
                 <select
@@ -457,6 +514,7 @@ export default function DevicePanel({
                       expectedRevision: binding?.revision ?? null,
                     });
                     setBinding(result.binding);
+                    if (mounted.current) onBindingChanged?.(result.binding);
                   }, "当前清单已绑定到所选项目。")
                 }
               >
@@ -477,12 +535,23 @@ export default function DevicePanel({
             {!pages.length && (
               <p className="agent-note">请先在画布中添加一份清单。</p>
             )}
-            <p className="agent-note">
-              本步骤验证设备连接和项目关联；任务派发将在下一步接入。
-            </p>
+            {!embedded && (
+              <p className="agent-note">
+                本步骤验证设备连接和项目关联；任务派发将在下一步接入。
+              </p>
+            )}
           </section>
         </>
       )}
     </div>
+  );
+}
+
+export default function DevicePanel(props) {
+  return (
+    <DeviceScope
+      key={JSON.stringify([props.userId, props.roomId])}
+      {...props}
+    />
   );
 }

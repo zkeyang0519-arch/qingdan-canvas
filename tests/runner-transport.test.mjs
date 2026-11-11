@@ -287,6 +287,55 @@ if (api) {
     await tick();
     assert.equal(s.sent.at(-1).receipt.status, "rejected");
   });
+  test("reconnect immediately renews a near-expiry live lease without reviving expired leases", async (t) => {
+    const f = await fixture(t);
+    f.store.saveLease({
+      workspaceId: "workspace-a",
+      runId: "run-a",
+      leaseEpoch: 7,
+      expiresAt: f.clock.now() + 11000,
+    });
+    f.store.saveLease({
+      workspaceId: "workspace-old",
+      runId: "run-old",
+      leaseEpoch: 6,
+      expiresAt: f.clock.now() - 1,
+    });
+    f.transport.reconnect();
+    await tick();
+    f.welcome(2);
+    await tick();
+    const socket = f.sockets.at(-1);
+    const heartbeats = socket.sent.filter(
+      (packet) => packet.type === "heartbeat",
+    );
+    assert.equal(
+      heartbeats.length,
+      1,
+      "renew before waiting the ordinary 15s interval",
+    );
+    assert.deepEqual(heartbeats[0].leases, [
+      { workspaceId: "workspace-a", runId: "run-a", leaseEpoch: 7 },
+    ]);
+    const renewed = f.clock.now() + 60000;
+    socket.packet({
+      type: "heartbeat_ack",
+      connectionEpoch: 2,
+      leases: [
+        {
+          workspaceId: "workspace-a",
+          runId: "run-a",
+          leaseEpoch: 7,
+          expiresAt: renewed,
+        },
+      ],
+    });
+    await tick();
+    await f.clock.advance(11001);
+    assert.equal(f.store.lease("run-a").expiresAt, renewed);
+    assert.ok(f.store.lease("run-a").expiresAt > f.clock.now());
+    assert.ok(f.store.lease("run-old").expiresAt < f.clock.now());
+  });
   test("15s heartbeat, 45s offline, bounded retry and revocation stop", async (t) => {
     const f = await fixture(t);
     await f.clock.advance(15000);
@@ -382,7 +431,7 @@ if (api) {
     assert.equal(view.paired, true);
     assert.equal(view.runnerId, paired.runnerId);
     assert.equal(pairCalls, 1);
-    assert.throws(() => controller.status("other"), /owner|account/i);
+    assert.throws(() => controller.status("other"), { code: "OWNER_MISMATCH" });
     await controller.close();
     controller = new api.RunnerDeviceController({
       stateDir: base,
@@ -685,21 +734,19 @@ if (api) {
     }
     assert.equal(f.transport.status.connectionStatus, "online");
     assert.equal(f.sockets.length, 2);
-    f.sockets
-      .at(-1)
-      .packet({
-        type: "heartbeat_ack",
-        connectionEpoch: 2,
-        serverTime: f.clock.now(),
-        leases: [
-          {
-            workspaceId: "expired-workspace",
-            runId: "expired-run",
-            leaseEpoch: 1,
-            expiresAt: f.clock.now() + 60000,
-          },
-        ],
-      });
+    f.sockets.at(-1).packet({
+      type: "heartbeat_ack",
+      connectionEpoch: 2,
+      serverTime: f.clock.now(),
+      leases: [
+        {
+          workspaceId: "expired-workspace",
+          runId: "expired-run",
+          leaseEpoch: 1,
+          expiresAt: f.clock.now() + 60000,
+        },
+      ],
+    });
     await tick();
     assert.equal(f.store.lease("expired-run").expiresAt, 1700000060000);
     assert.throws(

@@ -1,12 +1,21 @@
 import type { CanvasRoom } from "./room";
 import type { RunnerHub } from "./execution/hub";
+import type { AgentChatRouter } from "./agent/chat-router";
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
   ROOMS: DurableObjectNamespace<CanvasRoom>;
   RUNNER_HUBS: DurableObjectNamespace<RunnerHub>;
+  AGENT_CHATS: DurableObjectNamespace<AgentChatRouter>;
   RUNNER_ENABLED?: string;
   EXECUTION_ENABLED?: string;
+  CHAT_ENABLED?: string;
+  PROJECT_SUMMARY_ENABLED?: string;
+  BATCH_QUEUE_ENABLED?: string;
+  ROUTER_API_KEY?: string;
+  ROUTER_BASE_URL?: string;
+  ROUTER_MODEL?: string;
+  ROUTER_API_FORMAT?: string;
   ASSETS: Fetcher;
   APP_ENV: string;
   RESEND_API_KEY?: string;

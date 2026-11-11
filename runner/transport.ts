@@ -55,7 +55,16 @@ type Request = {
   reject: (error: Error) => void;
   timer: any;
 };
-export type ExecutionAction = "context" | "poll" | "ack" | "events" | "report";
+export type ExecutionAction =
+  | "context"
+  | "poll"
+  | "ack"
+  | "events"
+  | "report"
+  | "batch-gate"
+  | "recover-lease"
+  | "responses"
+  | "response-ack";
 /** Native-only outbound connection. The device credential stays in this transport. */
 export class RunnerTransport {
   readonly status: TransportStatus = {
@@ -273,6 +282,19 @@ export class RunnerTransport {
         }),
       );
   }
+  private sendHeartbeat() {
+    this.send({
+      type: "heartbeat",
+      leases: this.options.store
+        .leases()
+        .filter((lease) => lease.expiresAt > this.clock.now())
+        .map(({ workspaceId, runId, leaseEpoch }) => ({
+          workspaceId,
+          runId,
+          leaseEpoch,
+        })),
+    });
+  }
   private scheduleHeartbeat(generation: number) {
     this.heartbeat = this.clock.setTimeout(() => {
       if (generation !== this.generation || !this.running) return;
@@ -284,17 +306,7 @@ export class RunnerTransport {
         this.reconnect();
         return;
       }
-      this.send({
-        type: "heartbeat",
-        leases: this.options.store
-          .leases()
-          .filter((lease) => lease.expiresAt > this.clock.now())
-          .map(({ workspaceId, runId, leaseEpoch }) => ({
-            workspaceId,
-            runId,
-            leaseEpoch,
-          })),
-      });
+      this.sendHeartbeat();
       this.scheduleHeartbeat(generation);
     }, 15000);
   }
@@ -330,6 +342,14 @@ export class RunnerTransport {
         requestId: randomUUID(),
         workspaces: this.options.workspaces(),
       });
+      // A restarted controller may have less than one heartbeat interval left
+      // on its durable lease. Renew it now; expired occupancy stays fenced.
+      if (
+        this.options.store
+          .leases()
+          .some((lease) => lease.expiresAt > this.clock.now())
+      )
+        this.sendHeartbeat();
       for (const event of this.options.store.pendingEvents())
         this.send({ type: "event", event });
       this.scheduleHeartbeat(generation);
@@ -474,7 +494,19 @@ export class RunnerTransport {
     action: ExecutionAction,
     body: Record<string, unknown>,
   ): Promise<unknown> {
-    if (!["context", "poll", "ack", "events", "report"].includes(action))
+    if (
+      ![
+        "context",
+        "poll",
+        "ack",
+        "events",
+        "report",
+        "batch-gate",
+        "recover-lease",
+        "responses",
+        "response-ack",
+      ].includes(action)
+    )
       throw new RunnerError("VALIDATION_ERROR", "Invalid execution operation.");
     if (
       this.status.connectionStatus !== "online" ||

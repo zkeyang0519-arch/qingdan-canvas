@@ -10,6 +10,7 @@ import type {
 import type { ExecutionAck, ExecutionReport } from "../shared/agent/execution";
 import { digest } from "./store";
 import { RunnerError } from "./errors";
+import type { NativeRequestResponse } from "../shared/agent/permissions";
 
 export type NativeAck = Omit<ExecutionAck, "connectionEpoch">;
 export type NativeReport = Omit<ExecutionReport, "connectionEpoch">;
@@ -42,6 +43,14 @@ type RunState = {
   reportSettled?: boolean;
 };
 type EventPage = { cursor: number; events: RunnerEvent[] };
+export type InteractionReceipt = {
+  responseId: string;
+  pendingRequestId: string;
+  runId: string;
+  hash: string;
+  status: "dispatching" | "applied" | "expired" | "cancelled";
+  acked: boolean;
+};
 
 /** Native side effects and their delivery receipts survive transport/process restarts. */
 export class ExecutionStore {
@@ -161,6 +170,21 @@ export class ExecutionStore {
     const state = this.run(runId);
     return state && this.command(state.latest);
   }
+  checkpointRecovery(runId:string) {
+    return this.read<{commandId:string;turnId:string}>("state",`checkpoint-recovery:${runId}`);
+  }
+  stopIntent(runId:string) {
+    return this.read<{reason:string;commandId:string|null}>("state",`stop-intent:${runId}`);
+  }
+  recordStopIntent(runId:string,reason:string,commandId:string|null) {
+    this.write("state",`stop-intent:${runId}`,{reason,commandId});
+  }
+  markCheckpointRecovery(runId:string,commandId:string,turnId:string) {
+    this.write("state",`checkpoint-recovery:${runId}`,{commandId,turnId});
+  }
+  clearCheckpointRecovery(runId:string) {
+    this.db.prepare("DELETE FROM state WHERE key=?").run(`checkpoint-recovery:${runId}`);
+  }
   accept(envelope: CommandEnvelope, snapshot: ExecutionSnapshot) {
     return this.transaction(() => {
       const old = this.command(envelope.commandId);
@@ -255,6 +279,57 @@ export class ExecutionStore {
       )
       .get();
     return row ? String(row.run_id) : undefined;
+  }
+  beginInteractionResponse(input: NativeRequestResponse): {
+    receipt: InteractionReceipt;
+    created: boolean;
+  } {
+    const key = `interaction-response:${input.responseId}`,
+      hash = digest(input);
+    return this.transaction(() => {
+      const previous = this.read<InteractionReceipt>("state", key);
+      if (previous) {
+        if (previous.hash !== hash)
+          throw new RunnerError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "审批响应编号已被不同内容使用。",
+          );
+        return { receipt: previous, created: false };
+      }
+      // Only identity, digest and delivery state persist; answers and wire IDs
+      // never do. The marker fences the following non-idempotent RPC response.
+      const receipt: InteractionReceipt = {
+        responseId: input.responseId,
+        pendingRequestId: input.pendingRequestId,
+        runId: input.runId,
+        hash,
+        status: "dispatching",
+        acked: false,
+      };
+      this.write("state", key, receipt);
+      return { receipt, created: true };
+    });
+  }
+  finishInteractionResponse(
+    responseId: string,
+    status: Exclude<InteractionReceipt["status"], "dispatching">,
+  ) {
+    const key = `interaction-response:${responseId}`,
+      receipt = this.read<InteractionReceipt>("state", key);
+    if (receipt) this.write("state", key, { ...receipt, status });
+  }
+  unackedInteractionResponses(): InteractionReceipt[] {
+    return this.db
+      .prepare(
+        "SELECT data FROM state WHERE key LIKE 'interaction-response:%' AND json_extract(data,'$.acked')=0 LIMIT 20",
+      )
+      .all()
+      .map((row) => JSON.parse(String(row.data)));
+  }
+  acknowledgeInteractionResponse(responseId: string) {
+    const key = `interaction-response:${responseId}`,
+      receipt = this.read<InteractionReceipt>("state", key);
+    if (receipt) this.write("state", key, { ...receipt, acked: true });
   }
   eventState(runId: string) {
     const row = this.db

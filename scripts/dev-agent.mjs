@@ -6,6 +6,7 @@ import { ExperienceService } from "./lib/agent-experience-service.mjs";
 import { stopOwnedChild } from "./lib/stop-child.mjs";
 import { startExperience } from "./lib/agent-experience-launcher.mjs";
 import { createLocalRunnerApi } from "./lib/local-runner-api.mjs";
+import { readLocalRunnerDiagnostics } from "./lib/local-runner-diagnostics.mjs";
 import {
   prepareExecutionTrial,
   listExecutionProjects,
@@ -36,6 +37,14 @@ const server = createExperienceServer({
   runnerApi: createLocalRunnerApi({
     getController: () => deviceController,
     upstream: "http://127.0.0.1:8788",
+    getDiagnostics: () =>
+      readLocalRunnerDiagnostics({
+        projectRoot: root,
+        inspect: (work) => {
+          if (!service) throw Error("本机服务正在准备。");
+          return service.inspect(work);
+        },
+      }),
     prepareTrial: (input) =>
       prepareExecutionTrial({ ...input, projectRoot: root }),
     listTrials: ({ ownerId, state }) =>
@@ -60,6 +69,9 @@ const run = (script, args = []) =>
         WRANGLER_LOG_PATH: path.join(root, ".tmp/wrangler-logs/"),
         QINGDAN_RUNNER_ENABLED: "true",
         QINGDAN_EXECUTION_ENABLED: "true",
+        QINGDAN_CHAT_ENABLED: "true",
+        QINGDAN_PROJECT_SUMMARY_ENABLED: "true",
+        QINGDAN_BATCH_QUEUE_ENABLED: "true",
       },
       stdio: "inherit",
       windowsHide: true,
@@ -107,7 +119,7 @@ try {
         return;
       }
       console.log(
-        "\n轻单 Agent 体验入口：http://127.0.0.1:8790\n登录并进入画布后，点击右上角“Agent 验证”。\n",
+        "\n轻单 Agent 入口：http://127.0.0.1:8790\n登录并进入画布后，点击顶部“Agent”；电脑设置中可查看诊断与恢复。\n",
       );
     },
   });

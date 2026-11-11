@@ -6,6 +6,8 @@ import { createLocalRunnerApi } from "../scripts/lib/local-runner-api.mjs";
 
 test("local Runner controls authenticate the browser and never accept a caller-chosen owner", async () => {
   const seen = [];
+  let diagnosticReads = 0;
+  let connectionStatus = "online";
   const worker = createServer((req, res) => {
     res.setHeader("content-type", "application/json");
     res.end(
@@ -26,9 +28,9 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       seen.push(ownerId);
       if (ownerId !== "alice")
         throw Object.assign(Error("电脑已绑定另一个账号"), {
-          code: "ACCESS_DENIED",
+          code: "OWNER_MISMATCH",
         });
-      return { paired: true, ownerId };
+      return { paired: true, ownerId, connectionStatus };
     },
     registerWorkspace(ownerId, input) {
       seen.push({ ownerId, ...input });
@@ -38,8 +40,31 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       seen.push({ ownerId, workspaceId });
       return { workspaceId };
     },
+    listCodexSessions(ownerId, query) {
+      this.status(ownerId);
+      return {
+        sessions: [{ threadId: "a", cwd: "D:/project" }],
+        nextCursor: query.cursor || null,
+        search: query.searchTerm,
+      };
+    },
+    selectCodexSession(ownerId, threadId) {
+      this.status(ownerId);
+      return {
+        session: { threadId },
+        workspace: { workspaceId: "verified-project" },
+      };
+    },
   };
   const runnerApi = createLocalRunnerApi({
+    getDiagnostics: async () => {
+      diagnosticReads++;
+      connectionStatus = "offline";
+      return {
+        service: { version: "test", nodeVersion: process.versions.node },
+        codex: { available: true, authenticated: true, version: "test" },
+      };
+    },
     getController: () => controller,
     upstream,
     prepareTrial: ({ ownerId, projectName }) => ({
@@ -78,6 +103,31 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   try {
+    const diagnostics = await request("/diagnostics");
+    assert.equal(diagnostics.status, 200);
+    assert.equal(diagnostics.headers.get("cache-control"), "no-store");
+    const result = await diagnostics.json();
+    assert.equal(result.connectionStatus, "offline");
+    assert.equal(result.codex.authenticated, true);
+    assert.equal(result.service.nodeVersion, process.versions.node);
+    assert.ok(Number.isFinite(Date.parse(result.checkedAt)));
+    assert.equal(diagnosticReads, 1);
+    assert.equal(
+      (
+        await request("/diagnostics", undefined, {
+          "x-qd-account": "bob",
+          cookie: "qd_session=bob",
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await request("/diagnostics", undefined, { cookie: "" })).status,
+      401,
+    );
+    assert.equal((await request("/diagnostics", {})).status, 404);
+    assert.equal(diagnosticReads, 1);
+    seen.length = 0;
     assert.equal(
       (
         await request("/status", undefined, {
@@ -117,18 +167,19 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       401,
     );
     assert.equal(seen.length, 0);
-    assert.equal(
-      (
-        await request("/status", undefined, {
-          cookie: "qd_session=bob",
-          "x-qd-account": "bob",
-        })
-      ).status,
-      403,
-    );
+    const mismatched = await request("/status", undefined, {
+      cookie: "qd_session=bob",
+      "x-qd-account": "bob",
+    });
+    assert.equal(mismatched.status, 403);
+    assert.deepEqual(await mismatched.json(), {
+      error: "电脑已绑定另一个账号",
+      code: "OWNER_MISMATCH",
+    });
     assert.deepEqual(await (await request("/status")).json(), {
       paired: true,
       ownerId: "alice",
+      connectionStatus: "offline",
       executionProjects: [
         {
           workspaceId: "named",
@@ -192,6 +243,59 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       (await request("/execution/trial", { projectName: "a".repeat(61) }))
         .status,
       400,
+    );
+    assert.deepEqual(
+      await (
+        await request("/codex/sessions?cursor=next&searchTerm=site")
+      ).json(),
+      {
+        sessions: [{ threadId: "a", cwd: "D:/project" }],
+        nextCursor: "next",
+        search: "site",
+      },
+    );
+    assert.equal(
+      (await request("/codex/sessions", undefined, { cookie: "" })).status,
+      401,
+    );
+    assert.equal(
+      (
+        await request("/codex/sessions", undefined, {
+          cookie: "qd_session=bob",
+          "x-qd-account": "bob",
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await request("/codex/sessions?ownerId=bob")).status, 400);
+    assert.equal(
+      (await request("/codex/sessions?searchTerm=" + "x".repeat(201))).status,
+      400,
+    );
+    assert.equal(
+      (await request("/codex/sessions?cursor=" + "x".repeat(4097))).status,
+      400,
+    );
+    assert.equal(
+      (await request("/codex/select", { threadId: "a", root: "D:/arbitrary" }))
+        .status,
+      400,
+    );
+    assert.equal(
+      (await request("/codex/select", { threadId: "a", ownerId: "bob" }))
+        .status,
+      400,
+    );
+    assert.equal(
+      (await request("/codex/select", { threadId: "" })).status,
+      400,
+    );
+    assert.deepEqual(
+      await (await request("/codex/select", { threadId: "a" })).json(),
+      {
+        session: { threadId: "a" },
+        workspace: { workspaceId: "verified-project" },
+      },
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));

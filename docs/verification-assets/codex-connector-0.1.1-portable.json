@@ -1,0 +1,93 @@
+{
+  "at": "2026-11-09T15:55:56.829Z",
+  "passed": true,
+  "checks": [
+    {
+      "name": "relocated-bundled-runtime-without-system-node",
+      "passed": true,
+      "version": "0.167.0-alpha.3.2"
+    },
+    {
+      "name": "real-session-list",
+      "count": 50
+    },
+    {
+      "name": "selected-project",
+      "matches": true,
+      "directoryExists": true
+    },
+    {
+      "name": "real-pagination",
+      "count": 50
+    },
+    {
+      "name": "duplicate-launch-reuses-process",
+      "passed": true
+    },
+    {
+      "name": "local-api-requires-credential",
+      "passed": true
+    },
+    {
+      "name": "manual-path-error-and-auto-recovery",
+      "passed": true
+    },
+    {
+      "name": "real-reconnect",
+      "passed": true
+    },
+    {
+      "name": "clean-shutdown",
+      "connectorExited": true,
+      "ownedChildrenExited": 2
+    }
+  ],
+  "diagnostics": {
+    "connectorVersion": "0.1.1",
+    "platform": "win32",
+    "node": "v24.18.0",
+    "codexVersion": "0.167.0-alpha.3.2",
+    "status": "ready",
+    "authStatus": "signed_in",
+    "checks": [
+      {
+        "id": "discovery",
+        "state": "ok"
+      },
+      {
+        "id": "protocol",
+        "state": "ok"
+      },
+      {
+        "id": "account",
+        "state": "ok"
+      },
+      {
+        "id": "sessions",
+        "state": "ok"
+      }
+    ],
+    "errorCode": null,
+    "warnings": [],
+    "retryAttempt": 0,
+    "updatedAt": "2026-11-09T15:56:03.906Z",
+    "events": [
+      {
+        "at": "2026-11-09T15:55:59.708Z",
+        "code": "CONNECTION_VERIFIED"
+      },
+      {
+        "at": "2026-11-09T15:55:59.962Z",
+        "code": "CODEX_PATH_INVALID"
+      },
+      {
+        "at": "2026-11-09T15:56:02.478Z",
+        "code": "CONNECTION_VERIFIED"
+      },
+      {
+        "at": "2026-11-09T15:56:03.906Z",
+        "code": "CONNECTION_VERIFIED"
+      }
+    ]
+  }
+}
