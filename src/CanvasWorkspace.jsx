@@ -34,7 +34,10 @@ import {
   Pencil,
   Server,
   Bot,
+  PanelTop,
 } from "lucide-react";
+import DynamicIsland from "./island/DynamicIsland.jsx";
+import { getIslandPreferences, setIslandPreferences } from "./island/preferences.js";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
 import { setSurface, createChecklistPage } from "./canvas/arranged-model.js";
@@ -164,6 +167,14 @@ export default function CanvasWorkspace({
   const view = state ? getView(state, room.id) : {};
   const arranged = view.surface === "arranged";
   const agentMode = view.surface === "agent";
+  const islandEnabled = state && getIslandPreferences(state, room.id).enabled;
+  const setIslandEnabled = (enabled) => {
+    exitEdit();
+    update((current) => setIslandPreferences(current, room.id, { enabled }), {
+      record: false,
+      navigation: true,
+    });
+  };
   const switchSurface = (surface, { showBatch = false } = {}) => {
     if (composing.current) {
       pendingMode.current = { surface, showBatch };
@@ -709,6 +720,16 @@ export default function CanvasWorkspace({
                 <Bot size={14} />
                 Agent
               </button>
+              <button
+                className="dynamic-island-mode-button"
+                aria-label={islandEnabled ? "关闭灵动岛模式" : "开启灵动岛模式"}
+                aria-pressed={!!islandEnabled}
+                title="灵动岛模式"
+                onClick={() => setIslandEnabled(!islandEnabled)}
+              >
+                <PanelTop size={14} />
+                <span className="dynamic-island-mode-text">灵动岛</span>
+              </button>
             </div>
             <div className="nav-end">
               {!agentMode && (
@@ -805,6 +826,16 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
+          {islandEnabled && (
+            <DynamicIsland
+              key={`${user.id}/${room.id}`}
+              workspace={workspace}
+              boardId={room.id}
+              onDisable={() => setIslandEnabled(false)}
+              beforeAction={exitEdit}
+              hidden={operationsOpen || !!panel || !!menuDialog || !!context}
+            />
+          )}
           {observedBatchStorage.warning && (
             <p
               className="agent-error"
