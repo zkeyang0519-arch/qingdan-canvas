@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import { build } from "esbuild";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createWorkspace } from "../src/canvas/model.js";
@@ -15,6 +15,7 @@ Object.assign(globalThis, {
   document: dom.window.document,
   sessionStorage: dom.window.sessionStorage,
 });
+mkdirSync(resolve("node_modules/.cache"), { recursive: true });
 const dir = mkdtempSync(resolve("node_modules/.cache/canvas-agent-recovery-"));
 await build({
   entryPoints: ["src/CanvasWorkspace.jsx"],
