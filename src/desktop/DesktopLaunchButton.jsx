@@ -2,7 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LoaderCircle, Monitor, X } from "lucide-react";
 import "./desktop-launch.css";
-import { requestOnlineLaunch } from "./online-launch.js";
+import {
+  requestOnlineLaunch,
+  wakeInstalledDesktop,
+  probeInstalledDesktop,
+  desktopDownloadPage,
+} from "./online-launch.js";
 
 const localEntry = "http://127.0.0.1:8790/app";
 const localOrigins = new Set([
@@ -71,6 +76,7 @@ export default function DesktopLaunchButton({ user, room }) {
   const request = useRef(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [progress, setProgress] = useState("");
 
   useEffect(() => {
     mounted.current = true;
@@ -87,10 +93,11 @@ export default function DesktopLaunchButton({ user, room }) {
     };
   }, [accountId, roomId]);
 
-  const launch = async () => {
+  const launch = async ({ wake = true } = {}) => {
     if (!accountId || !roomId || busyRef.current) return;
     const origin = window.location.origin;
     const online = window.location.protocol === "https:";
+    if (online && wake) wakeInstalledDesktop();
     if (!localOrigins.has(origin) && !online) {
       setNotice({
         kind: "info",
@@ -110,18 +117,33 @@ export default function DesktopLaunchButton({ user, room }) {
     busyRef.current = true;
     setBusy(true);
     setNotice(null);
+    setProgress("正在检查轻岛安装和版本…");
     try {
+      let result;
       if (online)
-        await requestOnlineLaunch(accountId, roomId, controller.signal);
+        result = await requestOnlineLaunch(
+          accountId,
+          roomId,
+          controller.signal,
+          (message) => {
+            if (current()) setProgress(message);
+          },
+        );
       else await requestLaunch(origin, accountId, roomId, controller.signal);
       if (current())
         setNotice({
           kind: "success",
           text: "已打开当前画布的轻岛。",
+          detail: result?.warning,
         });
     } catch (error) {
       if (current())
-        setNotice({ kind: "error", text: error.message, localLink: !online });
+        setNotice({
+          kind: "error",
+          text: error.message,
+          localLink: !online,
+          needsInstall: error.needsInstall === true,
+        });
     } finally {
       if (current()) {
         request.current = null;
@@ -130,6 +152,39 @@ export default function DesktopLaunchButton({ user, room }) {
       }
     }
   };
+
+  useEffect(() => {
+    if (!notice?.waitingInstall) return;
+    const controller = new AbortController();
+    let checking = false;
+    const timer = setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        await probeInstalledDesktop(controller.signal);
+        if (!controller.signal.aborted) {
+          clearInterval(timer);
+          void launch({ wake: false });
+        }
+      } catch {
+        /* Keep waiting while the user runs the first installer. */
+      } finally {
+        checking = false;
+      }
+    }, 2000);
+    const deadline = setTimeout(
+      () => {
+        clearInterval(timer);
+        controller.abort();
+      },
+      10 * 60 * 1000,
+    );
+    return () => {
+      clearInterval(timer);
+      clearTimeout(deadline);
+      controller.abort();
+    };
+  }, [notice?.waitingInstall, accountId, roomId]);
 
   return (
     <>
@@ -158,11 +213,7 @@ export default function DesktopLaunchButton({ user, room }) {
             aria-label="轻岛启动状态"
           >
             <div>
-              <p>
-                {busy
-                  ? "正在打开当前画布…如桌面窗口有未保存内容，请先完成确认。"
-                  : notice.text}
-              </p>
+              <p>{busy ? progress : notice.text}</p>
               {!busy && notice.detail && (
                 <p className="desktop-launch-detail">{notice.detail}</p>
               )}
@@ -170,6 +221,28 @@ export default function DesktopLaunchButton({ user, room }) {
                 <a href={localEntry} target="_blank" rel="noopener noreferrer">
                   打开本机入口
                 </a>
+              )}
+              {!busy && notice.needsInstall && (
+                <div className="desktop-install-actions">
+                  <a
+                    href={desktopDownloadPage}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() =>
+                      setNotice({
+                        kind: "info",
+                        needsInstall: true,
+                        waitingInstall: true,
+                        text: "请下载并运行 Windows 安装包。安装完成并打开轻岛后，这里会自动继续。",
+                      })
+                    }
+                  >
+                    下载轻岛安装包
+                  </a>
+                  <button type="button" onClick={() => void launch()}>
+                    已安装，打开轻岛
+                  </button>
+                </div>
               )}
             </div>
             {!busy && (

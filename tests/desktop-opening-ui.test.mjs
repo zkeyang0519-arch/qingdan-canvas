@@ -287,6 +287,7 @@ test("网页交接从session到room和草稿读取一直保持小胶囊，snapsh
   assert.deepEqual(await calls.quit(), {
     unsynced: false,
     hasDraft: false,
+    draftsPersisted: true,
     accountId: user.id,
     roomId: room.id,
   });

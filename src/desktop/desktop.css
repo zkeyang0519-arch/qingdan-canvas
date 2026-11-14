@@ -193,6 +193,12 @@ html.qingdan-desktop:is(
 }
 .island-side-word {
   writing-mode: vertical-rl;
+  min-height: 0;
+  max-height: 54px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
   font-size: 11px;
   letter-spacing: 2px;
   color: var(--island-text);

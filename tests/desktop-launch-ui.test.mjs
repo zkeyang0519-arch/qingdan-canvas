@@ -191,7 +191,7 @@ test("线上按钮通过一次性交接直接打开当前账号画布，等待�
   assert.equal(calls.length, 3);
   assert.equal(
     calls[0][0],
-    "http://127.0.0.1:8790/api/local-desktop/online/prepare",
+    "http://127.0.0.1:8791/api/local-desktop/online/prepare",
   );
   assert.equal(calls[0][1].credentials, "omit");
   assert.equal(calls[0][1].targetAddressSpace, "loopback");
@@ -236,15 +236,19 @@ test("线上交接等待期间换账号或画布，旧授权不得继续交给�
   assert.equal(status(), null);
 });
 
-test("线上本机连接失败解释服务和浏览器权限，不引导到另一个登录网页", async (t) => {
+test("线上未连接到已安装应用时说明浏览器权限并提供首次安装入口", async (t) => {
   t.mock.method(globalThis, "fetch", async () => {
     throw new TypeError("Failed to fetch");
   });
   const f = await mount(t, "https://qingdan-canvas.zkeyang0519.workers.dev");
   await click(f.button());
-  assert.match(status().textContent, /本机服务|本机轻单/);
+  assert.match(status().textContent, /尚未连接到轻岛/);
   assert.match(status().textContent, /浏览器|权限/);
-  assert.equal(status().querySelector("a"), null);
+  assert.equal(
+    status().querySelector("a").href,
+    "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/latest",
+  );
+  assert.match(status().textContent, /已安装，打开轻岛/);
 });
 
 test("服务不可达、认证失败和未确认启动都提供准确失败提示", async (t) => {

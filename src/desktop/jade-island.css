@@ -377,8 +377,51 @@
   flex-basis: 24px;
 }
 .dynamic-island[data-appearance="jade"] .island-side-word {
-  flex: 0 0 28px;
-  height: 28px;
+  flex: 1 1 40px;
+  min-height: 0;
+  max-height: 54px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.desktop-update-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 9px 12px;
+  margin: 8px 0;
+  border-radius: 10px;
+  background: #7a95721a;
+  font-size: 11px;
+  color: var(--island-muted);
+}
+.desktop-update-status > span {
+  flex: 1 1 auto;
+}
+.desktop-update-status-compact {
+  justify-content: flex-end;
+  margin: 2px 0;
+  padding: 0;
+  background: transparent;
+}
+.desktop-update-status button {
+  border: 1px solid var(--island-line);
+  border-radius: 7px;
+  padding: 4px 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.desktop-update-status button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.desktop-update-status p {
+  width: 100%;
+  margin: 0;
+  color: #9c4e40;
 }
 .dynamic-island[data-appearance="jade"] .island-side-count {
   flex: 0 0 16px;

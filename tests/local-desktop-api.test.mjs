@@ -6,6 +6,7 @@ import { createLocalDesktopApi } from "../scripts/lib/local-desktop-api.mjs";
 const sessionToken = "a".repeat(64);
 
 async function fixture(t) {
+  let expiresAt = Date.now() + 3600000;
   let starts = 0,
     sessionStatus = 200,
     launchError,
@@ -19,6 +20,7 @@ async function fixture(t) {
       JSON.stringify(
         req.url === "/api/session"
           ? {
+              sessionExpiresAt: expiresAt,
               user:
                 req.headers.cookie === `qd_session=${sessionToken}`
                   ? { id: "alice" }
@@ -37,7 +39,7 @@ async function fixture(t) {
       upstream,
       launch: async (...args) => {
         assert.deepEqual(args, [
-          { accountId: "alice", roomId: "room-a", sessionToken },
+          { accountId: "alice", roomId: "room-a", sessionToken, expiresAt },
         ]);
         if (launchError) throw launchError;
         starts++;
@@ -71,6 +73,9 @@ async function fixture(t) {
     headers,
     call,
     starts: () => starts,
+    setExpiry: (value) => {
+      expiresAt = value;
+    },
     failSession: () => {
       sessionStatus = 503;
     },
@@ -123,6 +128,25 @@ test("desktop launch verifies the browser session and accepts no launch paramete
   assert.equal(f.starts(), 1);
   f.failSession();
   assert.equal((await f.call()).status, 503);
+  assert.equal(f.starts(), 1);
+});
+
+test("local launch requires verified persistent cookie expiry and refuses missing or expired metadata", async (t) => {
+  const f = await fixture(t);
+  for (const value of [
+    undefined,
+    null,
+    "2099-01-01",
+    Date.now() - 1000,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    f.setExpiry(value);
+    const response = await f.call();
+    assert.equal(response.status, 503);
+  }
+  assert.equal(f.starts(), 0);
+  f.setExpiry(Date.now() + 60000);
+  assert.equal((await f.call()).status, 200);
   assert.equal(f.starts(), 1);
 });
 

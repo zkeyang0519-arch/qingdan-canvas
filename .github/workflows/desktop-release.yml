@@ -1,0 +1,100 @@
+name: Qingdao desktop installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "desktop/**"
+      - "src/**"
+      - "public/**"
+      - "shared/**"
+      - "build/**"
+      - "index.html"
+      - "vite.config.js"
+      - "package*.json"
+      - "electron-builder.config.cjs"
+      - "scripts/package-desktop.mjs"
+      - "scripts/lib/desktop-*.mjs"
+      - ".github/workflows/desktop-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qingdao-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      QINGDAO_PUBLISHER_NAME: ${{ vars.QINGDAO_PUBLISHER_NAME }}
+      # Unsigned releases are currently intentional. Set the repository variable
+      # to true when a signing service is ready; incomplete signing still fails.
+      QINGDAO_REQUIRE_SIGNING: ${{ vars.QINGDAO_REQUIRE_SIGNING == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Validate public release prerequisites
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REF_NAME -ne "v$($package.version)") { throw "Tag must match package version." }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Release must be built from main." }
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)
+          $hasPublisher = -not [string]::IsNullOrWhiteSpace($env:QINGDAO_PUBLISHER_NAME)
+          $hasCertificatePassword = -not [string]::IsNullOrWhiteSpace($env:WIN_CSC_KEY_PASSWORD)
+          $signingRequested = $env:QINGDAO_REQUIRE_SIGNING -eq 'true' -or $hasCertificate -or $hasPublisher -or $hasCertificatePassword
+          if ($signingRequested -and (-not $hasCertificate -or -not $hasPublisher)) { throw "Signing was requested: configure both WIN_CSC_LINK and QINGDAO_PUBLISHER_NAME, plus WIN_CSC_KEY_PASSWORD if required by the certificate." }
+          "QINGDAO_REQUIRE_SIGNING=$($signingRequested.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          "QINGDAO_RELEASE_SIGNED=$($signingRequested.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          if (-not $signingRequested) { Write-Host 'Publishing an unsigned Windows release. SmartScreen or device policies may warn or block installation.' }
+          $visibility = gh repo view $env:GITHUB_REPOSITORY --json visibility --jq .visibility
+          if ($visibility -ne 'PUBLIC') { throw "The configured update feed must be anonymously readable; configure a public release repository before publishing." }
+      - run: npm ci
+      - run: npm run check
+      - run: node --test tests/desktop-*.test.mjs tests/animal-runners.test.mjs
+      - run: npm run desktop:package
+      - name: Inspect installer payload
+        run: npm run desktop:inspect
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Qingdao-Windows-x64
+          path: |
+            output/desktop-release/Qingdao-Setup-*.exe
+            output/desktop-release/Qingdao-Setup-*.exe.blockmap
+            output/desktop-release/latest.yml
+          if-no-files-found: error
+      - name: Publish desktop update
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $artifacts = Get-ChildItem output/desktop-release -File | Where-Object { $_.Name -match '^Qingdao-Setup-.*\.exe(\.blockmap)?$|^latest\.yml$' }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'qingdao-desktop-release-notes.md'
+          if ($env:QINGDAO_RELEASE_SIGNED -eq 'true') {
+            foreach ($binary in @($artifacts | Where-Object Extension -eq '.exe') + @(Get-Item output/desktop-release/win-unpacked/Qingdao.exe)) {
+              if ((Get-AuthenticodeSignature -LiteralPath $binary.FullName).Status -ne 'Valid') { throw "Invalid Windows signature: $($binary.Name)" }
+            }
+            '此 Windows 安装包已进行代码签名。' | Set-Content -LiteralPath $notesPath -Encoding utf8
+          } else {
+            '此 Windows 安装包尚未进行代码签名，可能显示“未知发布者”或被设备安全策略阻止。请确认下载来自本项目 Releases；无需关闭系统安全保护。' | Set-Content -LiteralPath $notesPath -Encoding utf8
+          }
+          gh release create $env:GITHUB_REF_NAME @($artifacts.FullName) --verify-tag --generate-notes --notes-file $notesPath --title "轻岛 $env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "Desktop release failed." }

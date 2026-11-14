@@ -13,6 +13,9 @@ const {
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
+const { createUpdateController } = require("./updates.cjs");
+const { installBundledWeb } = require("./bundled-web.cjs");
+const { readResume, saveResume } = require("./resume-state.cjs");
 const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
 const {
   alwaysOnTopLevel,
@@ -43,15 +46,34 @@ const {
 } = require("./session-handoff.cjs");
 
 const root = path.resolve(__dirname, "..");
-const localApplication = parseAppUrl(process.env.QINGDAN_DESKTOP_URL).href;
+// A legacy broker without an explicit origin always belongs to the local
+// service, even when the packaged app starts on the production website.
+const legacyHandoffApplication = parseAppUrl(
+  process.env.QINGDAN_DESKTOP_URL,
+).href;
+const localApplication = parseAppUrl(
+  process.env.QINGDAN_DESKTOP_URL ||
+    (app.isPackaged ? "https://todo.zky.lol/app" : undefined),
+).href;
 let application = localApplication;
-const profile = path.resolve(
-  process.env.QINGDAN_DESKTOP_PROFILE ||
-    path.join(root, ".tmp", "desktop-profile"),
-);
+const profile = app.getPath
+  ? require("./profile-location.cjs").resolveDesktopProfile({
+      packaged: !!app.isPackaged,
+      projectRoot: root,
+      appData: app.getPath("appData"),
+      env: process.env,
+    })
+  : path.resolve(
+      process.env.QINGDAN_DESKTOP_PROFILE ||
+        path.join(root, ".tmp", "desktop-profile"),
+    );
 fs.mkdirSync(profile, { recursive: true });
 app.setPath("userData", profile);
 app.setName("轻岛");
+if (!process.env.QINGDAN_DESKTOP_URL)
+  application = readResume(profile) || application;
+let updates,
+  externalUpdating = false;
 const positionFile = path.join(profile, "window-position.json");
 let window,
   tray,
@@ -329,6 +351,8 @@ function saveBeforeQuit() {
   });
 }
 function requestSavedAction(kind) {
+  if (externalUpdating || updates?.state().status === "installing")
+    return Promise.resolve();
   if (quitting) return Promise.resolve();
   if (actionPromise) return actionPromise;
   if (!window || window.isDestroyed()) {
@@ -345,6 +369,7 @@ function requestSavedAction(kind) {
       return await performSavedAction({
         prepare: saveBeforeQuit,
         confirm: async (saved) => {
+          if (saved.draftsPersisted) return true;
           show();
           const result = await dialog.showMessageBox(window, {
             type: "question",
@@ -366,6 +391,9 @@ function requestSavedAction(kind) {
         },
         perform: async () => {
           await window.webContents.session.flushStorageData();
+          await window.webContents.session.cookies?.flushStore?.();
+          if (isTrustedPage(window.webContents.getURL(), application))
+            saveResume(profile, window.webContents.getURL());
           if (reconnect) {
             const currentUrl = window.webContents.getURL();
             allowSavedNavigation = true;
@@ -465,7 +493,7 @@ async function activateHandoff(
   const storage = window.webContents.session;
   const targetApplication = session.origin
     ? parseAppUrl(session.origin + "/app").href
-    : localApplication;
+    : legacyHandoffApplication;
   await checkActive();
   if (
     reuse &&
@@ -572,6 +600,8 @@ async function activateHandoff(
   }
 }
 function requestHandoff(input) {
+  if (externalUpdating || updates?.state().status === "installing")
+    return Promise.resolve();
   let descriptor;
   try {
     descriptor = validateDescriptor(input);
@@ -580,11 +610,11 @@ function requestHandoff(input) {
   }
   // Claim immediately even while another save/confirmation is in progress.
   // The ephemeral broker has a short claim deadline, then a longer apply limit.
-  const claimed = claimSession(descriptor, localApplication).then(
+  const claimed = claimSession(descriptor, legacyHandoffApplication).then(
     (session) => ({
       session: {
         ...session,
-        origin: session.origin || new URL(localApplication).origin,
+        origin: session.origin || new URL(legacyHandoffApplication).origin,
       },
     }),
     () => ({ error: true }),
@@ -615,7 +645,9 @@ function requestHandoff(input) {
               ? "还有未提交的待办输入。"
               : "还有未同步的待办修改。",
             detail: saved.hasDraft
-              ? "待同步内容已保存到本机；还有未提交的输入，切换会丢弃这些输入。是否切换？"
+              ? saved.draftsPersisted
+                ? "未提交输入和待同步内容已保存到原账号的本机草稿；返回原账号和画布后可以继续编辑。是否切换？"
+                : "待同步内容已保存到本机；还有未提交的输入，切换会丢弃这些输入。是否切换？"
               : "待同步内容已保存到原账号的本机草稿；返回原账号和画布后可恢复。是否切换？",
             noLink: true,
           });
@@ -740,6 +772,7 @@ async function createWindow({ handoff = false } = {}) {
       spellcheck: false,
       additionalArguments: [
         `--qingdan-origin=${new URL(localApplication).origin}`,
+        `--qingdan-allow-origin=${new URL(legacyHandoffApplication).origin}`,
         ...[...desktopOnlineOrigins()].map(
           (origin) => `--qingdan-allow-origin=${origin}`,
         ),
@@ -747,6 +780,11 @@ async function createWindow({ handoff = false } = {}) {
     },
   });
   window.on("page-title-updated", (event) => event.preventDefault());
+  if (app.isPackaged)
+    installBundledWeb(
+      window.webContents.session,
+      path.join(process.resourcesPath, "web"),
+    );
   window.setAlwaysOnTop(true, alwaysOnTopLevel(process.platform));
   window.setMenu(null);
   window.webContents.session.setPermissionRequestHandler(
@@ -850,6 +888,36 @@ async function createWindow({ handoff = false } = {}) {
       },
       { type: "separator" },
       {
+        label: "检查更新",
+        click: () => {
+          show();
+          void updates?.check();
+        },
+      },
+      {
+        label: "重启并安装已下载更新",
+        click: () => {
+          void updates?.install().catch((error) =>
+            dialog.showMessageBox(window, {
+              type: "warning",
+              message: error.message,
+            }),
+          );
+        },
+      },
+      {
+        label: "关于轻岛",
+        click: () => {
+          void dialog.showMessageBox(window, {
+            title: "关于轻岛",
+            message: `轻岛 ${app.getVersion()}`,
+            detail:
+              "自动下载更新；点击重启更新后安装。登录与草稿保存在本机独立数据目录。",
+          });
+        },
+      },
+      { type: "separator" },
+      {
         label: "退出轻岛",
         click: () => {
           void requestQuit();
@@ -858,6 +926,116 @@ async function createWindow({ handoff = false } = {}) {
     ]),
   );
   tray.on("click", show);
+  updates = createUpdateController({
+    updater: app.isPackaged ? require("electron-updater").autoUpdater : null,
+    version: app.getVersion(),
+    changed: (state) => {
+      if (state.status === "error") {
+        quitting = false;
+        allowSavedNavigation = false;
+      }
+      if (!window.isDestroyed())
+        window.webContents.send("qingdan-desktop:update-state", state);
+    },
+    prepare: saveBeforeQuit,
+    install: async (run) => {
+      if (actionPromise || handoffNavigation || dragSession)
+        throw Error("轻岛正在切换或保存，请稍后再试。");
+      saveResume(profile, window.webContents.getURL());
+      await window.webContents.session.flushStorageData();
+      await window.webContents.session.cookies.flushStore();
+      allowSavedNavigation = true;
+      quitting = true;
+      clearTimeout(positionTimer);
+      try {
+        run();
+      } catch (error) {
+        quitting = false;
+        allowSavedNavigation = false;
+        throw error;
+      }
+    },
+  });
+  if (app.isPackaged) {
+    const control = await require("./launch-control.cjs").createLaunchControl({
+      profile,
+      version: app.getVersion(),
+      prepareExit: async () => {
+        if (
+          externalUpdating ||
+          quitting ||
+          actionPromise ||
+          handoffNavigation ||
+          dragSession ||
+          updates.state().status === "installing"
+        )
+          throw Error("轻岛正在切换或保存，请稍后重试。");
+        externalUpdating = true;
+        const previous = updates.state();
+        window.webContents.send("qingdan-desktop:update-state", {
+          status: "installing",
+          currentVersion: app.getVersion(),
+        });
+        try {
+          const saved = await saveBeforeQuit();
+          if (!saved?.ok || (saved.hasDraft && !saved.draftsPersisted))
+            throw Error("未提交输入尚未保存。");
+          saveResume(profile, window.webContents.getURL());
+          await window.webContents.session.flushStorageData();
+          await window.webContents.session.cookies.flushStore();
+          return () => {
+            quitting = true;
+            allowSavedNavigation = true;
+            clearTimeout(positionTimer);
+          };
+        } catch (error) {
+          externalUpdating = false;
+          if (!window.isDestroyed())
+            window.webContents.send("qingdan-desktop:update-state", previous);
+          throw error;
+        }
+      },
+      quit: () => app.quit(),
+    });
+    app.once("will-quit", control.close);
+    if (
+      !process.env.QINGDAN_DESKTOP_PROFILE ||
+      process.env.QINGDAN_DESKTOP_WEB_LAUNCH_PORT
+    ) {
+      try {
+        const webLaunch = await require("./web-launch.cjs").createWebLaunch({
+          updates,
+          requestHandoff,
+          port: process.env.QINGDAN_DESKTOP_WEB_LAUNCH_PORT
+            ? Number(process.env.QINGDAN_DESKTOP_WEB_LAUNCH_PORT)
+            : 8791,
+          onError: (message) => {
+            if (!window.isDestroyed())
+              void dialog.showMessageBox(window, {
+                type: "warning",
+                message,
+                buttons: ["返回轻岛"],
+              });
+          },
+        });
+        app.once("will-quit", webLaunch.close);
+      } catch {
+        // The existing local Agent remains a fallback if the native port is busy.
+        console.error("轻岛网页入口暂不可用，请检查 8791 端口占用。");
+      }
+    }
+    const initialUpdate = setTimeout(() => void updates.check(), 30000);
+    const recurringUpdate = setInterval(
+      () => void updates.check(),
+      6 * 60 * 60 * 1000,
+    );
+    initialUpdate.unref();
+    recurringUpdate.unref();
+    app.once("will-quit", () => {
+      clearTimeout(initialUpdate);
+      clearInterval(recurringUpdate);
+    });
+  }
   screen.on("display-removed", () => resize(layout, { relocate: true }));
   screen.on("display-metrics-changed", () =>
     resize(layout, { relocate: true }),
@@ -887,6 +1065,12 @@ ipcMain.handle("qingdan-desktop:drag", (event, action, origin) => {
 ipcMain.handle("qingdan-desktop:context", (event, input) => {
   guard(event);
   rendererContext = validateContext(input);
+  saveResume(
+    profile,
+    rendererContext
+      ? workspaceUrl(application, rendererContext.roomId)
+      : new URL("/app", application).href,
+  );
   checkContextReady();
   return true;
 });
@@ -922,8 +1106,22 @@ ipcMain.on("qingdan-desktop:prepared-quit", (event, result) => {
     ok: result.ok,
     unsynced: result.unsynced === true,
     hasDraft: result.hasDraft === true,
+    draftsPersisted: result.draftsPersisted === true,
     ...(context || {}),
   });
+});
+
+ipcMain.handle("qingdan-desktop:update-state", (event) => {
+  guard(event);
+  return updates?.state() || { status: "unsupported" };
+});
+ipcMain.handle("qingdan-desktop:check-update", (event) => {
+  guard(event);
+  return updates?.check();
+});
+ipcMain.handle("qingdan-desktop:install-update", (event) => {
+  guard(event);
+  return updates?.install();
 });
 
 async function start() {
@@ -934,6 +1132,18 @@ async function start() {
         fs.createReadStream(null, { fd: 0, autoClose: false }),
       )
     : null;
+  if (
+    await require("./forward-installed.cjs").forwardInstalledDesktop({
+      packaged: app.isPackaged,
+      descriptor,
+      profile,
+      env: process.env,
+    })
+  ) {
+    quitting = true;
+    app.quit();
+    return;
+  }
   if (
     !app.requestSingleInstanceLock(
       descriptor ? { qingdanHandoff: descriptor } : {},

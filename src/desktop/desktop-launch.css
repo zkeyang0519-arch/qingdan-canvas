@@ -84,6 +84,22 @@
 .desktop-launch-notice > button:hover {
   background: #63754a16;
 }
+.desktop-install-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.desktop-install-actions button {
+  margin-top: 7px;
+  padding: 4px 8px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
 @media (max-width: 600px) {
   .desktop-launch-notice {
     right: 12px;

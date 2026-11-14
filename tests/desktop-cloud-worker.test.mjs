@@ -12,6 +12,21 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const sourceToken = "a".repeat(64),
   verifier = "b".repeat(64);
 
+test("authenticated session exposes its database expiry without exposing session credentials", async (t) => {
+  const f = await fixture(t);
+  const response = await f.request("/api/session", undefined, {
+    Cookie: `qd_session=${sourceToken}`,
+  });
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.user.id, "alice");
+  assert.equal(data.sessionExpiresAt, f.expires);
+  assert.equal(JSON.stringify(data).includes(sourceToken), false);
+  assert.equal(JSON.stringify(data).includes(hash(sourceToken)), false);
+  const anonymous = await (await f.request("/api/session")).json();
+  assert.equal(anonymous.sessionExpiresAt, undefined);
+});
+
 async function fixture(t) {
   await mkdir(".tmp", { recursive: true });
   const dir = await mkdtemp(path.resolve(".tmp/desktop-cloud-"));

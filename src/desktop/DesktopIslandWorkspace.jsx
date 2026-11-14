@@ -12,6 +12,12 @@ import { downloadBlob, exportArchive } from "../canvas/backup.js";
 import { getDesktopBridge, requestDesktopLayout } from "./bridge.js";
 import { DesktopOpeningState } from "./DesktopFrame.jsx";
 import { useDesktopPlacement } from "./useDesktopPlacement.js";
+import {
+  inputDraftKey,
+  loadInputDrafts,
+  saveInputDrafts,
+} from "./input-drafts.js";
+import DesktopUpdateStatus from "./DesktopUpdateStatus.jsx";
 import "./jade-island.css";
 
 export default function DesktopIslandWorkspace(props) {
@@ -40,7 +46,18 @@ function ConnectedWorkspace({
   const root = useRef(null);
   const latest = useRef(workspace);
   latest.current = workspace;
-  const drafts = useRef({});
+  const draftKey = inputDraftKey(window.location.origin, user.id, room.id);
+  const [initialInput] = useState(() => {
+    try {
+      return { drafts: loadInputDrafts(draftKey), error: null };
+    } catch (error) {
+      return { drafts: {}, error };
+    }
+  });
+  const drafts = useRef(initialInput.drafts);
+  const [draftError, setDraftError] = useState(
+    initialInput.error?.message || "",
+  );
   const [actionError, setActionError] = useState("");
   const [acceptedContext, setAcceptedContext] = useState(null);
   const [contextError, setContextError] = useState("");
@@ -52,22 +69,67 @@ function ConnectedWorkspace({
       !workspace.startupReady ||
       acceptedContext?.accountId !== user.id ||
       acceptedContext?.roomId !== room.id);
-  const draftsChanged = useCallback((value) => {
-    drafts.current = value;
-  }, []);
+  const persistInputs = useCallback(() => {
+    // Do not overwrite a draft we failed to read.
+    if (initialInput.error) throw initialInput.error;
+    saveInputDrafts(draftKey, drafts.current);
+  }, [draftKey, initialInput]);
+  const draftsChanged = useCallback(
+    (value) => {
+      drafts.current = value;
+      try {
+        persistInputs();
+        setDraftError("");
+      } catch (error) {
+        setDraftError(`输入尚未保存到本机：${error.message}`);
+      }
+    },
+    [persistInputs],
+  );
+
+  useLayoutEffect(() => {
+    if (!bridge?.onUpdateState) return;
+    let active = true;
+    let receivedEvent = false;
+    const freeze = (state) => {
+      if (!active || !root.current) return;
+      // Native emits installing before requesting a save. Set this directly,
+      // without awaiting a React render, so no later input can race the save.
+      const installing = state?.status === "installing";
+      root.current.inert = installing;
+      root.current.toggleAttribute("inert", installing);
+      root.current.setAttribute("aria-busy", String(installing));
+    };
+    const unsubscribe = bridge.onUpdateState((state) => {
+      receivedEvent = true;
+      freeze(state);
+    });
+    if (bridge.getUpdateState)
+      Promise.resolve(bridge.getUpdateState())
+        .then((state) => {
+          if (!receivedEvent) freeze(state);
+        })
+        .catch(() => {});
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, [bridge]);
 
   useEffect(() => {
     if (!bridge) return;
     return bridge.onBeforeQuit(async () => {
       await latest.current.flushLocal();
+      persistInputs();
       return {
         unsynced: !!latest.current.dirty,
         hasDraft: Object.values(drafts.current).some((text) => text.trim()),
+        draftsPersisted: true,
         accountId: user.id,
         roomId: room.id,
       };
     });
-  }, [bridge, user.id, room.id]);
+  }, [bridge, user.id, room.id, persistInputs]);
 
   useEffect(() => {
     if (!workspace.state || !workspace.startupReady) return;
@@ -148,14 +210,8 @@ function ConnectedWorkspace({
 
   const leave = async () => {
     try {
-      if (
-        Object.values(drafts.current).some((text) => text.trim()) &&
-        !window.confirm(
-          "还有未提交的输入。返回画布列表会丢弃这些输入，继续吗？",
-        )
-      )
-        return;
       await workspace.flushLocal();
+      persistInputs();
       onLeave();
     } catch (error) {
       setActionError(`本地保存未完成：${error.message}`);
@@ -185,6 +241,12 @@ function ConnectedWorkspace({
   };
   const recovery = (
     <>
+      <DesktopUpdateStatus bridge={bridge} />
+      {draftError && (
+        <p className="desktop-action-error" role="alert">
+          {draftError}
+        </p>
+      )}
       {workspace.conflict && (
         <div className="desktop-recovery" role="alert">
           <p>{workspace.conflict}</p>
@@ -255,6 +317,7 @@ function ConnectedWorkspace({
           beforeAction={() => workspace.end()}
           closeOnWindowBlur
           onDraftsChange={draftsChanged}
+          initialDrafts={initialInput.drafts}
           dragHandleTitle="拖动轻岛"
           desktop={desktop}
           closeLabel="隐藏轻岛"

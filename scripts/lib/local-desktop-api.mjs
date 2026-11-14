@@ -73,6 +73,12 @@ export function createLocalDesktopApi({ upstream, launch }) {
     }
     if (!session?.user?.id || session.user.id !== account)
       throw reject(401, "登录账号已变化，请刷新页面。");
+    const expiresAt = session.sessionExpiresAt;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now())
+      throw reject(
+        503,
+        "本机轻单尚未提供有效的登录期限，请更新并重启本机网页服务后重试。",
+      );
     try {
       const response = await fetch(
         new URL(`/api/rooms/${encodeURIComponent(roomId)}`, sessionUrl),
@@ -96,6 +102,11 @@ export function createLocalDesktopApi({ upstream, launch }) {
         ? error
         : reject(503, "无法确认画布权限，请稍后重试。");
     }
-    return await launch({ accountId: account, roomId, sessionToken });
+    return await launch({
+      accountId: account,
+      roomId,
+      sessionToken,
+      expiresAt,
+    });
   };
 }

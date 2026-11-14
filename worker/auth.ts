@@ -70,6 +70,7 @@ export async function sessionEndpoint(request: Request, env: Env) {
     const legacy = existing ? null : await legacySession(request, env);
     return json({
       user: existing ? publicUser(existing) : null,
+      ...(existing ? { sessionExpiresAt: existing.expires_at } : {}),
       legacyRoomCount: legacy?.room_count || 0,
       features: sessionFeatures(env),
     });

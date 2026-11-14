@@ -56,6 +56,7 @@ export default function DynamicIsland({
   closeText = "隐藏到托盘",
   closeOnWindowBlur = false,
   onDraftsChange,
+  initialDrafts = {},
   dragHandleTitle,
   desktop,
 }) {
@@ -67,7 +68,14 @@ export default function DynamicIsland({
   const side = desktop?.dock === "left" || desktop?.dock === "right";
   const jade = desktop?.supportsJade === true;
   const Surface = dragHandleTitle ? "div" : React.Fragment;
-  const [drafts, setDrafts] = useState({});
+  const [drafts, setDrafts] = useState(initialDrafts);
+  const draftValues = useRef(drafts);
+  const changeDrafts = (next) => {
+    draftValues.current = next;
+    setDrafts(next);
+    // Notify synchronously: a quit IPC can arrive before React's next effect.
+    onDraftsChange?.(next);
+  };
   const [feedback, setFeedback] = useState("");
   const [focusedTask, setFocusedTask] = useState(null);
   const [showCompleted, setShowCompleted] = useState(false);
@@ -169,10 +177,6 @@ export default function DynamicIsland({
   }, []);
 
   useEffect(() => {
-    onDraftsChange?.(drafts);
-  }, [drafts, onDraftsChange]);
-
-  useEffect(() => {
     if (!closeOnWindowBlur) return;
     const blurred = () => {
       clearTimers();
@@ -262,7 +266,7 @@ export default function DynamicIsland({
     workspace.toggleBlock(latest.note.id, latest.key);
     setFeedback("");
   };
-  const addTask = () => {
+  const addTask = async () => {
     if (composing.current || workspace.readOnly || !page) return;
     const text = draft.trim();
     if (!text) {
@@ -289,7 +293,15 @@ export default function DynamicIsland({
       setFeedback("暂时未能添加，输入已保留，请重试。");
       return;
     }
-    setDrafts((saved) => ({ ...saved, [pageId]: "" }));
+    try {
+      // Keep the input until the new task is durable, including while offline.
+      await workspace.flushLocal?.();
+    } catch (error) {
+      setFeedback(`待办本地保存未完成，输入已保留：${error.message}`);
+      return;
+    }
+    if (draftValues.current[pageId] === draft)
+      changeDrafts({ ...draftValues.current, [pageId]: "" });
     setShowCompleted(false);
     setFeedback("");
     input.current?.focus();
@@ -412,6 +424,7 @@ export default function DynamicIsland({
         {side && !desktop?.dragging && (
           <IslandSideTab
             dock={desktop.dock}
+            summary={summary}
             expanded={shown}
             remaining={tasks.length - completed}
             toggle={toggle}
@@ -605,7 +618,7 @@ export default function DynamicIsland({
                 }}
                 onChange={(event) => {
                   const value = event.target.value;
-                  setDrafts((saved) => ({ ...saved, [page.id]: value }));
+                  changeDrafts({ ...draftValues.current, [page.id]: value });
                 }}
                 onCompositionStart={() => {
                   composing.current = true;

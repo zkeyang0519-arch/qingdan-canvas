@@ -40,14 +40,7 @@ export function IslandDesktopHeader({
         </>
       )}
       <span className="island-summary" title={summary}>
-        {animal ? (
-          "轻岛"
-        ) : (
-          <>
-            <span>轻岛</span>
-            {summary}
-          </>
-        )}
+        {summary}
       </span>
       <span
         className="island-progress"
@@ -72,6 +65,7 @@ export function IslandDesktopHeader({
 
 export function IslandSideTab({
   dock,
+  summary,
   expanded,
   remaining,
   toggle,
@@ -95,7 +89,9 @@ export function IslandSideTab({
       ) : (
         <CheckCheck size={18} aria-hidden="true" />
       )}
-      <span className="island-side-word">轻岛</span>
+      <span className="island-side-word" title={summary}>
+        {summary}
+      </span>
       <span
         className="island-side-count"
         aria-label={`还有 ${remaining} 项待办`}

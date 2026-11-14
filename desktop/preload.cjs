@@ -26,6 +26,7 @@ if (
         ok: true,
         unsynced: result?.unsynced === true,
         hasDraft: result?.hasDraft === true,
+        ...(result?.draftsPersisted === true ? { draftsPersisted: true } : {}),
         ...(typeof result?.accountId === "string" &&
         typeof result?.roomId === "string"
           ? { accountId: result.accountId, roomId: result.roomId }
@@ -39,6 +40,17 @@ if (
     "qingdanDesktop",
     Object.freeze({
       version: 1,
+      getUpdateState: () => ipcRenderer.invoke("qingdan-desktop:update-state"),
+      checkForUpdates: () => ipcRenderer.invoke("qingdan-desktop:check-update"),
+      installUpdate: () => ipcRenderer.invoke("qingdan-desktop:install-update"),
+      onUpdateState: (callback) => {
+        if (typeof callback !== "function")
+          throw new TypeError("An update callback is required");
+        const listener = (_event, state) => callback(state);
+        ipcRenderer.on("qingdan-desktop:update-state", listener);
+        return () =>
+          ipcRenderer.removeListener("qingdan-desktop:update-state", listener);
+      },
       setLayout: (layout) =>
         ipcRenderer.invoke("qingdan-desktop:layout", layout),
       setContext: (context) =>

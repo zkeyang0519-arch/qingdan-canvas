@@ -236,11 +236,15 @@ test("preload grants the narrow bridge only to the app main frame", async () => 
   }
   const { bridge } = await preloadFixture();
   assert.deepEqual(Object.keys(bridge).sort(), [
+    "checkForUpdates",
     "drag",
     "getPlacement",
+    "getUpdateState",
     "hide",
+    "installUpdate",
     "onBeforeQuit",
     "onPlacement",
+    "onUpdateState",
     "openWorkspace",
     "setContext",
     "setLayout",
