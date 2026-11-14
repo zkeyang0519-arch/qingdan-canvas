@@ -1,0 +1,64 @@
+"use strict";
+const { contextBridge, ipcRenderer } = require("electron");
+
+const originArgument = process.argv.find((value) =>
+  value.startsWith("--qingdan-origin="),
+);
+const expectedOrigin = originArgument?.slice("--qingdan-origin=".length);
+if (
+  process.isMainFrame &&
+  location.origin === expectedOrigin &&
+  location.pathname === "/app"
+) {
+  let beforeQuit = null;
+  ipcRenderer.on("qingdan-desktop:prepare-quit", async (_event, token) => {
+    if (typeof token !== "string") return;
+    try {
+      const result = await beforeQuit?.();
+      ipcRenderer.send("qingdan-desktop:prepared-quit", {
+        token,
+        ok: true,
+        unsynced: result?.unsynced === true,
+        hasDraft: result?.hasDraft === true,
+        ...(typeof result?.accountId === "string" &&
+        typeof result?.roomId === "string"
+          ? { accountId: result.accountId, roomId: result.roomId }
+          : {}),
+      });
+    } catch {
+      ipcRenderer.send("qingdan-desktop:prepared-quit", { token, ok: false });
+    }
+  });
+  contextBridge.exposeInMainWorld(
+    "qingdanDesktop",
+    Object.freeze({
+      version: 1,
+      setLayout: (layout) =>
+        ipcRenderer.invoke("qingdan-desktop:layout", layout),
+      setContext: (context) =>
+        ipcRenderer.invoke("qingdan-desktop:context", context),
+      getPlacement: () => ipcRenderer.invoke("qingdan-desktop:placement"),
+      drag: (action, origin) =>
+        ipcRenderer.invoke("qingdan-desktop:drag", action, origin),
+      onPlacement: (callback) => {
+        if (typeof callback !== "function")
+          throw new TypeError("A placement callback is required");
+        const listener = (_event, placement) => callback(placement);
+        ipcRenderer.on("qingdan-desktop:placement", listener);
+        return () =>
+          ipcRenderer.removeListener("qingdan-desktop:placement", listener);
+      },
+      hide: () => ipcRenderer.invoke("qingdan-desktop:hide"),
+      openWorkspace: (roomId) =>
+        ipcRenderer.invoke("qingdan-desktop:open-workspace", roomId),
+      onBeforeQuit: (callback) => {
+        if (typeof callback !== "function")
+          throw new TypeError("A save callback is required");
+        beforeQuit = callback;
+        return () => {
+          if (beforeQuit === callback) beforeQuit = null;
+        };
+      },
+    }),
+  );
+}

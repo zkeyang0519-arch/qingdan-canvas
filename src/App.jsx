@@ -17,6 +17,9 @@ import {
   announceAccountChange,
 } from "./api.js";
 import CanvasWorkspace from "./CanvasWorkspace.jsx";
+import DesktopFrame, { DesktopOpeningState } from "./desktop/DesktopFrame.jsx";
+import DesktopIslandWorkspace from "./desktop/DesktopIslandWorkspace.jsx";
+import { getDesktopBridge } from "./desktop/bridge.js";
 import AuthScreen from "./auth/AuthScreen.jsx";
 import ProfileSettings from "./auth/ProfileSettings.jsx";
 import McpConsent from "./auth/McpConsent.jsx";
@@ -30,6 +33,22 @@ import {
 import "./auth/auth.css";
 
 export default function App() {
+  const desktop = getDesktopBridge();
+  const [desktopMode, setDesktopMode] = useState(() =>
+    desktop && new URL(location.href).searchParams.get("room")
+      ? "opening"
+      : "setup",
+  );
+  return desktop ? (
+    <DesktopFrame mode={desktopMode}>
+      <AppContent desktop={desktop} onDesktopMode={setDesktopMode} />
+    </DesktopFrame>
+  ) : (
+    <AppContent />
+  );
+}
+
+function AppContent({ desktop, onDesktopMode }) {
   const consentUrl = new URL(location.href);
   const consentRoute = consentUrl.pathname === "/mcp/consent";
   const consentHandle = consentUrl.searchParams.get("handle") || "";
@@ -48,6 +67,18 @@ export default function App() {
   const roomWrites = useRef(new Map());
   const [invite, setInvite] = useState("");
   const [renameTarget, setRenameTarget] = useState(null);
+  const [desktopOpening, setDesktopOpening] = useState(
+    !!desktop && !!consentUrl.searchParams.get("room"),
+  );
+  useEffect(() => {
+    onDesktopMode?.(
+      room && session?.user ? "island" : desktopOpening ? "opening" : "setup",
+    );
+    if (desktop && !(room && session?.user))
+      Promise.resolve(
+        desktop.setContext?.({ accountId: null, roomId: null }),
+      ).catch(() => {});
+  }, [room?.id, session?.user?.id, desktopOpening, desktop, onDesktopMode]);
   const mergeRoomRead = (item, before) => {
     const written = roomWrites.current.get(item.id);
     // Only supersede reads that were already running when a save completed.
@@ -162,6 +193,11 @@ export default function App() {
         ) {
           expired();
           location.reload();
+        } else if (!cancelled && started === epoch.current) {
+          setSession(
+            (previous) =>
+              previous && { ...previous, features: result.features },
+          );
         }
       } catch {
         /* An offline tab keeps its own account draft until reconnection. */
@@ -273,13 +309,30 @@ export default function App() {
     );
   };
   if (initializing)
-    return (
+    return desktopOpening ? (
+      <DesktopOpeningState />
+    ) : (
       <OpeningPreparation status="loading">
         <div className="loading-screen">
           <LoaderCircle className="spin" />
           <p>正在连接轻单…</p>
         </div>
       </OpeningPreparation>
+    );
+  if (desktopOpening && !(room && session?.user))
+    return (
+      <DesktopOpeningState
+        error={
+          busy
+            ? ""
+            : connectionError ||
+              error ||
+              (!session?.user
+                ? "当前账号未连接，请回到网页重新打开悬浮窗。"
+                : "未能打开当前画布，请重试。")
+        }
+        onRetry={() => location.reload()}
+      />
     );
   if (!session?.user)
     return (
@@ -311,15 +364,19 @@ export default function App() {
         }}
       />
     );
+  const Workspace = desktop ? DesktopIslandWorkspace : CanvasWorkspace;
   if (room && session.user)
     return (
-      <CanvasWorkspace
+      <Workspace
         key={`${session.user.id}/${room.id}`}
         room={room}
         user={session.user}
         initialInvite={invite}
+        agentEnabled={session.features?.agent === true}
+        compactOpening={desktopOpening}
         onRoomRenamed={roomRenamed}
         onLeave={() => {
+          setDesktopOpening(false);
           setRoom(null);
           setInvite("");
           history.pushState(null, "", APP_PATH);
@@ -462,10 +519,6 @@ export default function App() {
             </button>
           </div>
         )}
-        <div className="home-footnote">
-          <span className="status-dot" />
-          编辑实时同步，图片与清单自动保存。进入画布后可邀请同伴。
-        </div>
       </main>
       {renameTarget && (
         <RoomNameDialog

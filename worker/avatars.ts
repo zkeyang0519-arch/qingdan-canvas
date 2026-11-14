@@ -2,6 +2,7 @@ import type { Env, Session } from "./types";
 import { check, json, limitedBytes } from "./http";
 import { publicUser } from "./auth";
 import { imageSignature } from "./assets";
+import { sessionFeatures } from "./agent-availability";
 
 const allowed = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const avatarKey = (id: string, version: string) => `avatars/${id}/${version}`;
@@ -78,7 +79,10 @@ export async function updateAvatar(
       console.error("Avatar cleanup or notification failed", error),
     ),
   );
-  return json({ user: publicUser({ ...user, avatar_version: version }) });
+  return json({
+    user: publicUser({ ...user, avatar_version: version }),
+    features: sessionFeatures(env),
+  });
 }
 
 export async function readAvatar(

@@ -18,7 +18,7 @@ import {
   withLocalLayout,
 } from "./workspace-changes.js";
 
-export function useRoomWorkspace(room, user) {
+export function useRoomWorkspace(room, user, { draftIdentity } = {}) {
   const latestRoomName = useRef(room.name);
   latestRoomName.current = room.name;
   const [state, setState] = useState(null),
@@ -162,7 +162,7 @@ export function useRoomWorkspace(room, user) {
   };
   useEffect(() => {
     const tabKey = `qingdan.cloud.tab.${room.id}`;
-    let tab = sessionStorage.getItem(tabKey);
+    let tab = draftIdentity || sessionStorage.getItem(tabKey);
     if (!tab) {
       tab = crypto.randomUUID();
       sessionStorage.setItem(tabKey, tab);
@@ -277,7 +277,7 @@ export function useRoomWorkspace(room, user) {
         }
         e.release = identity.release;
         e.key = `${user.id}/${room.id}/${identity.id}`;
-        sessionStorage.setItem(tabKey, identity.id);
+        if (!draftIdentity) sessionStorage.setItem(tabKey, identity.id);
         const repository = await openDrafts();
         if (e.closed) {
           repository.close();
@@ -383,7 +383,7 @@ export function useRoomWorkspace(room, user) {
       window.removeEventListener("beforeunload", beforeUnload);
       window.removeEventListener("online", online);
     };
-  }, [room.id, user.id]);
+  }, [room.id, user.id, draftIdentity]);
   useEffect(() => {
     const previous = current.current;
     if (
@@ -579,5 +579,13 @@ export function useRoomWorkspace(room, user) {
       schedule();
     },
     dirty: engine.current?.dirty,
+    flushLocal: async () => {
+      const currentLife = life.current;
+      if (!currentLife || currentLife.closed) return;
+      await currentLife.sendQueue;
+      if (life.current !== currentLife || currentLife.closed)
+        throw new Error("画布已切换，请稍后重试保存。");
+      await persist();
+    },
   };
 }

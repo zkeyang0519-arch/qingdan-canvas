@@ -16,6 +16,7 @@ import { limit } from "./auth-limits";
 import { verifyRegistration, claimRegistration } from "./registration";
 import { invalidCode } from "./email-verification";
 import { revokeAllMcpGrantsStatement } from "./mcp/grants";
+import { sessionFeatures } from "./agent-availability";
 
 interface Account {
   id: string;
@@ -126,9 +127,13 @@ export async function accountEndpoint(
       account.id,
       result[3].results as { provider_grant_id: string | null }[],
     );
-    return json({ user: publicUser(account) }, 200, {
-      "Set-Cookie": sessionCookie(request, raw),
-    });
+    return json(
+      { user: publicUser(account), features: sessionFeatures(env) },
+      200,
+      {
+        "Set-Cookie": sessionCookie(request, raw),
+      },
+    );
   }
   check(!(await getSession(request, env)), "请先退出当前账号。", 409);
   check(typeof input.username === "string", "请输入用户名。");
@@ -267,7 +272,11 @@ export async function accountEndpoint(
     throw error;
   }
   return json(
-    { user: publicUser(account), migrated: !!legacy },
+    {
+      user: publicUser(account),
+      migrated: !!legacy,
+      features: sessionFeatures(env),
+    },
     action === "register" ? 201 : 200,
     { "Set-Cookie": sessionCookie(request, raw) },
   );

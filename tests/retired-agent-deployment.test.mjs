@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { parseDeployConfig } from "../scripts/deploy-config.mjs";
 
-test("撤下 Agent 后仍兼容线上已应用的 v3 迁移，不删除已有命名空间", async () => {
+test("Agent 开发分支保留线上 v3 迁移和完整 Agent 绑定", async () => {
   const config = parseDeployConfig(
     await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
   );
@@ -16,12 +16,12 @@ test("撤下 Agent 后仍兼容线上已应用的 v3 迁移，不删除已有命
   for (const environment of [config, config.previews])
     assert.deepEqual(
       environment.durable_objects.bindings.map((binding) => binding.name),
-      ["ROOMS"],
-      "Agent namespace must not be exposed to application routes",
+      ["ROOMS", "RUNNER_HUBS", "AGENT_CHATS"],
+      "The local Agent development branch needs its active namespace bindings",
     );
 });
 
-test("部署入口继续导出线上已有的 DO 类名", async () => {
+test("Agent 开发分支导出真实执行和对话实现，保留全部既有 DO 类名", async () => {
   const result = await build({
     entryPoints: ["worker/index.ts"],
     bundle: true,
@@ -35,10 +35,14 @@ test("部署入口继续导出线上已有的 DO 类名", async () => {
   const exports = Object.values(result.metafile.outputs)[0].exports;
   for (const name of ["CanvasRoom", "RunnerHub", "AgentChatRouter"])
     assert.ok(exports.includes(name), `${name} must remain deployable`);
+  const inputs = Object.keys(result.metafile.inputs);
+  assert.ok(inputs.includes("worker/execution/hub.ts"));
+  assert.ok(inputs.includes("worker/agent/chat-router.ts"));
+  assert.ok(!inputs.includes("worker/retired-agent.ts"));
 });
 
 for (const name of ["RunnerHub", "AgentChatRouter"]) {
-  test(`停用的 ${name} 拒绝请求、结束连接，且不访问已有数据或执行任务`, async () => {
+  test(`生产停用兼容类 ${name} 拒绝请求、结束连接，且不访问已有数据或执行任务`, async () => {
     const module = await import("../worker/retired-agent.ts");
     const forbidden = new Proxy(
       {},

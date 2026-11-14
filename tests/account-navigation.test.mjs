@@ -9,7 +9,7 @@ const source = await readFile(
   new URL("../src/App.jsx", import.meta.url),
   "utf8",
 );
-const signature = "export default function App() {";
+const signature = "function AppContent({ desktop, onDesktopMode }) {";
 const logic = source.slice(
   source.indexOf(signature) + signature.length,
   source.indexOf("  if (initializing)"),
@@ -37,6 +37,8 @@ function appHarness(api, href = "https://test.invalid/") {
     "location",
     "APP_PATH",
     "appRoomPath",
+    "desktop",
+    "onDesktopMode",
     `${logic}\nreturn {create,logout,authenticated,join};`,
   );
   const app = fn(

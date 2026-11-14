@@ -141,6 +141,7 @@ test("目录只有一个搜索入口，详情关闭保留筛选，Escape 逐层�
   await mount(t, addProduct(fixture(), { name: "其他产品" }), {
     onClose: () => closeCount++,
   });
+  await click(button("产品目录"));
   assert.equal(
     document.querySelectorAll('input[aria-label="搜索运维资产"]').length,
     1,
@@ -201,6 +202,7 @@ test("目录只有一个搜索入口，详情关闭保留筛选，Escape 逐层�
 
 test("菜单和关联资源跳转使用稳定焦点入口，Escape 仍能关闭详情", async (t) => {
   await mount(t, fixture());
+  await click(button("产品目录"));
   const menu = button("更多操作：轻单");
   await click(menu);
   await click(button("查看详情"));
@@ -380,6 +382,7 @@ test("产品按服务器列出全部 DDL，同一服务器去重，删除后联�
     role: "数据库",
   });
   await mount(t, state);
+  await click(button("产品目录"));
   assert.ok(
     document.querySelector(
       '.ops-product-deadline time[datetime="2028-02-25T04:30:00.000Z"]',
@@ -515,6 +518,7 @@ test("产品按每台服务器展示 DDL 时间圈，倒计时与超时一致且
       role,
     });
   await mount(t, state);
+  await click(button("产品目录"));
   const rows = [...document.querySelectorAll(".ops-product-deadline")];
   assert.equal(rows.length, 2);
   for (const row of rows)

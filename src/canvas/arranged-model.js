@@ -30,7 +30,7 @@ function savedArrangedView(state, boardId) {
 }
 
 export function setSurface(state, boardId, surface) {
-  if (!["canvas", "arranged"].includes(surface)) return state;
+  if (!["canvas", "arranged", "agent"].includes(surface)) return state;
   if (surface === "arranged") {
     const { page, active } = panePages(state, boardId);
     return changeView(state, boardId, {
@@ -325,6 +325,20 @@ export function deletePageTasks(state, boardId, pageId, keys) {
   return page.tasks
     .filter((t) => selected.has(t.key))
     .reduce((next, t) => deleteTodo(next, t.note.id, t.key), state);
+}
+
+export function reopenPageTask(state, boardId, pageId, { noteId, taskId }) {
+  const task = pageTask(state, boardId, pageId, noteId, taskId);
+  if (!task || task.note.noteKind === "text" || !task.block.done) return state;
+  return patchObjects(state, {
+    [noteId]: {
+      blocks: task.note.blocks.map((block) =>
+        block.id === taskId
+          ? { ...block, done: false, completedAt: null }
+          : block,
+      ),
+    },
+  });
 }
 
 export function clearCompletedPageTasks(state, boardId, pageId) {
