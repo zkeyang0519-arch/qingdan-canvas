@@ -67,7 +67,7 @@ async function mount(props) {
   );
   return () => act(async () => root.unmount());
 }
-function fixture() {
+function fixture({ sessionPages = [] } = {}) {
   const calls = [];
   let binding = null;
   let local = {
@@ -125,6 +125,30 @@ function fixture() {
   };
   const requestLocal = async (route, options) => {
     calls.push({ route, body: options?.body, accountId: options?.accountId });
+    if (route.startsWith("/codex/sessions")) {
+      const page = Number(
+        new URL(route, "http://local").searchParams.get("cursor") || 0,
+      );
+      return {
+        sessions: sessionPages[page] || [],
+        nextCursor: page + 1 < sessionPages.length ? String(page + 1) : null,
+      };
+    }
+    if (route === "/codex/select") {
+      const session = sessionPages
+        .flat()
+        .find((item) => item.threadId === options.body.threadId);
+      assert.ok(session, "only a listed session may be selected");
+      const workspace = {
+        workspaceId: `workspace-${session.threadId}`,
+        name: session.projectName,
+        displayPath: session.cwd,
+        revision: 1,
+        checks: [],
+      };
+      local = { ...local, workspaces: [...local.workspaces, workspace] };
+      return { runnerId: local.runnerId, workspace, session };
+    }
     if (route === "/pair")
       local = {
         ...local,
@@ -294,6 +318,11 @@ test("pairing, allowed project and current-list binding are usable from the pane
       f.calls.find((c) => c.route === "/pair").body.pairingCode,
       "ABCD".repeat(8),
     );
+    await click(
+      [...document.querySelectorAll("summary")].find(
+        (node) => node.textContent === "手动填写目录",
+      ),
+    );
     await input("允许执行的项目目录", "D:/my-project");
     await click(button("添加项目"));
     assert.match(document.body.textContent, /D:\/my-project/);
@@ -316,6 +345,186 @@ test("pairing, allowed project and current-list binding are usable from the pane
     );
   } finally {
     await unmount();
+  }
+});
+
+const codexSession = (threadId, cwd, projectName) => ({
+  threadId,
+  cwd,
+  projectName,
+  title: `会话 ${threadId}`,
+  updatedAt: 100,
+});
+
+test("Codex discovery groups directories across pages and adds only the chosen project without typing a path", async () => {
+  const f = fixture({
+    sessionPages: [
+      [
+        codexSession("site", "D:\\Projects\\site", "网站"),
+        codexSession("duplicate", "d:/projects/site/", "网站"),
+      ],
+      [
+        codexSession("older", "D:/Projects/site", "网站"),
+        codexSession("docs", "D:/Projects/docs", "文档"),
+      ],
+    ],
+  });
+  await f.requestLocal("/pair");
+  const close = await mount(f);
+  try {
+    assert.equal(
+      f.calls.some((call) => call.route.startsWith("/codex/")),
+      false,
+    );
+    await click(button("从 Codex 获取"));
+    const list = () => document.querySelector('[aria-label="Codex 项目目录"]');
+    assert.equal(list().querySelectorAll("li").length, 1);
+    assert.match(list().textContent, /D:\\Projects\\site/);
+    assert.equal(
+      f.calls.some(
+        (call) =>
+          call.route === "/codex/select" || call.route === "/workspaces",
+      ),
+      false,
+    );
+    await click(button("加载更多项目"));
+    assert.equal(list().querySelectorAll("li").length, 2);
+    assert.equal(button("加载更多项目"), undefined);
+    await click(list().querySelector('[aria-label="添加 Codex 项目 文档"]'));
+    assert.deepEqual(
+      f.calls.find((call) => call.route === "/codex/select"),
+      {
+        route: "/codex/select",
+        body: { threadId: "docs" },
+        accountId: "alice",
+      },
+    );
+    assert.equal(
+      list().querySelector('[aria-label="添加 Codex 项目 文档"]').disabled,
+      true,
+    );
+    assert.equal(
+      document.querySelector('[aria-label="选择执行项目"]').value,
+      "workspace-docs",
+    );
+    await click(button("绑定到当前清单"));
+    assert.equal(
+      f.calls.find((call) => call.route === "/api/agent/bindings" && call.body)
+        .body.workspaceId,
+      "workspace-docs",
+    );
+    assert.ok(
+      f.calls
+        .filter((call) => call.route.startsWith("/codex/"))
+        .every((call) => call.accountId === "alice"),
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("Codex project discovery can retry and selection failures never claim a project was added", async () => {
+  const f = fixture({
+    sessionPages: [[codexSession("site", "D:/site", "网站")]],
+  });
+  await f.requestLocal("/pair");
+  let failed = false;
+  const close = await mount({
+    ...f,
+    requestLocal: async (route, options) => {
+      if (route === "/codex/sessions" && !failed) {
+        failed = true;
+        throw Error("Codex 暂时不可用");
+      }
+      if (route === "/codex/select") throw Error("项目目录已移动");
+      return f.requestLocal(route, options);
+    },
+  });
+  try {
+    await click(button("从 Codex 获取"));
+    assert.match(document.body.textContent, /Codex 暂时不可用/);
+    await click(button("重新获取"));
+    const add = document.querySelector('[aria-label="添加 Codex 项目 网站"]');
+    assert.ok(add);
+    await click(add);
+    assert.match(document.body.textContent, /项目目录已移动/);
+    assert.match(document.body.textContent, /还没有授权项目/);
+    assert.equal(add.disabled, false);
+    assert.equal(button("绑定到当前清单").disabled, true);
+  } finally {
+    await close();
+  }
+});
+
+test("empty Codex discovery offers refresh and leaves manual directory entry available", async () => {
+  const f = fixture();
+  await f.requestLocal("/pair");
+  const close = await mount(f);
+  try {
+    await click(button("从 Codex 获取"));
+    assert.match(document.body.textContent, /没有找到.*项目目录/);
+    await click(button("重新获取"));
+    assert.equal(
+      f.calls.filter((call) => call.route === "/codex/sessions").length,
+      2,
+    );
+    await click(
+      [...document.querySelectorAll("summary")].find(
+        (node) => node.textContent === "手动填写目录",
+      ),
+    );
+    await input("允许执行的项目目录", "D:/new-project");
+    await click(button("添加项目"));
+    assert.equal(
+      document.querySelector('[aria-label="选择执行项目"]').value,
+      "workspace",
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("switching accounts discards an in-flight Codex project listing", async () => {
+  const f = fixture();
+  await f.requestLocal("/pair");
+  let release;
+  const requestLocal = async (route, options) =>
+    route === "/codex/sessions"
+      ? new Promise((resolve) => {
+          release = resolve;
+        })
+      : f.requestLocal(route, options);
+  const root = createRoot(document.getElementById("root"));
+  const render = (userId) =>
+    act(async () =>
+      root.render(
+        React.createElement(DevicePanel, {
+          ...f,
+          requestLocal,
+          userId,
+          roomId: "canvas",
+          pages: [{ id: "section" }],
+        }),
+      ),
+    );
+  try {
+    await render("alice");
+    await click(button("从 Codex 获取"));
+    assert.equal(button("正在获取…").disabled, true);
+    await render("bob");
+    await act(async () =>
+      release({
+        sessions: [codexSession("private", "D:/private", "私有项目")],
+        nextCursor: null,
+      }),
+    );
+    assert.doesNotMatch(document.body.textContent, /私有项目|D:\/private/);
+    assert.equal(
+      f.calls.some((call) => call.route === "/codex/select"),
+      false,
+    );
+  } finally {
+    await act(async () => root.unmount());
   }
 });
 test("disconnect/reconnect and revocation show real returned states", async () => {

@@ -1,6 +1,8 @@
 import { check } from "../http";
 import { canonicalJson } from "../mcp/room-storage";
 import { CHAT_INPUT_LIMIT, type AgentReply } from "../../shared/agent/chat";
+import type { ProjectContext } from "../../shared/agent/project";
+import { projectSummaryMessage } from "./project-summary-message";
 export type { AgentReply } from "../../shared/agent/chat";
 export type ChatThread = {
   id: string;
@@ -24,6 +26,7 @@ export type ChatMessage = {
   invalidated: boolean;
 };
 export type ChatProvenance = {
+  kind?: "project_summary" | "cancelled_reply";
   messageIds: string[];
   memories: { id: string; revision: number }[];
   project?: {
@@ -38,12 +41,13 @@ export type ChatJob = {
   bindingId: string;
   chatId: string;
   userMessageId: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "stale";
+  status: "queued" | "running" | "succeeded" | "failed" | "stale" | "cancelled";
   revision: number;
   memoryEpoch: number;
   leaseUntil: number | null;
   assistantMessageId: string | null;
   error: string | null;
+  partialText: string;
 };
 export type ChatMemory = {
   id: string;
@@ -87,7 +91,7 @@ const visible = `WITH RECURSIVE hidden(id) AS (
 const sqlThread =
   "id,binding_id AS bindingId,title,created_at AS createdAt,updated_at AS updatedAt";
 const sqlJob =
-  "id,binding_id AS bindingId,chat_id AS chatId,user_message_id AS userMessageId,status,revision,memory_epoch AS memoryEpoch,lease_until AS leaseUntil,assistant_message_id AS assistantMessageId,error";
+  "id,binding_id AS bindingId,chat_id AS chatId,user_message_id AS userMessageId,status,revision,memory_epoch AS memoryEpoch,lease_until AS leaseUntil,assistant_message_id AS assistantMessageId,error,partial_text AS partialText";
 const sqlMessage =
   "id,binding_id AS bindingId,chat_id AS chatId,sequence,role,text,created_at AS createdAt,tasks,memories,reply_to AS replyTo,provenance";
 const sqlMemory =
@@ -126,7 +130,7 @@ export class ChatStore {
     CREATE TABLE IF NOT EXISTS agent_chat_jobs(
       id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,chat_id TEXT NOT NULL,user_message_id TEXT NOT NULL,
       status TEXT NOT NULL,revision INTEGER NOT NULL,memory_epoch INTEGER NOT NULL,lease_until INTEGER,
-      assistant_message_id TEXT,error TEXT);
+      assistant_message_id TEXT,error TEXT,partial_text TEXT NOT NULL DEFAULT '');
     CREATE UNIQUE INDEX IF NOT EXISTS agent_chat_one_active_job ON agent_chat_jobs(chat_id) WHERE status IN ('queued','running');
     CREATE INDEX IF NOT EXISTS agent_chat_job_thread ON agent_chat_jobs(chat_id);
     CREATE INDEX IF NOT EXISTS agent_chat_job_assistant ON agent_chat_jobs(assistant_message_id) WHERE assistant_message_id IS NOT NULL;
@@ -136,7 +140,21 @@ export class ChatStore {
     CREATE INDEX IF NOT EXISTS agent_chat_deleted_key ON agent_chat_memories(scope,binding_id,key,epoch) WHERE status='deleted';
     CREATE TABLE IF NOT EXISTS agent_chat_tombstones(
       kind TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,epoch INTEGER NOT NULL,PRIMARY KEY(kind,id,revision));
-    CREATE TABLE IF NOT EXISTS agent_chat_receipts(request_id TEXT PRIMARY KEY,payload TEXT NOT NULL,value TEXT NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS agent_chat_receipts(request_id TEXT PRIMARY KEY,payload TEXT NOT NULL,value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_chat_project_summaries(
+      chat_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,summary_revision INTEGER NOT NULL,
+      source_run_id TEXT NOT NULL,message_id TEXT NOT NULL,
+      PRIMARY KEY(chat_id,binding_revision,summary_revision,source_run_id));`);
+    if (
+      !this.sql
+        .exec(
+          "SELECT name FROM pragma_table_info('agent_chat_jobs') WHERE name='partial_text'",
+        )
+        .toArray().length
+    )
+      this.sql.exec(
+        "ALTER TABLE agent_chat_jobs ADD COLUMN partial_text TEXT NOT NULL DEFAULT ''",
+      );
   }
   private receipt<T>(requestId: string, payload: unknown): T | null {
     const stored = this.sql
@@ -206,6 +224,67 @@ export class ChatStore {
         bindingId,
       )
       .toArray();
+  }
+  // The router supplies transactionSync. Each accepted source is a durable
+  // message, never a generated reply job or a mutation of an older message.
+  publishProjectSummary(
+    bindingId: string,
+    project: ProjectContext,
+    chatId?: string,
+  ) {
+    check(project.bindingId === bindingId, "摘要不属于当前项目绑定。", 409);
+    check(
+      project.ready &&
+        project.summary &&
+        project.sourceRunId &&
+        project.summaryRevision > 0,
+      "项目摘要尚未准备好。",
+      409,
+    );
+    const selected = chatId ?? this.listThreads(bindingId)[0]?.id;
+    const thread = selected
+      ? this.thread(bindingId, selected)
+      : this.makeThread(bindingId, "项目摘要");
+    const prior = this.sql
+      .exec<{ message_id: string }>(
+        "SELECT message_id FROM agent_chat_project_summaries WHERE chat_id=? AND binding_revision=? AND summary_revision=? AND source_run_id=?",
+        thread.id,
+        project.bindingRevision,
+        project.summaryRevision,
+        project.sourceRunId,
+      )
+      .toArray()[0];
+    if (prior)
+      return {
+        thread,
+        message: this.readMessage(bindingId, thread.id, prior.message_id)!,
+      };
+    const published = this.appendMessage(
+      thread,
+      "assistant",
+      projectSummaryMessage(project),
+      undefined,
+      {
+        kind: "project_summary",
+        messageIds: [],
+        memories: [],
+        project: {
+          bindingRevision: project.bindingRevision,
+          summaryRevision: project.summaryRevision,
+          sourceRunId: project.sourceRunId,
+          stale: project.stale,
+        },
+      },
+    );
+    this.sql.exec(
+      "INSERT INTO agent_chat_project_summaries VALUES(?,?,?,?,?)",
+      thread.id,
+      project.bindingRevision,
+      project.summaryRevision,
+      project.sourceRunId,
+      published.id,
+    );
+    return { thread: this.thread(bindingId, thread.id), message: published };
   }
   readThread(
     bindingId: string,
@@ -415,9 +494,10 @@ export class ChatStore {
       leaseUntil: null,
       assistantMessageId: null,
       error: null,
+      partialText: "",
     };
     this.sql.exec(
-      "INSERT INTO agent_chat_jobs VALUES(?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO agent_chat_jobs(id,binding_id,chat_id,user_message_id,status,revision,memory_epoch,lease_until,assistant_message_id,error) VALUES(?,?,?,?,?,?,?,?,?,?)",
       job.id,
       bindingId,
       thread.id,
@@ -485,7 +565,7 @@ export class ChatStore {
   }
   private finishJob(
     job: ChatJob,
-    status: "succeeded" | "failed" | "stale",
+    status: "succeeded" | "failed" | "stale" | "cancelled",
     assistantMessageId: string | null,
     error: string | null,
   ) {
@@ -497,6 +577,82 @@ export class ChatStore {
       job.id,
     );
     return this.getJob(job.id);
+  }
+  updatePartialText({
+    jobId,
+    expectedRevision,
+    partialText,
+  }: {
+    jobId: string;
+    expectedRevision: number;
+    partialText: string;
+  }) {
+    const job = this.getJob(jobId);
+    if (
+      !job ||
+      job.status !== "running" ||
+      job.revision !== expectedRevision ||
+      job.leaseUntil === null ||
+      job.leaseUntil <= Date.parse(this.now())
+    )
+      return null;
+    if (job.memoryEpoch !== this.getMemoryEpoch()) {
+      this.sql.exec(
+        "UPDATE agent_chat_jobs SET partial_text='' WHERE id=?",
+        jobId,
+      );
+      this.finishJob(job, "stale", null, "记忆已更改，请重新发送消息。");
+      return null;
+    }
+    check(
+      partialText.length <= 16000 && partialText.startsWith(job.partialText),
+      "增量回复格式无效。",
+    );
+    this.sql.exec(
+      "UPDATE agent_chat_jobs SET partial_text=? WHERE id=?",
+      partialText,
+      jobId,
+    );
+    return this.getJob(jobId);
+  }
+  cancelJob(
+    input: RequestIdentity & {
+      bindingRevision: number;
+      chatId: string;
+      jobId: string;
+    },
+  ) {
+    const thread = this.thread(input.bindingId, input.chatId);
+    const job = this.getJob(input.jobId);
+    check(
+      job && job.bindingId === input.bindingId && job.chatId === input.chatId,
+      "当前聊天中找不到该任务。",
+      404,
+    );
+    const { requestId, ...fields } = input;
+    const payload = { action: "cancelJob", ...fields };
+    const old = this.receipt<{ jobId: string }>(requestId, payload);
+    if (old) return this.getJob(old.jobId)!;
+    let result = job;
+    if (job.status === "queued" || job.status === "running") {
+      const partial = job.partialText.trim()
+        ? this.appendMessage(
+            thread,
+            "assistant",
+            job.partialText,
+            undefined,
+            {
+              kind: "cancelled_reply",
+              messageIds: [job.userMessageId],
+              memories: [],
+            },
+            job.userMessageId,
+          )
+        : null;
+      result = this.finishJob(job, "cancelled", partial?.id ?? null, null)!;
+    }
+    this.rememberReceipt(requestId, payload, { jobId: job.id });
+    return result;
   }
   replyJob({
     jobId,
@@ -747,7 +903,8 @@ export class ChatStore {
     const row = this.sql
       .exec<MessageRow>(
         `${visible} SELECT ${sqlMessage} FROM agent_chat_messages
-      WHERE chat_id=?1 AND binding_id=?2 AND id=?3 AND id NOT IN (SELECT id FROM hidden)`,
+      WHERE chat_id=?1 AND binding_id=?2 AND id=?3 AND id NOT IN (SELECT id FROM hidden)
+      AND COALESCE(json_extract(provenance,'$.kind'),'')!='cancelled_reply'`,
         chatId,
         bindingId,
         id,
@@ -765,6 +922,7 @@ export class ChatStore {
       .exec<MessageRow>(
         `${visible} SELECT ${sqlMessage} FROM agent_chat_messages
       WHERE chat_id=?1 AND binding_id=?2 AND sequence<?3 AND id NOT IN (SELECT id FROM hidden)
+      AND COALESCE(json_extract(provenance,'$.kind'),'')!='cancelled_reply'
       ORDER BY sequence DESC LIMIT ?4`,
         chatId,
         bindingId,

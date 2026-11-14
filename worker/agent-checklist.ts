@@ -293,8 +293,8 @@ export function runAgentChecklist(
   const list = () => {
     const fresh = c.rows();
     const noteRevisions = new Map(fresh.map((row) => [row.id, row.revision]));
-    const visible = (page(fresh)?.tasks ?? []).filter((item) =>
-      checklist(item.note),
+    const visible = (page(fresh)?.tasks ?? []).filter(
+      (item) => checklist(item.note) && blockText(item.block).trim(),
     );
     const views = [];
     let bytes = 0;
@@ -323,11 +323,11 @@ export function runAgentChecklist(
         editableText:
           !item.locked && block.runs.every((r) => r.type === "text"),
         specStatus:
-          !saved?.instruction || !saved.acceptance
-            ? "missing"
-            : saved.source === source(block)
-              ? "ready"
-              : "stale",
+          saved && saved.source !== source(block)
+            ? "stale"
+            : !saved?.instruction || !saved.acceptance
+              ? "missing"
+              : "ready",
       };
       bytes += new TextEncoder().encode(JSON.stringify(row)).length;
       if (bytes > 800_000) break;
@@ -602,7 +602,9 @@ export function runAgentChecklist(
       );
       return item;
     });
-    const pending = [...entries.values()].filter((item) => !item.block.done);
+    const pending = [...entries.values()].filter(
+      (item) => !item.block.done && blockText(item.block).trim(),
+    );
     let i = 0;
     const next = pending.map((item) =>
       selected.has(entryKey(item)) ? ordered[i++] : item,

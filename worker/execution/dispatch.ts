@@ -9,6 +9,7 @@ import type {
   TaskSpec,
 } from "../../shared/agent/contracts";
 import { parseExecutionSnapshot } from "../../shared/agent/schemas";
+import { projectSubmissionText } from "../../shared/agent/project-submission";
 import {
   executionAckSchema,
   executionContextSchema,
@@ -40,7 +41,7 @@ import { ProjectSummaries, projectActionSchemas } from "./project-summary";
 import { callAgentChecklist } from "../checklist-client";
 import { BatchQueue, initialQueue, isManaged, type QueueState } from "./batch-queue";
 import { batchGateSchema, queueControlSchema, leaseRecoverySchema } from "../../shared/agent/queue";
-import { executionRespondSchema, nativeResponsesSchema, nativeResponseAckSchema } from "../../shared/agent/permissions";
+import { executionRespondSchema, nativeResponsesSchema, nativeResponseAckSchema, resolveExecutionPermissions } from "../../shared/agent/permissions";
 import { ExecutionRequestInbox } from "./request-inbox";
 import {
   ChecklistWritebacks,
@@ -73,8 +74,11 @@ interface ReconciliationCommit {
 const runKey = (id: string) => "exec:run:" + id;
 const seqKey = (runId: string, seq: number) =>
   `exec:event:${runId}:${String(seq).padStart(16, "0")}`;
+const resultKey = (runId: string, turnId: string) => `exec:result:${runId}:${turnId}`;
 const byteLength = (value: unknown) =>
   new TextEncoder().encode(canonical(value)).length;
+const isProjectRun = (run: Pick<StoredRun, "snapshot">) =>
+  run.snapshot.kind === "task" && run.snapshot.executionMode === "project";
 function cancelUnfinishedBatchItems(batch?: BatchProgress) {
   for (const item of batch?.items ?? [])
     if (item.status !== "done") item.status = "cancelled";
@@ -114,6 +118,73 @@ export class ExecutionDispatch {
   }
   private queue() { return new BatchQueue(this.storage, this.env); }
   private requests() { return new ExecutionRequestInbox(this.storage,this.env); }
+  private async decorate(r: StoredRun): Promise<ExecutionRunView> {
+    const view = await this.requests().decorate(r, await this.queue().decorate(r, await this.writebacks().decorate(r)));
+    if (r.snapshot.kind === "task") await this.readFinalResult(view);
+    if (r.snapshot.executionSettings) view.executionSettings = r.snapshot.executionSettings;
+    if (r.snapshot.kind === "task" && r.snapshot.executionSettings && !r.snapshot.executionMode && !r.snapshot.batch) {
+      view.submission = {
+        text: r.snapshot.task.instruction,
+        tasks: [manualBatchItem(r.snapshot.task.taskRef.taskId, r.snapshot.task.instruction)],
+        projectSummary: r.snapshot.context.projectSummary,
+        summaryRevision: r.snapshot.summaryRevision,
+        projectCapturedAt: r.snapshot.context.projectCapturedAt ?? null,
+        projectSummaryStale: r.snapshot.context.projectSummaryStale ?? false,
+      };
+    }
+    if (r.snapshot.kind !== "task" || r.snapshot.executionMode !== "project") return view;
+    return {
+      ...view,
+      executionMode: "project",
+      sourceBacked: true,
+      submission: {
+        text: projectSubmissionText(r.snapshot.projectTasks!),
+        tasks: r.snapshot.projectTasks!,
+        projectSummary: r.snapshot.context.projectSummary,
+        summaryRevision: r.snapshot.summaryRevision,
+        projectCapturedAt: r.snapshot.context.projectCapturedAt ?? null,
+        projectSummaryStale: r.snapshot.context.projectSummaryStale ?? false,
+      },
+    };
+  }
+  private async readFinalResult(view: ExecutionRunView) {
+    if (!view.terminal || !view.stopConfirmed) return;
+    view.resultReadComplete = view.output !== undefined || !view.threadId || !view.turnId;
+    if (!view.threadId || !view.turnId) return;
+    const matches = (event: RunnerEvent | undefined): event is Extract<RunnerEvent, { type: "turn.completed" }> =>
+      event?.type === "turn.completed" && event.runId === view.runId &&
+      event.threadId === view.threadId && event.turnId === view.turnId;
+    const indexed = await this.storage.get<RunnerEvent>(resultKey(view.runId, view.turnId));
+    let completion = matches(indexed) ? indexed : undefined;
+    if (!completion) {
+      // Older runs have no result index. Their completion follows the display
+      // log, so read a small tail instead of replaying tens of thousands of
+      // token deltas to recover one answer. Never infer a result from log text.
+      const tail = await this.storage.list<RunnerEvent>({
+        prefix: `exec:event:${view.runId}:`, reverse: true, limit: 64,
+      });
+      completion = [...tail.values()].find(matches);
+    }
+    if (!completion) return;
+    view.resultReadComplete = true;
+    view.resultSeq = completion.seq;
+    if (view.output?.trim()) return;
+    const output = completion.payload.output?.trim()
+      ? completion.payload.output
+      : completion.payload.outcome?.summary;
+    if (output?.trim()) view.output = output;
+  }
+  private async validateProjectTasks(p: ExecutionPrincipal, snapshot: ExecutionSnapshot) {
+    if (snapshot.kind !== "task" || snapshot.executionMode !== "project") return;
+    const value = await callAgentChecklist(this.env, p, {
+      action: "snapshot",
+      tasks: snapshot.projectTasks!.map(({ source }) => ({
+        noteId: source!.taskRef.noteId, taskId: source!.taskRef.taskId,
+        generation: source!.generation, specRevision: source!.specRevision,
+      })),
+    });
+    check(canonical(value.items) === canonical(snapshot.projectTasks), "待办规格或排序已改变，请重新提交。", 409);
+  }
   private projects(p: ExecutionPrincipal) {
     return new ProjectSummaries(this.storage, this.env, {
       prepare: async (input) => ({ input: parse(executionToolSchemas.codex_create_run, (await this.intent(p, input)).input) }),
@@ -130,7 +201,7 @@ export class ExecutionDispatch {
   private async cleanupTerminal(r: StoredRun) {
     if (!r.view.terminal || !r.view.stopConfirmed) return;
     if (isManaged(r) && !["completed", "cancelled"].includes(r.view.queue?.phase ?? "")) return;
-    if (isManaged(r) && await this.storage.get("exec:queue-workspace:" + r.view.workspaceId) === r.view.runId)
+    if ((isManaged(r) || isProjectRun(r)) && await this.storage.get("exec:queue-workspace:" + r.view.workspaceId) === r.view.runId)
       await this.storage.delete("exec:queue-workspace:" + r.view.workspaceId);
     await this.storage.delete("exec:pending:" + r.view.runId);
     if ((await this.storage.get<string>("exec:active")) === r.view.runId)
@@ -228,7 +299,7 @@ export class ExecutionDispatch {
       for (const id of ids.values()) {
         const r = await this.storage.get<StoredRun>(runKey(id));
         if (r && canonical(r.principal) === canonical(p))
-          runs.push(await this.requests().decorate(r,await this.queue().decorate(r,await this.writebacks().decorate(r))));
+          runs.push(await this.decorate(r));
       }
       return json({ runs });
     }
@@ -259,7 +330,9 @@ export class ExecutionDispatch {
           tasks: input.sourceTasks,
         })
       : undefined;
-    const batch = linked
+    const projectTasks = input.executionMode === "project" ? linked!.items as BatchItem[] : undefined;
+    const project = projectTasks || input.executionSettings ? await this.projects(p).state(p, true) : undefined;
+    const batch = projectTasks ? undefined : linked
       ? {
           items: linked.items as BatchItem[],
           autoComplete: input.autoComplete ?? false,
@@ -273,7 +346,7 @@ export class ExecutionDispatch {
       Object.assign(batch, { managed: true });
     if (input.kind === "task") {
       const first =
-        batch?.items[0] ??
+        (projectTasks ? manualBatchItem(`${runId}-project`, `统筹完成本次提交的 ${projectTasks.length} 项待办。`, "根据每项保存的完成标准核对结果；本轮汇总回执不代表各待办已分别验收。") : batch?.items[0]) ??
         manualBatchItem(runId, input.instruction!, input.acceptance);
       task = {
         text: first.text,
@@ -304,17 +377,20 @@ export class ExecutionDispatch {
       bindingRevision: p.bindingRevision,
       workspaceId: binding.workspace_id,
       kind: input.kind,
-      executionPermissions:{profile:input.kind === "summary" ? "read_only" : input.executionPermissions?.profile ?? "workspace_manual",network:false},
+      executionPermissions:resolveExecutionPermissions(input.kind, input.executionPermissions?.profile),
+      ...(input.kind === "task" && input.executionSettings ? { executionSettings: input.executionSettings } : {}),
       task,
+      ...(projectTasks ? { executionMode: "project", projectTasks } : {}),
       ...(batch ? { batch } : {}),
-      summaryRevision: 0,
+      summaryRevision: project?.summaryRevision ?? 0,
       memoryEpoch: 0,
       sourceRefs: [],
       payloadHash: "0".repeat(64),
       capturedAt: now,
       allowedCheckIds: workspace.checks.map((c) => c.checkId),
       context: {
-        projectSummary: null,
+        projectSummary: project?.summary ?? null,
+        ...(project ? { projectCapturedAt: project.capturedAt ?? null, projectSummaryStale: project.stale ?? false } : {}),
         decisions:
           input.kind === "summary" && input.instruction
             ? ["用户本次总结要求：" + input.instruction]
@@ -388,6 +464,7 @@ export class ExecutionDispatch {
     });
     r.view.commandId = receipt.commandId;
     r.view.updatedAt = receipt.acceptedAt;
+    if (payload.type === "continue_run" && payload.mode === "reply") delete r.view.finishedAt;
     // Batch progress is replaceable report data. It must not exhaust the
     // command journal budget or prevent a user from cancelling a batch.
     const { batch: _, queue: _queueView, ...commandView } = r.view;
@@ -405,7 +482,8 @@ export class ExecutionDispatch {
         receipt,
       [`exec:list:${r.principal.bindingId}:${r.view.createdAt}:${r.view.runId}`]:
         r.view.runId,
-      ...(isManaged(r) && payload.type === "create_run"
+      ...((isManaged(r) && payload.type === "create_run") ||
+          (isProjectRun(r) && (payload.type === "create_run" || payload.type === "continue_run" && payload.mode === "reply"))
         ? { ["exec:queue-workspace:" + r.view.workspaceId]: r.view.runId }
         : {}),
     });
@@ -501,6 +579,7 @@ export class ExecutionDispatch {
           })),
         });
       }
+      await this.validateProjectTasks(p, authorized.snapshot);
       check(
         !(await this.storage.get(runKey(input.runId))),
         "运行已存在。",
@@ -510,7 +589,7 @@ export class ExecutionDispatch {
       const batch =
         authorized.snapshot.kind === "task" && authorized.snapshot.batch;
       const occupied = await this.storage.get<string>("exec:queue-workspace:" + workspace.workspaceId);
-      check(!occupied, "此项目仍有未完成的批次，请先继续或停止该批次。", 409);
+      check(!occupied, "此项目仍有未完成的批次或任务，请先继续或停止原运行。", 409);
       r = {
         principal: p,
         snapshot: authorized.snapshot,
@@ -552,6 +631,7 @@ export class ExecutionDispatch {
     } else {
       r = await this.run(p, input.runId);
       if (name === "codex_continue_run") {
+        await this.validateProjectTasks(p, r.snapshot);
         check(
           !(
             r.snapshot.kind === "task" &&
@@ -594,10 +674,15 @@ export class ExecutionDispatch {
             "此批次已结束，请另行提交新任务。",
             409,
           );
+          if (isProjectRun(r)) {
+            const occupied = await this.storage.get<string>("exec:queue-workspace:" + r.view.workspaceId);
+            check(!occupied || occupied === r.view.runId, "此项目已有其他执行任务，请先停止原运行。", 409);
+          }
         }
         r.view.status = input.mode === "reply" ? "queued" : r.view.status;
         r.view.terminal = false;
         r.view.stopConfirmed = false;
+        delete r.view.output;
         if (input.mode === "reply") await this.queue().reply(r);
       } else {
         const undispatched = r.commands.every((c) => !c.envelope);
@@ -609,6 +694,21 @@ export class ExecutionDispatch {
         } else if (r.view.terminal && r.view.stopConfirmed && isManaged(r)) {
           r.view.status = "cancelled";
           cancelUnfinishedBatchItems(r.view.batch);
+        } else if (
+          r.view.terminal && r.view.stopConfirmed &&
+          r.snapshot.kind === "summary" && r.view.status === "verifying"
+        ) {
+          const completion = await this.storage.get<RunnerEvent>("project:result:" + r.view.runId);
+          const received = completion?.type === "turn.completed" &&
+            completion.runId === r.view.runId &&
+            completion.threadId === r.view.threadId &&
+            completion.turnId === r.view.turnId;
+          // Native work has already stopped. Cancelling delivery must remain
+          // durable so a delayed result cannot revive this summary.
+          if (!received) {
+            r.view.status = "cancelled";
+            r.view.error = "已停止等待摘要结果。";
+          }
         } else if (!(r.view.terminal && r.view.stopConfirmed)) {
           r.view.status = "cancel_requested";
           r.view.terminal = false;
@@ -657,7 +757,7 @@ export class ExecutionDispatch {
       size += bytes;
     }
     return {
-      run: await this.requests().decorate(r,await this.queue().decorate(r,await this.writebacks().decorate(r))),
+      run: await this.decorate(r),
       events,
       nextAfterSeq: events.at(-1)?.seq ?? afterSeq,
       hasMore: all.length > events.length,
@@ -781,6 +881,8 @@ export class ExecutionDispatch {
         )!;
       const { connectionEpoch: _, ...ack } = value;
       check(command.envelope, "命令未派发。", 409);
+      if (ack.status === "stored" && !command.ack && command.payload.type !== "cancel_run" && value.commandId === r.view.commandId)
+        await this.validateProjectTasks(r.principal, r.snapshot);
       if (ack.status === "stored" && command.payload.type !== "cancel_run" && value.commandId === r.view.commandId)
         await this.queue().validateDispatch(r);
       const isBatch = r.snapshot.kind === "task" && !!r.snapshot.batch;
@@ -864,6 +966,7 @@ export class ExecutionDispatch {
             stored = {
               ...event,
               payload: {
+                ...event.payload,
                 text:
                   new TextDecoder()
                     .decode(encoded.slice(0, room))
@@ -884,6 +987,9 @@ export class ExecutionDispatch {
           ...requestUpdates,
           ...(r.snapshot.kind === "summary" && event.type === "turn.completed"
             ? { ["project:result:" + event.runId]: stored }
+            : {}),
+          ...(r.snapshot.kind === "task" && event.type === "turn.completed" && event.turnId
+            ? { [resultKey(event.runId, event.turnId)]: stored }
             : {}),
           ...(isManaged(r) && event.turnId && ["turn.completed", "verification.completed"].includes(event.type)
             ? { [`exec:queue-proof:${event.runId}:${event.turnId}:${event.type}`]: stored }
@@ -967,6 +1073,17 @@ export class ExecutionDispatch {
       );
       r.summaryContext = value.summaryContext;
     }
+    if (value.summaryProgress) {
+      check(r.snapshot.kind === "summary", "读取进度仅适用于项目总结。", 409);
+      const prior = r.view.summaryProgress, next = value.summaryProgress;
+      check(!prior || (prior.startedAt === next.startedAt &&
+        (prior.totalRecords === null || prior.totalRecords === next.totalRecords) &&
+        prior.pagesRead <= next.pagesRead && prior.readRecords <= next.readRecords), "总结读取进度不能倒退或更换来源。", 409);
+      r.view.summaryProgress = value.summaryProgress;
+    }
+    if (!value.terminal || (value.turnId && value.turnId !== r.view.turnId))
+      delete r.view.output;
+    if (value.output !== undefined) r.view.output = value.output;
     r.view.threadId = value.threadId ?? r.view.threadId;
     r.view.turnId = value.turnId ?? r.view.turnId;
     r.view.terminal = value.terminal;
@@ -989,6 +1106,8 @@ export class ExecutionDispatch {
     if (isManaged(r)) await this.queue().observe(r,false);
     r.view.updatedAt = new Date().toISOString();
     const writebackUpdates = await this.writebacks().stage(r);
+    if (value.terminal && value.stopConfirmed) r.view.finishedAt ||= r.view.updatedAt;
+    else delete r.view.finishedAt;
     r.view.reportRevision = value.revision;
     r.reportCommandId = value.commandId;
     await this.storage.put({

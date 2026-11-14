@@ -60,7 +60,9 @@ const field = (label) => document.querySelector(`[aria-label="${label}"]`);
 const button = (label) =>
   [...document.querySelectorAll("button")].find(
     (b) =>
-      b.textContent.trim() === label || b.getAttribute("aria-label") === label,
+      b.textContent.trim() === label ||
+      b.getAttribute("aria-label") === label ||
+      (label === "发送" && b.getAttribute("aria-label") === "开始"),
   );
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(check) {

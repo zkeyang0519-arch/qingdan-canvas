@@ -395,3 +395,198 @@ test("the 45 second timeout covers a stalled response body", async (t) => {
   await timedOut;
   assert.equal(signal.aborted, true);
 });
+
+const eventFrame = (data, event) =>
+  `${event ? `event: ${event}\r\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\r\n\r\n`;
+const streamResponse = (body) =>
+  new Response(body, {
+    headers: { "Content-Type": "text/event-stream; charset=utf-8" },
+  });
+const completionDelta = (content, finish = null) => ({
+  choices: [
+    { index: 0, delta: { role: "assistant", content }, finish_reason: finish },
+  ],
+});
+const responseDelta = (delta) => ({
+  type: "response.output_text.delta",
+  item_id: "message-1",
+  output_index: 0,
+  content_index: 0,
+  delta,
+});
+
+for (const format of ["responses", "chat_completions"]) {
+  test(`${format} exposes only decoded reply text before the provider finishes`, async (t) => {
+    let controller;
+    let closed = false;
+    const partials = [];
+    const body = new ReadableStream({
+      start(value) {
+        controller = value;
+      },
+    });
+    const enqueue = (data) => {
+      const bytes = new TextEncoder().encode(eventFrame(data));
+      // Split transport bytes independently of SSE events and UTF-8 characters.
+      for (let i = 0; i < bytes.length; i += 3)
+        controller.enqueue(bytes.slice(i, i + 3));
+    };
+    t.after(() => {
+      if (!closed) controller.close();
+    });
+    const prefix = `${JSON.stringify({ tasks: reply.tasks }).slice(0, -1)},"text":"你好\\n第一\\u`;
+    const delta = format === "responses" ? responseDelta : completionDelta;
+    const pending = generateChatReply(
+      { ...env, ROUTER_API_FORMAT: format },
+      context,
+      async (_, init) => {
+        assert.equal(JSON.parse(init.body).stream, true);
+        return streamResponse(body);
+      },
+      { onPartialText: (text) => partials.push(text) },
+    );
+    pending.catch(() => {});
+    enqueue(delta(prefix));
+    await new Promise(setImmediate);
+    assert.deepEqual(partials, ["你好\n第一"]);
+    enqueue(delta("4e8c\\ud83d"));
+    await new Promise(setImmediate);
+    assert.equal(partials.at(-1), "你好\n第一二");
+    const suffix = `de00结束","memories":[]}`;
+    enqueue(delta(`\\u${suffix}`));
+    const content = prefix + "4e8c\\ud83d\\u" + suffix;
+    if (format === "responses") {
+      enqueue({
+        type: "response.completed",
+        response: responseEnvelope(content),
+      });
+    } else {
+      enqueue(completionDelta("", "stop"));
+      enqueue({
+        choices: [],
+        usage: { prompt_tokens: 31, completion_tokens: 12 },
+      });
+      controller.enqueue(new TextEncoder().encode(eventFrame("[DONE]")));
+    }
+    closed = true;
+    controller.close();
+    const result = await pending;
+    assert.equal(result.reply.text, "你好\n第一二😀结束");
+    assert.deepEqual(result.reply.tasks, reply.tasks);
+    assert.equal(partials.at(-1), result.reply.text);
+    assert.ok(
+      partials.every(
+        (text) => !text.includes("核对报告") && !text.includes("tasks"),
+      ),
+    );
+  });
+}
+
+test("stream cancellation aborts the provider fetch and body while retaining already delivered text", async () => {
+  const abort = new AbortController();
+  let providerSignal;
+  let bodyCancelled = false;
+  let calls = 0;
+  const partials = [];
+  const pending = generateChatReply(
+    env,
+    context,
+    async (_, init) => {
+      calls++;
+      providerSignal = init.signal;
+      return streamResponse(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                eventFrame(responseDelta('{"text":"已有文字')),
+              ),
+            );
+          },
+          cancel() {
+            bodyCancelled = true;
+          },
+        }),
+      );
+    },
+    { signal: abort.signal, onPartialText: (text) => partials.push(text) },
+  );
+  const rejected = assert.rejects(pending, { code: "MODEL_CANCELLED" });
+  await new Promise(setImmediate);
+  abort.abort();
+  await rejected;
+  assert.deepEqual(partials, ["已有文字"]);
+  assert.equal(providerSignal.aborted, true);
+  assert.equal(bodyCancelled, true);
+  assert.equal(calls, 1);
+});
+
+test("cancelling before provider headers resolves promptly without retrying", async () => {
+  const abort = new AbortController();
+  let signal;
+  let calls = 0;
+  const pending = generateChatReply(
+    env,
+    context,
+    async (_, init) => {
+      calls++;
+      signal = init.signal;
+      return new Promise(() => {});
+    },
+    { signal: abort.signal },
+  );
+  const rejected = assert.rejects(pending, { code: "MODEL_CANCELLED" });
+  abort.abort();
+  await rejected;
+  assert.equal(signal.aborted, true);
+  assert.equal(calls, 1);
+});
+
+test("streamed suggestions require a successful terminal event and final schema validation", async () => {
+  for (const [format, events, code] of [
+    ["responses", [responseDelta(JSON.stringify(reply))], "MODEL_INCOMPLETE"],
+    [
+      "chat_completions",
+      [completionDelta(JSON.stringify(reply)), "[DONE]"],
+      "MODEL_INCOMPLETE",
+    ],
+    [
+      "chat_completions",
+      [completionDelta(JSON.stringify(reply), "length"), "[DONE]"],
+      "MODEL_INCOMPLETE",
+    ],
+    [
+      "chat_completions",
+      [completionDelta('{"text":"仅有文字"}', "stop"), "[DONE]"],
+      "MODEL_INVALID_RESPONSE",
+    ],
+    [
+      "responses",
+      [
+        {
+          type: "response.failed",
+          response: { status: "failed", error: { message: "provider-secret" } },
+        },
+      ],
+      "MODEL_UNAVAILABLE",
+    ],
+    [
+      "responses",
+      [{ type: "response.refusal.delta", delta: "provider-secret" }],
+      "MODEL_REFUSED",
+    ],
+  ]) {
+    const response = streamResponse(
+      events.map((value) => eventFrame(value)).join(""),
+    );
+    await assert.rejects(
+      generateChatReply(
+        { ...env, ROUTER_API_FORMAT: format },
+        context,
+        async () => response,
+      ),
+      (error) =>
+        error.code === code && !error.message.includes("provider-secret"),
+    );
+  }
+});

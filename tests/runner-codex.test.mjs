@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { makeSnapshot } from "./fixtures/agent-fixtures.mjs";
+import { projectItems, savedProjectSummary } from "./fixtures/project-execution.mjs";
+import { handoffSummary } from "./fixtures/project-handoff.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 await mkdir(path.join(root, ".tmp"), { recursive: true });
@@ -14,7 +16,7 @@ try {
   await build({
     stdin: {
       contents:
-        "export * from './runner/codex-adapter.ts'; export * from './runner/store.ts'; export * from './runner/workspace.ts'; export * from './runner/batch.ts';",
+        "export * from './runner/codex-adapter.ts'; export * from './runner/store.ts'; export * from './runner/workspace.ts'; export * from './runner/batch.ts'; export {projectInspectionTool, projectInspectionRoot} from './runner/project-inspection.ts'; export { collectProjectHistory } from './runner/project-history.ts'; export { historyTool, initialHistoryRead } from './runner/project-history-pages.ts'; export {selectHistoryCache, historyReadInput} from './runner/summary-cache.ts'; export {resultTool} from './runner/prompt.ts';",
       resolveDir: root,
     },
     bundle: true,
@@ -117,6 +119,135 @@ if (api) {
     delete s.task.taskId;
     s.task.taskRef.taskId = s.batch.items[0].taskId;
     return s;
+  }
+
+  test("project execution hands every selected instruction and saved project context to one Codex turn", async (t) => {
+    const f = await fixture(t, "report");
+    const snapshot = await f.snapshot("project-a");
+    snapshot.executionMode = "project";
+    snapshot.projectTasks = projectItems("canvas-a");
+    snapshot.context.projectSummary = { ...handoffSummary, completed: savedProjectSummary.completed };
+    const adapter = await f.open();
+    await adapter.startFreshRun(snapshot);
+    const run = await adapter.waitForRun("project-a", 4000);
+    await adapter.startFreshRun(snapshot);
+    const starts = (await f.state()).calls.filter(call => call.method === "turn/start");
+    assert.equal(starts.length, 1);
+    const prompt = starts[0].params.input[0].text;
+    assert.match(prompt, /CSV 导出/);
+    assert.match(prompt, /按钮溢出/);
+    assert.match(starts[0].params.additionalContext.qingdan_task.value, /已有登录入口/);
+    assert.match(starts[0].params.additionalContext.qingdan_task.value, /320px/);
+    for (const text of ["JSON 导出已实现", "CSV 尚未实现", "空列表与中文编码", "补齐 CSV 格式转换时从这里开始", "保留 JSON 导出接口", "本轮未运行测试"]) {
+      assert.ok(starts[0].params.additionalContext.qingdan_task.value.includes(text), text);
+    }
+    assert.equal(run.batch, undefined);
+    assert.equal(run.terminal, true);
+    assert.equal(run.status, "verifying");
+    assert.equal(run.result.taskId, snapshot.task.taskRef.taskId);
+    assert.ok(snapshot.projectTasks.every(item => item.taskId !== run.result.taskId));
+  });
+
+  test("public Codex output keeps message boundaries and command logs once without leaking reasoning", async (t) => {
+    const f = await fixture(t, "hang");
+    const adapter = await f.open();
+    const started = await adapter.startFreshRun(await f.snapshot());
+    const packet = (method, fields) => adapter.receive({ method, params: { threadId: started.threadId, turnId: started.turnId, ...fields } });
+    packet("item/agentMessage/delta", { itemId: "comment-1", delta: "先检查项目。" });
+    packet("item/completed", { item: { type: "agentMessage", id: "comment-1", phase: "commentary", text: "先检查项目。" } });
+    packet("item/started", { item: { type: "commandExecution", id: "cmd-1", command: "npm test", cwd: f.workspace, status: "inProgress", aggregatedOutput: null } });
+    packet("item/commandExecution/outputDelta", { itemId: "cmd-1", delta: "2 tests passed\n" });
+    const completed = { type: "commandExecution", id: "cmd-1", command: "npm test", cwd: f.workspace, status: "completed", aggregatedOutput: "2 tests passed\n", exitCode: 0 };
+    packet("item/completed", { item: completed });
+    packet("item/completed", { item: completed });
+    packet("item/completed", { item: { type: "fileChange", id: "files-1", status: "completed", changes: [{ path: "src/export.ts", kind: { type: "update", move_path: null }, diff: "private full diff" }] } });
+    packet("item/reasoning/textDelta", { itemId: "reasoning-1", delta: "private internal reasoning" });
+    packet("item/completed", { item: { type: "reasoning", id: "reasoning-1", content: ["private internal reasoning"], summary: ["private reasoning summary"] } });
+    packet("item/completed", { item: { type: "agentMessage", id: "answer-1", phase: "final_answer", text: "已完成导出。" } });
+    const outputs = f.store.eventsAfter(0).map(row => row.event).filter(event => event.type === "output.delta");
+    assert.equal(outputs.filter(event => event.payload.itemId === "comment-1" && event.payload.phase === "delta").map(event => event.payload.text).join(""), "先检查项目。");
+    assert.equal(outputs.filter(event => event.payload.itemId === "answer-1").map(event => event.payload.text).join(""), "已完成导出。");
+    const commands = outputs.filter(event => event.payload.channel === "command");
+    assert.equal(commands.filter(event => event.payload.phase === "started").length, 1);
+    assert.equal(commands.filter(event => event.payload.phase === "completed").length, 1);
+    assert.equal(commands.map(event => event.payload.text).join(""), "2 tests passed\n");
+    assert.equal(commands.at(-1).payload.title, "npm test · 退出码 0");
+    assert.match(outputs.find(event => event.payload.channel === "file_change").payload.text, /src\/export.ts/);
+    assert.doesNotMatch(JSON.stringify(outputs), /private/);
+    assert.equal(adapter.getRun("run-a").output, "已完成导出。");
+    assert.equal(outputs.find(event => event.payload.itemId === "comment-1" && event.payload.phase === "completed").payload.messagePhase, "commentary");
+    assert.equal(outputs.find(event => event.payload.itemId === "answer-1").payload.messagePhase, "final_answer");
+  });
+  test("completed turn delivers the explicit final answer instead of trailing progress or partial text", async (t) => {
+    const f = await fixture(t, "hang");
+    const adapter = await f.open();
+    const started = await adapter.startFreshRun(await f.snapshot());
+    adapter.complete("run-a", {
+      id: started.turnId, status: "completed", items: [
+        { type: "agentMessage", id: "answer", phase: "final_answer", text: "已完成导出并通过测试。" },
+        { type: "agentMessage", id: "partial", phase: "partial_answer", text: "仍在整理" },
+        { type: "agentMessage", id: "legacy", phase: null, text: "未分类进度" },
+        { type: "agentMessage", id: "comment", phase: "commentary", text: "当前分支 main" },
+      ],
+    }, true, true);
+    assert.equal(adapter.getRun("run-a").output, "已完成导出并通过测试。");
+    assert.equal(f.store.eventsAfter(0).find(({ event }) => event.type === "turn.completed").event.payload.output, "已完成导出并通过测试。");
+  });
+  test("a turn without a final answer cannot promote commentary or partial output to its result", async (t) => {
+    const f = await fixture(t, "hang");
+    const adapter = await f.open();
+    const started = await adapter.startFreshRun(await f.snapshot());
+    adapter.receive({ method: "item/completed", params: { threadId: started.threadId, turnId: started.turnId, item: { type: "agentMessage", id: "partial", phase: "partial_answer", text: "正在整理最终结果" } } });
+    assert.equal(adapter.getRun("run-a").output, "");
+    f.store.patchRun("run-a", { output: "旧版本误存的进度" });
+    adapter.complete("run-a", { id: started.turnId, status: "completed", items: [
+      { type: "agentMessage", id: "comment", phase: "commentary", text: "当前分支 main" },
+      { type: "agentMessage", id: "partial", phase: "partial_answer", text: "正在整理最终结果" },
+    ] }, true, true);
+    assert.equal(adapter.getRun("run-a").output, "");
+    assert.equal(f.store.eventsAfter(0).find(({ event }) => event.type === "turn.completed").event.payload.output, "");
+  });
+  test("legacy unphased progress before a command is not delivered as the final answer", async (t) => {
+    const f = await fixture(t, "hang");
+    const adapter = await f.open();
+    const started = await adapter.startFreshRun(await f.snapshot());
+    adapter.complete("run-a", { id: started.turnId, status: "completed", items: [
+      { type: "agentMessage", id: "progress", phase: null, text: "现在检查 main 分支" },
+      { type: "commandExecution", id: "cmd", command: "git status", status: "completed", exitCode: 0, aggregatedOutput: "main" },
+    ] }, true, true);
+    assert.equal(adapter.getRun("run-a").output, "");
+  });
+  async function legacyInspection(f, snapshot, mode) {
+    const original = await f.open("report");
+    await original.startFreshRun(snapshot);
+    const first = await original.waitForRun(snapshot.runId, 4000);
+    await original.close();
+    const state = await f.state();
+    state.threads.find(thread => thread.id === first.threadId).dynamicTools = state.threads.find(thread => thread.id === first.threadId).dynamicTools.filter(tool => tool.name !== "qingdan_read_project_history");
+    state.threads.find(thread => thread.id === first.threadId).dynamicTools.push(api.projectInspectionTool());
+    await writeFile(f.statePath, JSON.stringify(state));
+    f.store.patchRun(snapshot.runId, { summaryHistory: undefined, summaryInspection: { root: await api.projectInspectionRoot(f.workspace), sources: [] } });
+    const adapter = await f.open(mode);
+    await adapter.continueRun({ requestId: "legacy-" + snapshot.runId, runId: snapshot.runId, expectedTurnId: first.activeTurnId, mode: "reply", message: "继续原项目检查。" });
+    return adapter;
+  }
+  async function legacyHistory(f, snapshot, mode, original) {
+    await original.startFreshRun(snapshot);
+    const first = await original.waitForRun(snapshot.runId, 4000);
+    const history = await api.collectProjectHistory(original.client, f.workspace, {
+      excludeThreadIds: f.store.allRuns().filter(r => r.snapshot.kind === "summary").map(r => r.threadId).filter(Boolean),
+    });
+    const cache = api.selectHistoryCache(history, snapshot, f.workspace, f.store.allRuns());
+    await original.close();
+    const state = await f.state();
+    state.threads.find(th => th.id === first.threadId).dynamicTools = [api.resultTool("summary", "history"), api.historyTool()];
+    await writeFile(f.statePath, JSON.stringify(state));
+    f.store.patchRun(snapshot.runId, { summaryInspection: undefined, summaryHistory: history, summaryHistoryCache: cache,
+      summaryHistoryRead: api.initialHistoryRead(api.historyReadInput(history, cache)), summaryProgress: undefined,
+      summaryContext: { ...first.summaryContext, sourceKind: "codex_history" } });
+    const adapter = await f.open(mode);
+    await adapter.continueRun({ requestId: "legacy-history-" + snapshot.runId, runId: snapshot.runId, expectedTurnId: first.activeTurnId, mode: "reply", message: "继续原历史总结。" });
+    return adapter;
   }
   async function batchSettled(adapter, runId = "batch-a") {
     const deadline = Date.now() + 5000;
@@ -286,12 +417,12 @@ if (api) {
     assert.equal(batch.items[1].status, "cancelled");
     assert.equal(batch.items[1].completedTurnId, undefined);
   });
-  for (const profile of ["read_only", "workspace_manual", "workspace_auto"]) {
+  for (const profile of ["read_only", "workspace_manual", "workspace_auto", "full_access"]) {
     test(`immutable ${profile} permissions override legacy environment reviewer on every task turn`, async (t) => {
       const f = await fixture(t),
         adapter = await f.open("normal", { approvalsReviewer: "auto_review" });
       const snapshot = await f.snapshot();
-      snapshot.executionPermissions = { profile, network: false };
+      snapshot.executionPermissions = { profile, network: profile === "full_access" };
       await adapter.startFreshRun(snapshot);
       const finished = await adapter.waitForRun("run-a", 4000);
       await adapter.continueRun({
@@ -310,21 +441,52 @@ if (api) {
           call.params.approvalsReviewer,
           profile === "workspace_auto" ? "auto_review" : "user",
         );
-        assert.equal(call.params.approvalPolicy, "on-request");
+        assert.equal(call.params.approvalPolicy, profile === "full_access" ? "never" : "on-request");
         if (call.method === "turn/start") {
           assert.equal(
             call.params.sandboxPolicy.type,
-            profile === "read_only" ? "readOnly" : "workspaceWrite",
+            profile === "read_only" ? "readOnly" : profile === "full_access" ? "dangerFullAccess" : "workspaceWrite",
           );
-          assert.equal(call.params.sandboxPolicy.networkAccess, false);
+          if (profile !== "full_access") assert.equal(call.params.sandboxPolicy.networkAccess, false);
         } else
           assert.equal(
             call.params.sandbox,
-            profile === "read_only" ? "read-only" : "workspace-write",
+            profile === "read_only" ? "read-only" : profile === "full_access" ? "danger-full-access" : "workspace-write",
           );
       }
     });
   }
+
+  test("full access survives batch advancement, checkpoint recovery and reconnecting an active turn", async (t) => {
+    const f = await fixture(t), adapter = await f.open("normal", { approvalsReviewer: "auto_review" });
+    const snapshot = await batchSnapshot(f);
+    snapshot.executionPermissions = { profile: "full_access", network: true };
+    await adapter.startFreshRun(snapshot);
+    await batchSettled(adapter);
+    await adapter.confirmPausedCheckpoint("batch-a", async () => {});
+    await adapter.advanceBatchRun("batch-a");
+    await batchSettled(adapter);
+    await adapter.cancelRun("batch-a");
+    await adapter.close();
+    const stopped = await f.open();
+    await stopped.confirmRunStopped("batch-a");
+    await stopped.close();
+    const hanging = await f.open("hang", { approvalsReviewer: "auto_review" });
+    const active = await f.snapshot("active-full-access");
+    active.executionPermissions = { profile: "full_access", network: true };
+    await hanging.startFreshRun(active);
+    await hanging.close({ stopRuns: false });
+    const recovered = await f.open("hang", { approvalsReviewer: "auto_review" });
+    await recovered.reconcileRun(active.runId);
+    const calls = (await f.state()).calls.filter(call => ["thread/start", "thread/resume", "turn/start"].includes(call.method));
+    assert.equal(calls.filter(call => call.method === "thread/resume").length, 4);
+    for (const { method, params } of calls) {
+      assert.equal(params.approvalPolicy, "never");
+      assert.equal(params.approvalsReviewer, "user");
+      if (method === "turn/start") assert.deepEqual(params.sandboxPolicy, { type: "dangerFullAccess" });
+      else assert.equal(params.sandbox, "danger-full-access");
+    }
+  });
 
   test("an automatic checklist completion seals the current item against a between-item steer", async (t) => {
     const f = await fixture(t);
@@ -750,6 +912,356 @@ if (api) {
     assert.equal(adapter.getRun("run-a").desktopSync.status, "pending");
   });
 
+  test("current summary rechecks cloud cancellation before starting its model turn", async (t) => {
+    const f = await fixture(t, "report");
+    const adapter = await f.open();
+    const snapshot = await f.snapshot("cancel-after-history", "summary");
+    let gates = 0;
+    const result = await adapter.startFreshRun(snapshot, async stage => {
+      if (stage === "turn" && ++gates === 2) throw Error("cloud cancelled summary");
+    });
+    assert.notEqual(result.status, "started");
+    assert.match(result.reason, /cloud cancelled summary/);
+    const calls = (await f.state()).calls;
+    assert.equal(calls.some(call => call.method === "thread/list"), false);
+    assert.equal(calls.some(call => call.method === "turn/start"), false);
+  });
+
+  test("composer model and fast mode reach both native thread and turn requests", async (t) => {
+    const f = await fixture(t, "hang");
+    await writeFile(f.statePath, JSON.stringify({
+      threads: [], calls: [],
+      models: [{ model: "selected-model", serviceTiers: [{ id: "priority" }], additionalSpeedTiers: ["fast"] }],
+    }));
+    const adapter = await f.open("hang", { model: "fallback-model" });
+    const snapshot = await f.snapshot("chosen-model");
+    snapshot.executionSettings = { model: "selected-model", fastMode: true, reasoningEffort: "high" };
+    await adapter.startFreshRun(snapshot);
+    const calls = (await f.state()).calls.filter(call => ["thread/start", "turn/start"].includes(call.method));
+    assert.equal(calls.length, 2);
+    for (const { params } of calls) {
+      assert.equal(params.model, "selected-model");
+      assert.equal(params.serviceTier, "priority");
+    }
+    assert.equal(calls[1].params.effort, "high");
+  });
+
+  test("native execution rejects fast mode when the model catalog advertises no fast tier", async (t) => {
+    const f = await fixture(t, "hang");
+    await writeFile(f.statePath, JSON.stringify({
+      threads: [], calls: [],
+      models: [{ model: "standard-only", serviceTiers: [] }],
+    }));
+    const adapter = await f.open();
+    const snapshot = await f.snapshot("unsupported-fast");
+    snapshot.executionSettings = { model: "standard-only", fastMode: true };
+    const result = await adapter.startFreshRun(snapshot);
+    assert.match(result.reason, /不支持快速模式/);
+    assert.equal((await f.state()).calls.some(({ method }) => method === "thread/start"), false);
+  });
+
+  test("summary models are pinned to Terra medium without changing ordinary task models", async (t) => {
+    const f = await fixture(t, "report");
+    const adapter = await f.open("report", { model: "gpt-6-astra", effort: "max" });
+    const task = await f.snapshot("model-task");
+    await adapter.startFreshRun(task);
+    await adapter.waitForRun(task.runId, 4000);
+    const snapshot = await f.snapshot("model-summary", "summary");
+    await adapter.startFreshRun(snapshot);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    const calls = (await f.state()).calls;
+    const start = calls.find(c => c.method === "turn/start" && c.params.threadId === run.threadId);
+    assert.equal(start.params.model, "gpt-6.1-terra");
+    assert.equal(start.params.effort, "medium");
+    assert.deepEqual(run.summarySettings, { model: "gpt-6.1-terra", effort: "medium" });
+    const taskStart = calls.find(c => c.method === "turn/start" && c.params.threadId === adapter.getRun(task.runId).threadId);
+    assert.equal(taskStart.params.model, "gpt-6-astra");
+    assert.equal(taskStart.params.effort, "max");
+  });
+
+  test("current summaries inspect only requested files and can finish while unread content remains", async (t) => {
+    const f = await fixture(t, "report-current");
+    await writeFile(path.join(f.workspace, "README.md"), "Project plan: latest state\n".repeat(3000));
+    await mkdir(path.join(f.workspace, "deep"));
+    await writeFile(path.join(f.workspace, "deep/unrelated.md"), "Do not need to read this\n");
+    await writeFile(f.statePath, JSON.stringify({ threads: [{ id: "source-old", cwd: f.workspace, name: "Old history", turns: [] }], calls: [] }));
+    const adapter = await f.open();
+    const snapshot = await f.snapshot("current-summary", "summary");
+    await adapter.startFreshRun(snapshot, async stage => {
+      if (stage === "thread") {
+        assert.equal(adapter.getRun(snapshot.runId).summaryProgress.mode, "project");
+        assert.equal(adapter.getRun(snapshot.runId).summaryProgress.totalRecords, null);
+      }
+    });
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, true, run.resultError);
+    assert.equal(run.summaryInspection?.mode, "current");
+    assert.equal(run.summaryInspection?.reportFormat, "handoff");
+    assert.ok(run.result.handoff);
+    assert.equal(run.summaryHistory, undefined);
+    const state = await f.state();
+    assert.equal(state.calls.some(c => c.method === "thread/list"), false, "history is fetched only when Codex asks");
+    const thread = state.threads.find(th => th.id === run.threadId);
+    const tools = thread.dynamicTools.map(tool => tool.name);
+    assert.ok(tools.includes("qingdan_inspect_project"));
+    assert.ok(tools.includes("qingdan_read_recent_history"));
+    assert.ok(!tools.includes("qingdan_read_project_history"));
+    const inspections = thread.turns[0].items.filter(i => i.tool === "qingdan_inspect_project");
+    assert.ok(inspections.every(i => i.success));
+    const listing = JSON.parse(inspections[0].contentItems[0].text);
+    assert.ok(listing.entries.some(e => e.path === "deep"));
+    assert.ok(!listing.entries.some(e => e.path === "deep/unrelated.md"));
+    assert.ok(JSON.parse(inspections[1].contentItems[0].text).nextCursor, "long file remains partially read");
+    const logs = f.store.eventsForRunAfter(run.runId, 0).map(r => r.event).filter(e => e.type === "output.delta").map(e => e.payload.text).join("");
+    assert.match(logs, /README\.md/);
+    assert.equal(run.summaryProgress.mode, "project");
+    assert.equal(run.summaryProgress.filesRead, 1);
+    assert.equal(run.summaryProgress.totalRecords, null);
+    await adapter.close();
+    const reopened = await f.open();
+    assert.deepEqual(reopened.getRun(run.runId).summaryInspection, run.summaryInspection);
+  });
+
+  test("new summaries require handoff fields while saved pre-handoff current runs can still finish", async (t) => {
+    const f = await fixture(t, "report-no-handoff");
+    let adapter = await f.open();
+    const incomplete = await f.snapshot("missing-handoff", "summary");
+    await adapter.startFreshRun(incomplete);
+    const rejected = await adapter.waitForRun(incomplete.runId, 4000);
+    assert.equal(rejected.resultValid, false);
+    const report = (await f.state()).threads.find(th => th.id === rejected.threadId).turns[0].items.find(item => item.tool === "qingdan_report_result");
+    assert.equal(report.success, false);
+    assert.match(report.contentItems[0].text, /handoff/);
+    await adapter.close();
+    f.store.patchRun(incomplete.runId, { summaryInspection: { ...rejected.summaryInspection, reportFormat: undefined } });
+    const oldState = await f.state();
+    const oldTool = oldState.threads.find(th => th.id === rejected.threadId).dynamicTools.find(tool => tool.name === "qingdan_report_result");
+    delete oldTool.inputSchema.properties.handoff;
+    oldTool.inputSchema.required = oldTool.inputSchema.required.filter(name => name !== "handoff");
+    await writeFile(f.statePath, JSON.stringify(oldState));
+    adapter = await f.open();
+    await adapter.continueRun({ requestId: "old-current-retry", runId: incomplete.runId, expectedTurnId: rejected.activeTurnId, mode: "reply", message: "继续旧版按需总结" });
+    const recovered = await adapter.waitForRun(incomplete.runId, 4000);
+    assert.equal(recovered.resultValid, true, recovered.resultError);
+    assert.equal(recovered.result.handoff, undefined);
+    const resumedContext = (await f.state()).calls.findLast(call => call.method === "turn/start").params.additionalContext.qingdan_task;
+    assert.doesNotMatch(JSON.stringify(resumedContext), /handoff\./);
+    assert.match(JSON.stringify(resumedContext), /nextSteps/);
+  });
+
+  test("summary cache survives adapter restart and covers reused plus new records", async (t) => {
+    const f = await fixture(t, "report");
+    let adapter = await f.open();
+    const task = await f.snapshot("cache-source");
+    await adapter.startFreshRun(task); await adapter.waitForRun(task.runId, 4000);
+    const first = await f.snapshot("cache-first", "summary");
+    adapter = await legacyHistory(f, first, "report", adapter); await adapter.waitForRun(first.runId, 4000);
+    await adapter.close(); adapter = await f.open();
+    const nextTask = await f.snapshot("cache-new-source");
+    await adapter.startFreshRun(nextTask); await adapter.waitForRun(nextTask.runId, 4000);
+    const next = await f.snapshot("cache-second", "summary");
+    adapter = await legacyHistory(f, next, "report", adapter);
+    const run = await adapter.waitForRun(next.runId, 4000);
+    assert.equal(run.resultValid, true, run.resultError);
+    assert.equal(run.summaryHistoryCache.sourceRunId, first.runId);
+    assert.equal(run.result.coverage.cachedRecords, 1);
+    assert.equal(run.result.coverage.deliveredRecords, 2);
+    assert.equal(run.result.coverage.totalRecords, 2);
+    assert.equal(run.summaryProgress.phase, "summarizing");
+    assert.equal(run.summaryProgress.readRecords, 1);
+    assert.equal(run.summaryProgress.cachedRecords, 1);
+    const state = await f.state();
+    const turn = state.threads.find(th => th.id === run.threadId).turns.at(-1);
+    const content = turn.items.filter(i => i.tool === "qingdan_read_project_history").map(i => i.contentItems?.[0]?.text).join('');
+    assert.match(content, /native:cached-summary/);
+    const start = state.calls.filter(c => c.method === "turn/start" && c.params.threadId === run.threadId).at(-1);
+    assert.ok(Buffer.byteLength(JSON.stringify(start.params.additionalContext)) < 16000);
+  });
+
+  test("legacy history continuations preserve their history-only tool contract", async (t) => {
+    const f = await fixture(t, "report");
+    let adapter = await f.open();
+    const task = await f.snapshot("source-task");
+    await adapter.startFreshRun(task);
+    await adapter.waitForRun(task.runId, 4000);
+    const snapshot = await f.snapshot("history-summary", "summary");
+    adapter = await legacyHistory(f, snapshot, "report", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, true);
+    assert.equal(run.summaryHistory.records.length, 1);
+    assert.equal(run.summaryHistory.records[0].threadId, adapter.getRun(task.runId).threadId);
+    assert.equal(run.summaryInspection, undefined);
+    const state = await f.state();
+    const thread = state.threads.find(thread => thread.id === run.threadId);
+    assert.deepEqual(thread.dynamicTools.map(tool => tool.name), ["qingdan_report_result", "qingdan_read_project_history"]);
+    const start = state.calls.filter(call => call.method === "turn/start" && call.params.threadId === run.threadId).at(-1);
+    assert.equal(JSON.parse(start.params.additionalContext.qingdan_project_evidence.value).mode, "codex_history");
+    assert.equal(JSON.parse(start.params.additionalContext.qingdan_project_evidence.value).records, undefined);
+    assert.equal(run.summaryHistoryRead.nextCursor, null);
+    assert.equal(run.summaryHistoryRead.deliveredRecords, 1);
+    assert.match(start.params.additionalContext.qingdan_task.value, /历史|任务总结/);
+    assert.doesNotMatch(start.params.additionalContext.qingdan_task.value, /先使用 list|先调用 qingdan_inspect/);
+    await adapter.close();
+    const reopened = await f.open();
+    assert.deepEqual(reopened.getRun(snapshot.runId).summaryHistory, run.summaryHistory);
+    assert.deepEqual(reopened.getRun(snapshot.runId).summaryHistoryRead, run.summaryHistoryRead);
+  });
+
+  test("history tool delivers long records completely over RPC without a large additional context", async (t) => {
+    const f = await fixture(t, "report");
+    const text = "项目是离线清单管理。" + "已完成基础编辑，CSV 导出还未实现。😀".repeat(9000) + "末尾新增要求：保留撤销能力";
+    await writeFile(f.statePath, JSON.stringify({ threads: [{ id: "source-long", cwd: f.workspace, name: "编辑与导出", turns: [{ id: "source-turn", status: "completed", completedAt: 10, items: [{ type: "agentMessage", id: "source-answer", phase: "final_answer", text }] }] }], calls: [] }));
+    let adapter = await f.open();
+    const snapshot = await f.snapshot("history-long", "summary");
+    adapter = await legacyHistory(f, snapshot, "report", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 20000);
+    assert.equal(run.resultValid, true, run.resultError);
+    assert.equal(run.summaryHistory.records[0].text, text);
+    assert.equal(run.summaryHistoryRead.deliveredRecords, 1);
+    assert.ok(run.summaryHistoryRead.pagesRead > 10);
+    const state = await f.state();
+    const start = state.calls.find(c => c.method === "turn/start");
+    assert.ok(Buffer.byteLength(JSON.stringify(start.params.additionalContext)) < 16000);
+    const pages = state.threads.find(th => th.id === run.threadId).turns.at(-1).items.filter(i => i.tool === "qingdan_read_project_history");
+    assert.equal(pages.length, run.summaryHistoryRead.pagesRead);
+    const body = pages.map(p => {
+      assert.equal(p.success, true);
+      assert.ok(Buffer.byteLength(p.contentItems[0].text) <= 10000);
+      return JSON.parse(p.contentItems[0].text).records.map(r => r.content).join("");
+    }).join("");
+    assert.equal(JSON.parse(body).text, text);
+  });
+
+  test("summary refuses a premature report while history pages remain unread", async (t) => {
+    const f = await fixture(t, "report-history-unread");
+    await writeFile(f.statePath, JSON.stringify({ threads: [{ id: "source", cwd: f.workspace, name: "需求", turns: [{ id: "t", status: "completed", items: [{ type: "agentMessage", id: "a", phase: "final_answer", text: "还有导出待实现" }] }] }], calls: [] }));
+    let adapter = await f.open();
+    const snapshot = await f.snapshot("history-unread", "summary");
+    adapter = await legacyHistory(f, snapshot, "report-history-unread", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, false);
+    const responses = (await f.state()).calls.filter(c => c.method === "server-response");
+    assert.match(JSON.stringify(responses), /历史尚未读完/);
+  });
+
+  test("summary validates native coverage size before acknowledging the result", async (t) => {
+    const f = await fixture(t, "report-history-limit");
+    let adapter = await f.open();
+    const snapshot = await f.snapshot("history-limit", "summary");
+    adapter = await legacyHistory(f, snapshot, "report-history-limit", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, false);
+    const replies = (await f.state()).calls.filter(c => c.method === "server-response");
+    assert.match(JSON.stringify(replies), /报告过长/);
+    assert.equal(replies.at(-1).params.result.success, false);
+  });
+
+  test("history result requires proof that the last page response was received", async (t) => {
+    const f = await fixture(t, "report-history-no-receipt");
+    await writeFile(f.statePath, JSON.stringify({ threads: [{ id: "source", cwd: f.workspace, name: "需求", turns: [{ id: "t", status: "completed", items: [{ type: "agentMessage", id: "a", phase: "final_answer", text: "撤销未实现" }] }] }], calls: [] }));
+    let adapter = await f.open();
+    const snapshot = await f.snapshot("no-history-receipt", "summary");
+    adapter = await legacyHistory(f, snapshot, "report-history-no-receipt", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.summaryHistoryRead.nextCursor, null);
+    assert.equal(run.resultValid, false);
+    assert.match(JSON.stringify((await f.state()).calls), /末页回执/);
+  });
+
+  test("stopped summary rejects a later history page without advancing persisted read state", async (t) => {
+    const f = await fixture(t, "report-history-unread");
+    await writeFile(f.statePath, JSON.stringify({ threads: [{ id: "source", cwd: f.workspace, name: "需求", turns: [{ id: "t", status: "completed", items: [{ type: "agentMessage", id: "a", phase: "final_answer", text: "正文".repeat(16000) }] }] }], calls: [] }));
+    let adapter = await f.open();
+    const snapshot = await f.snapshot("history-stopped", "summary");
+    adapter = await legacyHistory(f, snapshot, "report-history-unread", adapter);
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    const responses = [];
+    const respond = adapter.client.respond.bind(adapter.client);
+    adapter.client.respond = (_id, response) => responses.push(response);
+    try {
+      f.store.patchRun(run.runId, { terminal: false, active: true, cancelRequested: false });
+      const packet = { id: "lost-page", method: "item/tool/call", params: { threadId: run.threadId, turnId: run.activeTurnId, tool: "qingdan_read_project_history", namespace: null, callId: "lost-page", arguments: {} } };
+      adapter.receive(packet);
+      assert.equal(responses[0].success, true);
+      const saved = adapter.getRun(run.runId).summaryHistoryRead;
+      assert.ok(saved.nextCursor);
+      f.store.patchRun(run.runId, { cancelRequested: true });
+      adapter.receive({ ...packet, id: "after-stop", params: { ...packet.params, callId: "after-stop", arguments: { cursor: saved.nextCursor } } });
+      assert.equal(responses[1].success, false);
+      assert.deepEqual(adapter.getRun(run.runId).summaryHistoryRead, saved);
+    } finally { adapter.client.respond = respond; f.store.patchRun(run.runId, { terminal: true, active: false }); }
+  });
+
+  test("legacy summary tools read additional project files and persist their verifiable sources", async (t) => {
+    const f = await fixture(t, "report-inspection");
+    await mkdir(path.join(f.workspace, "docs/deep"), { recursive: true });
+    await writeFile(path.join(f.workspace, "docs/deep/unfinished.ts"), "// TODO: finish Markdown export\n");
+    await writeFile(path.join(f.workspace, "README.md"), "Project plan\n");
+    const snapshot = await f.snapshot("inspect-summary", "summary");
+    const adapter = await legacyInspection(f, snapshot, "report-inspection");
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, true);
+    assert.equal(run.result.pending[0].evidenceRef, "docs/deep/unfinished.ts");
+    assert.ok(run.summaryInspection.sources.some((source) => source.path === "README.md"));
+    assert.ok(run.summaryInspection.sources.some((source) => source.path === "docs/deep/unfinished.ts"));
+    const calls = (await f.state()).calls;
+    const start = calls.find((call) => call.method === "thread/start").params;
+    assert.equal(start.sandbox, "read-only");
+    assert.ok((await f.state()).threads.find((thread) => thread.id === run.threadId).dynamicTools.some((tool) => tool.name === "qingdan_inspect_project"));
+    const reportSchema = start.dynamicTools.find((tool) => tool.name === "qingdan_report_result").inputSchema;
+    assert.ok(reportSchema.properties.pending.items.properties.evidenceRef);
+    assert.ok(calls.filter((call) => call.method === "server-response").every((call) => call.params.result?.success));
+    await adapter.close();
+    const reopened = await f.open();
+    assert.deepEqual(reopened.getRun(snapshot.runId).summaryInspection, run.summaryInspection);
+  });
+
+  test("disconnect during asynchronous project inspection preserves reconciliation without an unhandled response failure", async (t) => {
+    const f = await fixture(t, "report-inspection-disconnect");
+    for (let i = 0; i < 150; i++) await writeFile(path.join(f.workspace, `source-${i}.ts`), "export const value = 1;\n");
+    const snapshot = await f.snapshot("disconnect-inspection", "summary");
+    const adapter = await legacyInspection(f, snapshot, "report-inspection-disconnect");
+    for (let i = 0; i < 100 && adapter.available; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(adapter.available, false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(adapter.getRun(snapshot.runId).status, "reconciliation_required");
+    assert.equal(adapter.getRun(snapshot.runId).resultValid, false);
+  });
+
+  test("a listed but unread file cannot become verified summary evidence", async (t) => {
+    const f = await fixture(t, "report-inspection-unread");
+    await mkdir(path.join(f.workspace, "docs/deep"), { recursive: true });
+    await writeFile(path.join(f.workspace, "docs/deep/unfinished.ts"), "// TODO: verify me\n");
+    const snapshot = await f.snapshot("unread-summary", "summary");
+    const adapter = await legacyInspection(f, snapshot, "report-inspection-unread");
+    const run = await adapter.waitForRun(snapshot.runId, 4000);
+    assert.equal(run.resultValid, false);
+    assert.ok((await f.state()).calls.some((call) => call.method === "server-response" && call.params.result?.success === false));
+  });
+
+  test("legacy summary continuation keeps evidence-only guidance when its original thread lacks inspection tools", async (t) => {
+    const f = await fixture(t, "report");
+    const adapter = await f.open();
+    const snapshot = await f.snapshot("legacy-summary", "summary");
+    await adapter.startFreshRun(snapshot);
+    const first = await adapter.waitForRun(snapshot.runId, 4000);
+    await adapter.close();
+    const state = await f.state();
+    state.threads.find((thread) => thread.id === first.threadId).dynamicTools = state.threads.find((thread) => thread.id === first.threadId).dynamicTools.filter((tool) => !["qingdan_inspect_project", "qingdan_read_project_history"].includes(tool.name));
+    await writeFile(f.statePath, JSON.stringify(state));
+    f.store.patchRun(snapshot.runId, { summaryHistory: undefined, summaryInspection: undefined, summaryEvidence: { cwd: f.workspace, capturedAt: snapshot.capturedAt, gitBaseline: snapshot.context.gitBaseline, files: [], inventory: [], omitted: [] } });
+    const legacy = await f.open();
+    await legacy.continueRun({ requestId: "legacy-summary-reply", runId: snapshot.runId, expectedTurnId: first.activeTurnId, mode: "reply", message: "根据原资料补充说明。" });
+    const result = await legacy.waitForRun(snapshot.runId, 4000);
+    assert.equal(result.resultValid, true);
+    const calls = (await f.state()).calls;
+    const instructions = calls.filter((call) => call.method === "thread/resume").at(-1).params.developerInstructions;
+    assert.doesNotMatch(instructions, /qingdan_inspect_project/);
+    assert.match(instructions, /资料包/);
+    const context = calls.filter((call) => call.method === "turn/start").at(-1).params.additionalContext.qingdan_task.value;
+    assert.doesNotMatch(context, /nextCursor|先使用 list/);
+  });
+
   test("natural-language summary keeps useful context and its read-only scope", async (t) => {
     const f = await fixture(t),
       adapter = await f.open();
@@ -770,17 +1282,17 @@ if (api) {
     const calls = (await f.state()).calls;
     const start = calls.find((c) => c.method === "turn/start").params;
     const text = start.input[0].text;
-    assert.match(text, /^请只读检查当前项目/);
+    assert.match(text, /^请按需读取当前项目/);
+    assert.match(text, /项目交接报告/);
     assert.ok(start.additionalContext?.qingdan_task);
     for (const value of [
       "个人网站",
       "首页已有草稿",
       "使用中文文件名",
       "上一项已创建说明文档",
-      "README",
-      "AGENTS.md",
-      "Git",
-      "推测",
+      "nextCursor",
+      "历史",
+      "待核实",
     ])
       assert.ok(
         start.additionalContext.qingdan_task.value.includes(value),

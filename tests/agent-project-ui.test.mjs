@@ -31,7 +31,7 @@ test.beforeEach(() => {
 const { createRoot } = await import("react-dom/client");
 const dir = mkdtempSync(resolve("node_modules/.cache/agent-project-ui-"));
 await build({
-  entryPoints: [resolve("src/agent/AgentExperience.jsx")],
+  entryPoints: [resolve("src/agent/ProjectSummaryPanel.jsx")],
   bundle: true,
   format: "esm",
   platform: "node",
@@ -39,7 +39,7 @@ await build({
   loader: { ".css": "empty" },
   outfile: resolve(dir, "ui.mjs"),
 });
-const { ProjectSummaryPanel } = await import(
+const { default: ProjectSummaryPanel } = await import(
   pathToFileURL(resolve(dir, "ui.mjs"))
 );
 rmSync(dir, { recursive: true, force: true });
@@ -208,6 +208,75 @@ test("opening step7 waits for an explicit project selection before dispatch", as
   }
 });
 
+test("module progress shows project background, current work and next steps with coverage collapsed", async () => {
+  const state = structuredClone(ready);
+  state.sourceKind = "codex_history";
+  state.summary = {
+    overview: "基础编辑已具备，导出仍在推进。",
+    completed: [],
+    inProgress: [],
+    pending: [],
+    blockers: [],
+    verification: [],
+    uncertainties: [],
+    background: {
+      name: "离线清单",
+      purpose: "管理个人项目待办",
+      stage: "导出开发中",
+    },
+    modules: [
+      {
+        name: "导出",
+        status: "partial",
+        current: [
+          { text: "JSON 已实现", evidenceRef: "codex:test/turn/answer" },
+        ],
+        remaining: [{ text: "CSV 尚未实现" }],
+        nextSteps: [{ text: "P1 完成 CSV 并验证中文编码" }],
+      },
+    ],
+    coverage: {
+      totalRecords: 403,
+      deliveredRecords: 403,
+      threadCount: 52,
+      failedThreadCount: 1,
+      excludedForkCount: 0,
+      missingFinalCount: 0,
+      incompleteTurnCount: 2,
+      partial: true,
+    },
+  };
+  const close = await mount(fixture(state));
+  try {
+    assert.match(
+      document.querySelector('[aria-label="项目背景"]').textContent,
+      /离线清单.*管理个人项目待办.*导出开发中/,
+    );
+    const module = document.querySelector('[aria-label="模块：导出"]');
+    for (const fragment of [
+      "部分完成",
+      "当前进度",
+      "JSON 已实现",
+      "剩余工作",
+      "CSV 尚未实现",
+      "下一步",
+      "P1 完成 CSV",
+    ])
+      assert.ok(module.textContent.includes(fragment), fragment);
+    const details = document.querySelector("details.agent-summary-source");
+    assert.equal(details.open, false);
+    assert.match(details.textContent, /403.*403/);
+    assert.match(details.textContent, /覆盖缺口/);
+    assert.match(
+      document.querySelector('[aria-label="项目进度"]').textContent,
+      /项目进度/,
+    );
+    assert.equal(document.querySelector('[aria-label="摘要已完成"]'), null);
+  } finally {
+    await close();
+  }
+});
+
 test("selecting a project initializes once and the finished summary shows verified sources", async () => {
   const f = fixture();
   let chosen;
@@ -241,6 +310,30 @@ test("selecting a project initializes once and the finished summary shows verifi
     await close();
   }
 });
+test("receiving a finished summary keeps polling until its delayed result is visible", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = fixture({ ...initial, status: "finalizing", activeRunId: "run-1" });
+  const close = await mount(f, { onOpenChat() {} });
+  try {
+    assert.match(document.body.textContent, /正在接收摘要/);
+    assert.ok(button("停止等待"));
+    assert.equal(button("重新总结").disabled, true);
+    assert.equal(button("使用摘要聊天").disabled, true);
+    f.setState(ready);
+    await act(async () => t.mock.timers.tick(2000));
+    assert.match(document.body.textContent, /项目包含已验证的安装文档/);
+    assert.equal(button("使用摘要聊天").disabled, false);
+    assert.equal(
+      f.calls.filter(
+        (c) => c.route.endsWith("/initialize") || c.route.endsWith("/refresh"),
+      ).length,
+      0,
+    );
+  } finally {
+    await close();
+  }
+});
+
 test("a failed refresh shows its prior summary as stale until explicitly adopted", async () => {
   const f = fixture({
       ...ready,
@@ -384,11 +477,21 @@ test("restored unknown summary operation only reads and explicit retry preserves
   const f = fixture(ready),
     close = await mount(f, { autoSelect: false, initialPageId: "section" });
   try {
-    assert.equal(f.calls.filter((c) => c.method === "POST").length, 0);
+    assert.equal(
+      f.calls.filter(
+        (c) => c.method === "POST" && c.body?.name !== "codex_get_run",
+      ).length,
+      0,
+    );
     assert.ok(button("核对原总结操作"));
     assert.ok(button("重试原总结操作"));
     await click("核对原总结操作");
-    assert.equal(f.calls.filter((c) => c.method === "POST").length, 0);
+    assert.equal(
+      f.calls.filter(
+        (c) => c.method === "POST" && c.body?.name !== "codex_get_run",
+      ).length,
+      0,
+    );
     await click("重试原总结操作");
     assert.deepEqual(
       f.calls.find((c) => c.route.endsWith("/refresh")).body,

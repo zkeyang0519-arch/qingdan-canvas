@@ -15,9 +15,15 @@ import {
   workspaceScope,
 } from "./workspace-state.js";
 import ExecutionPanel from "./ExecutionPanel.jsx";
+import ProjectProgress, { ProjectBackground } from "./ProjectProgress.jsx";
+import SummaryReadProgress from "./SummaryReadProgress.jsx";
+import SummaryLiveOutput from "./SummaryLiveOutput.jsx";
+import ProjectHandoffReport from "./ProjectHandoffReport.jsx";
 
 const pending = (state) =>
-  ["queued", "running", "reconciliation_required"].includes(state?.status);
+  ["queued", "running", "finalizing", "reconciliation_required"].includes(
+    state?.status,
+  );
 const identity = (binding) =>
   binding &&
   JSON.stringify([
@@ -29,7 +35,7 @@ const identity = (binding) =>
 const sections = [
   ["completed", "已完成"],
   ["inProgress", "进行中"],
-  ["pending", "待处理"],
+  ["pending", "下一步待办"],
   ["blockers", "阻碍"],
   ["verification", "已核验"],
   ["uncertainties", "待核实"],
@@ -72,16 +78,20 @@ export function ProjectSummaryCard({
   stopNotice,
   blocked = false,
   unknown = false,
+  liveOutput,
 }) {
   const working = pending(state);
   const previous = !!state?.summary && (!state.ready || state.stale);
+  const modular = !!state?.summary?.modules;
+  const handoff = !!state?.summary?.handoff;
+  const coverage = state?.summary?.coverage;
   return (
     <section
       className="agent-device-card agent-project-summary"
-      aria-label="项目摘要"
+      aria-label={handoff ? "项目交接报告" : modular ? "项目进度" : "项目摘要"}
     >
       <div className="agent-card-heading">
-        <h4>项目摘要</h4>
+        <h4>{handoff ? "项目交接报告" : modular ? "项目进度" : "项目摘要"}</h4>
         <button disabled={busy} onClick={reload}>
           刷新总结状态
         </button>
@@ -95,18 +105,31 @@ export function ProjectSummaryCard({
       {state?.status === "queued" && (
         <p role="status">等待项目空闲后开始总结，返回页面不会重复创建总结。</p>
       )}
-      {state?.status === "running" && (
-        <p role="status">Codex 正在只读检查项目，完成后会显示摘要。</p>
+      {state?.status === "running" && state.summaryProgress && (
+        <SummaryReadProgress progress={state.summaryProgress} />
+      )}
+      {state?.status === "running" && !state.summaryProgress && (
+        <p role="status">
+          Codex
+          正在按需读取当前项目的最新情况，完成后会自动将完整交接报告写入聊天。
+        </p>
+      )}
+      {state?.status === "finalizing" && (
+        <p role="status">
+          Codex 已完成总结，正在接收摘要，收到后会自动显示到聊天。
+        </p>
       )}
       {state?.status === "reconciliation_required" && (
         <p role="status">原总结仍待核对，可以继续读取状态或停止原总结。</p>
       )}
       {state?.status === "uninitialized" && (
         <p className="agent-note">
-          准备只读总结项目。总结完成后可根据项目实际情况聊天。
+          由 Terra
+          按需读取最新项目，整理能让其他开发者接手的报告：目标、已完成与未完成、近期改动、当前停点、修改入口和下一步验收。
         </p>
       )}
       {state?.error && <p className="agent-error">{state.error}</p>}
+      {liveOutput}
       {stopNotice && (
         <p className="agent-note" role="status">
           {stopNotice}
@@ -121,42 +144,111 @@ export function ProjectSummaryCard({
       )}
       {state?.summary && (
         <>
-          <p className="agent-project-overview">{state.summary.overview}</p>
-          <p className="agent-note">
-            {previous ? "上次摘要" : "项目摘要"} · 第 {state.summaryRevision} 版
-            {state.capturedAt && (
-              <>
-                {" "}
-                ·{" "}
-                <time dateTime={state.capturedAt}>
-                  {new Date(state.capturedAt).toLocaleString("zh-CN")}
-                </time>
-              </>
-            )}
-          </p>
-          <div className="agent-summary-sections">
-            {sections.map(([key, label]) => (
-              <section key={key} aria-label={`摘要${label}`}>
-                <h5>{label}</h5>
-                {state.summary[key]?.length ? (
-                  <ul>
-                    {state.summary[key].map((item, index) => (
-                      <li key={index}>
-                        {item.text}
-                        {item.evidenceRef && (
-                          <small>来源：{item.evidenceRef}</small>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="agent-note">暂无记录</p>
+          {handoff ? (
+            <>
+              <p className="agent-note">
+                项目交接报告 · 第 {state.summaryRevision} 版
+                {state.capturedAt && (
+                  <>
+                    {" "}
+                    ·{" "}
+                    <time dateTime={state.capturedAt}>
+                      {new Date(state.capturedAt).toLocaleString("zh-CN")}
+                    </time>
+                  </>
                 )}
-              </section>
-            ))}
-          </div>
+              </p>
+              <ProjectHandoffReport summary={state.summary} />
+            </>
+          ) : (
+            <>
+              {modular && (
+                <ProjectBackground background={state.summary.background} />
+              )}
+              <p className="agent-project-overview">{state.summary.overview}</p>
+              {state.sourceKind === "codex_history" && (
+                <p className="agent-note">
+                  来源：Codex 历史任务总结；本次未重新检查代码或运行测试。
+                </p>
+              )}
+              {state.sourceKind === "project_current" && (
+                <p className="agent-note">
+                  来源：本次按需读取的项目文件及相关记录；未核实的部分已在报告中注明。
+                </p>
+              )}
+              <p className="agent-note">
+                {previous ? "上次摘要" : modular ? "项目进度" : "项目摘要"} · 第{" "}
+                {state.summaryRevision} 版
+                {state.capturedAt && (
+                  <>
+                    {" "}
+                    ·{" "}
+                    <time dateTime={state.capturedAt}>
+                      {new Date(state.capturedAt).toLocaleString("zh-CN")}
+                    </time>
+                  </>
+                )}
+              </p>
+              {modular && <ProjectProgress modules={state.summary.modules} />}
+              <div className="agent-summary-sections">
+                {sections
+                  .filter(
+                    ([key]) =>
+                      !modular ||
+                      (["blockers", "verification", "uncertainties"].includes(
+                        key,
+                      ) &&
+                        state.summary[key]?.length),
+                  )
+                  .map(([key, label]) => (
+                    <section key={key} aria-label={`摘要${label}`}>
+                      <h5>
+                        {key === "verification" &&
+                        state.sourceKind === "codex_history"
+                          ? "历史验证记录"
+                          : label}
+                      </h5>
+                      {state.summary[key]?.length ? (
+                        <ul>
+                          {state.summary[key].map((item, index) => (
+                            <li key={index}>
+                              {item.text}
+                              {item.evidenceRef && (
+                                <small>来源：{item.evidenceRef}</small>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="agent-note">暂无记录</p>
+                      )}
+                    </section>
+                  ))}
+              </div>
+            </>
+          )}
           <details className="agent-summary-source">
-            <summary>查看总结来源</summary>
+            <summary>
+              {handoff
+                ? "读取范围与来源"
+                : modular
+                  ? "数据覆盖与来源"
+                  : "查看总结来源"}
+            </summary>
+            {coverage && (
+              <p className="agent-note">
+                已提供 {coverage.deliveredRecords} / {coverage.totalRecords}{" "}
+                条历史，来自 {coverage.threadCount} 个会话。
+                {!!coverage.cachedRecords &&
+                  `其中复用 ${coverage.cachedRecords} 条历史，本次新读取 ${coverage.deliveredRecords - coverage.cachedRecords} 条。`}
+                {coverage.partial && "存在覆盖缺口，结论仅适用于可读取的记录。"}
+                读取失败 {
+                  coverage.failedThreadCount
+                } 个会话；排除来源不明分叉 {coverage.excludedForkCount}{" "}
+                个；缺少最终答复 {coverage.missingFinalCount} 轮；非完成状态{" "}
+                {coverage.incompleteTurnCount} 轮。
+              </p>
+            )}
             <dl>
               {state.cwd && (
                 <>
@@ -211,7 +303,7 @@ export function ProjectSummaryCard({
         </button>
         {((working && state?.activeRunId) || unknown || stopping) && (
           <button disabled={busy} onClick={stop}>
-            停止总结
+            {state?.status === "finalizing" ? "停止等待" : "停止总结"}
           </button>
         )}
         {state?.summary &&
@@ -624,6 +716,15 @@ function SummarySession({
         error={actionError || readError}
         blocked={blocked}
         unknown={unknown}
+        liveOutput={
+          state?.activeRunId && !state.pendingLaunch ? (
+            <SummaryLiveOutput
+              bindingId={binding.bindingId}
+              runId={state.activeRunId}
+              call={call}
+            />
+          ) : null
+        }
         refresh={() =>
           operate(
             state?.status === "uninitialized" ? "initialize" : "refresh",
@@ -774,10 +875,6 @@ export default function ProjectSummaryPanel({
     <div className="agent-trial agent-project-panel">
       <div className="agent-intro">
         <h3>了解项目当前进度</h3>
-        <p>
-          由 Codex
-          只读检查项目，区分已完成、待处理与尚未核实的内容，再将摘要用于轻单聊天。
-        </p>
       </div>
       {pages.length > 0 ? (
         <>

@@ -16,6 +16,7 @@ const errorMessages = {
   MODEL_RATE_LIMITED: "模型服务当前达到限额，请稍后重试。",
   MODEL_UNAVAILABLE: "模型服务暂时无法响应。",
   MODEL_TIMEOUT: "等待模型回复超时。",
+  MODEL_CANCELLED: "已停止生成回复。",
   MODEL_REFUSED: "模型拒绝了本次请求。",
   MODEL_INCOMPLETE: "模型回复不完整，未生成建议。",
   MODEL_INVALID_RESPONSE: "模型回复格式无效，未生成建议。",
@@ -38,6 +39,10 @@ type ChatContext = {
   messages: readonly { role: "user" | "assistant"; content: string }[];
 };
 type Usage = { inputTokens: number; outputTokens: number };
+export type ChatGenerationOptions = {
+  signal?: AbortSignal;
+  onPartialText?: (text: string) => void | Promise<void>;
+};
 
 function modelConfig(env: ChatModelEnv) {
   const model = env.ROUTER_MODEL?.trim() || null;
@@ -86,7 +91,11 @@ function parseJson(value: string): unknown {
   }
 }
 
-async function readJson(response: Response, signal: AbortSignal) {
+async function readBody(
+  response: Response,
+  signal: AbortSignal,
+  consume: (chunk: string) => boolean | void | Promise<boolean | void>,
+) {
   if (Number(response.headers.get("Content-Length")) > maxResponseBytes) {
     void response.body?.cancel().catch(() => {});
     throw new ChatModelError("MODEL_RESPONSE_TOO_LARGE");
@@ -99,17 +108,20 @@ async function readJson(response: Response, signal: AbortSignal) {
     signal.throwIfAborted();
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
     let bytes = 0;
-    let value = "";
     while (true) {
       const { done, value: chunk } = await reader.read();
       if (done) break;
       bytes += chunk.byteLength;
       if (bytes > maxResponseBytes)
         throw new ChatModelError("MODEL_RESPONSE_TOO_LARGE");
-      value += decoder.decode(chunk, { stream: true });
+      signal.throwIfAborted();
+      if ((await consume(decoder.decode(chunk, { stream: true }))) === false) {
+        cancel();
+        break;
+      }
     }
     signal.throwIfAborted();
-    return parseJson(value + decoder.decode());
+    await consume(decoder.decode());
   } catch (error) {
     cancel();
     if (error instanceof ChatModelError) throw error;
@@ -119,6 +131,246 @@ async function readJson(response: Response, signal: AbortSignal) {
     signal.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
+}
+
+async function readJson(response: Response, signal: AbortSignal) {
+  let content = "";
+  await readBody(response, signal, (chunk) => {
+    content += chunk;
+  });
+  return parseJson(content);
+}
+
+// Only a JSON string belonging to the top-level `text` property is displayable.
+// Incomplete escape sequences and surrogate pairs wait for the next chunk.
+function stringPrefix(source: string, start: number) {
+  let value = "";
+  for (let i = start + 1; i < source.length; i++) {
+    const char = source[i];
+    if (char === '"') return { value, end: i + 1 };
+    if (char.charCodeAt(0) < 32)
+      throw new ChatModelError("MODEL_INVALID_RESPONSE");
+    if (char !== "\\") {
+      value += char;
+      continue;
+    }
+    if (++i === source.length) break;
+    const escape = source[i];
+    if (escape === "u") {
+      const hex = source.slice(i + 1, i + 5);
+      if (!/^[0-9a-f]*$/iu.test(hex))
+        throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      if (hex.length < 4) break;
+      value += String.fromCharCode(parseInt(hex, 16));
+      i += 4;
+    } else {
+      const escaped: Record<string, string> = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        b: "\b",
+        f: "\f",
+        n: "\n",
+        r: "\r",
+        t: "\t",
+      };
+      if (!Object.hasOwn(escaped, escape))
+        throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      value += escaped[escape];
+    }
+  }
+  return { value: value.replace(/[\uD800-\uDBFF]$/u, ""), end: undefined };
+}
+
+function partialReplyText(source: string): string {
+  let i = 0;
+  const whitespace = () => {
+    while (/[\x20\t\r\n]/u.test(source[i] ?? "!")) i++;
+  };
+  whitespace();
+  if (i === source.length) return "";
+  if (source[i++] !== "{") throw new ChatModelError("MODEL_INVALID_RESPONSE");
+  while (i < source.length) {
+    whitespace();
+    if (i === source.length || source[i] === "}") return "";
+    if (source[i] !== '"') throw new ChatModelError("MODEL_INVALID_RESPONSE");
+    const key = stringPrefix(source, i);
+    if (key.end === undefined) return "";
+    i = key.end;
+    whitespace();
+    if (i === source.length) return "";
+    if (source[i++] !== ":") throw new ChatModelError("MODEL_INVALID_RESPONSE");
+    whitespace();
+    if (i === source.length) return "";
+    if (key.value === "text") {
+      if (source[i] !== '"') throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      const text = stringPrefix(source, i).value;
+      if (text.length > 16000)
+        throw new ChatModelError("MODEL_RESPONSE_TOO_LARGE");
+      return text;
+    }
+    const start = i;
+    let depth = 0;
+    for (; i < source.length; i++) {
+      const char = source[i];
+      if (char === '"') {
+        const string = stringPrefix(source, i);
+        if (string.end === undefined) return "";
+        i = string.end - 1;
+      } else if (char === "[" || char === "{") depth++;
+      else if (depth === 0 && (char === "," || char === "}")) break;
+      else if (char === "]" || char === "}") depth--;
+    }
+    if (i === source.length) return "";
+    parseJson(source.slice(start, i));
+    if (source[i++] === "}") return "";
+  }
+  return "";
+}
+
+async function readStream(
+  response: Response,
+  signal: AbortSignal,
+  responses: boolean,
+  onPartialText?: ChatGenerationOptions["onPartialText"],
+) {
+  let buffer = "",
+    data: string[] = [],
+    event = "",
+    content = "",
+    partial = "";
+  let finished = false,
+    role = "assistant",
+    finishReason: unknown,
+    usage: unknown;
+  let completed: Record<string, unknown> | undefined;
+  const emit = async () => {
+    const text = partialReplyText(content);
+    if (text && text !== partial) {
+      signal.throwIfAborted();
+      partial = text;
+      await onPartialText?.(text);
+    }
+  };
+  const dispatch = async () => {
+    if (!data.length || finished) {
+      data = [];
+      event = "";
+      return;
+    }
+    const raw = data.join("\n"),
+      eventType = event;
+    data = [];
+    event = "";
+    if (raw.trim() === "[DONE]") {
+      finished = true;
+      return;
+    }
+    const body = asRecord(parseJson(raw));
+    if (!body) throw new ChatModelError("MODEL_INVALID_RESPONSE");
+    if (body.error) throw new ChatModelError("MODEL_UNAVAILABLE");
+    if (responses) {
+      const type = body.type ?? eventType;
+      if (type === "error" || type === "response.failed")
+        throw new ChatModelError("MODEL_UNAVAILABLE");
+      if (type === "response.refusal.delta" || type === "response.refusal.done")
+        throw new ChatModelError("MODEL_REFUSED");
+      if (type === "response.incomplete") {
+        responsesText(asRecord(body.response) ?? { status: "incomplete" });
+        throw new ChatModelError("MODEL_INCOMPLETE");
+      }
+      if (type === "response.output_text.delta") {
+        if (typeof body.delta !== "string")
+          throw new ChatModelError("MODEL_INVALID_RESPONSE");
+        content += body.delta;
+        await emit();
+      } else if (type === "response.completed") {
+        completed = asRecord(body.response);
+        if (!completed) throw new ChatModelError("MODEL_INVALID_RESPONSE");
+        finished = true;
+      }
+    } else {
+      if (!Array.isArray(body.choices))
+        throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      if (body.usage != null) {
+        responseUsage(body.usage, false);
+        usage = body.usage;
+      }
+      const choice = body.choices
+        .map(asRecord)
+        .find((item) => item?.index === 0 || item?.index === undefined);
+      if (!choice) return;
+      const delta = asRecord(choice.delta);
+      if (!delta) throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      if (delta.refusal || choice.finish_reason === "content_filter")
+        throw new ChatModelError("MODEL_REFUSED");
+      if (choice.finish_reason === "length")
+        throw new ChatModelError("MODEL_INCOMPLETE");
+      if (
+        (delta.tool_calls != null &&
+          (!Array.isArray(delta.tool_calls) || delta.tool_calls.length)) ||
+        delta.function_call != null
+      )
+        throw new ChatModelError("MODEL_INVALID_RESPONSE");
+      if (delta.role !== undefined) {
+        if (delta.role !== "assistant")
+          throw new ChatModelError("MODEL_INVALID_RESPONSE");
+        role = delta.role;
+      }
+      if (delta.content != null) {
+        if (typeof delta.content !== "string" || finishReason != null)
+          throw new ChatModelError("MODEL_INVALID_RESPONSE");
+        content += delta.content;
+        await emit();
+      }
+      if (choice.finish_reason != null) {
+        if (choice.finish_reason !== "stop")
+          throw new ChatModelError("MODEL_INVALID_RESPONSE");
+        finishReason = choice.finish_reason;
+      }
+    }
+  };
+  const line = async (value: string) => {
+    if (!value) return dispatch();
+    if (value.startsWith(":")) return;
+    const colon = value.indexOf(":"),
+      name = colon < 0 ? value : value.slice(0, colon);
+    const field = colon < 0 ? "" : value.slice(colon + 1).replace(/^ /u, "");
+    if (name === "data") data.push(field);
+    else if (name === "event") event = field;
+  };
+  await readBody(response, signal, async (chunk) => {
+    if (finished) return false;
+    buffer += chunk;
+    while (true) {
+      const separator = /\r\n|\r|\n/u.exec(buffer);
+      if (
+        !separator ||
+        (separator[0] === "\r" && separator.index === buffer.length - 1)
+      )
+        break;
+      const value = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator[0].length);
+      await line(value);
+      if (finished) return false;
+    }
+  });
+  if (!finished) {
+    if (buffer) await line(buffer.replace(/\r$/u, ""));
+    await dispatch();
+  }
+  if (responses) {
+    if (!completed) throw new ChatModelError("MODEL_INCOMPLETE");
+    const finalContent = responsesText(completed);
+    if (content && content !== finalContent)
+      throw new ChatModelError("MODEL_INVALID_RESPONSE");
+    return completed;
+  }
+  if (finishReason !== "stop") throw new ChatModelError("MODEL_INCOMPLETE");
+  return {
+    choices: [{ finish_reason: finishReason, message: { role, content } }],
+    usage,
+  };
 }
 
 function responsesText(body: Record<string, unknown>): string {
@@ -203,6 +455,7 @@ export async function generateChatReply(
   env: ChatModelEnv,
   context: ChatContext,
   fetcher = fetch,
+  options: ChatGenerationOptions = {},
 ): Promise<{ reply: AgentReply; usage?: Usage }> {
   const config = modelConfig(env);
   if (!config.configured || !config.url)
@@ -215,6 +468,7 @@ export async function generateChatReply(
   const request = responses
     ? {
         model: config.model,
+        stream: true,
         store: false,
         instructions: context.instructions,
         input: context.messages,
@@ -230,6 +484,8 @@ export async function generateChatReply(
       }
     : {
         model: config.model,
+        stream: true,
+        stream_options: { include_usage: true },
         messages: [
           {
             role: "system",
@@ -247,7 +503,16 @@ export async function generateChatReply(
           : { max_completion_tokens: maxOutputTokens }),
         response_format: { type: "json_object" },
       };
+  if (options.signal?.aborted) throw new ChatModelError("MODEL_CANCELLED");
   const controller = new AbortController();
+  let cancel: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = () => {
+      controller.abort();
+      reject(new ChatModelError("MODEL_CANCELLED"));
+    };
+    options.signal?.addEventListener("abort", cancel, { once: true });
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -264,6 +529,7 @@ export async function generateChatReply(
       headers: {
         Authorization: `Bearer ${config.key}`,
         "Content-Type": "application/json",
+        Accept: "text/event-stream, application/json",
       },
       body: JSON.stringify(request),
       signal: controller.signal,
@@ -272,7 +538,23 @@ export async function generateChatReply(
       void response.body?.cancel().catch(() => {});
       throw responseError(response.status);
     }
-    const body = asRecord(await readJson(response, controller.signal));
+    controller.signal.throwIfAborted();
+    const streaming =
+      response.headers
+        .get("Content-Type")
+        ?.split(";")[0]
+        .trim()
+        .toLowerCase() === "text/event-stream";
+    const body = asRecord(
+      streaming
+        ? await readStream(
+            response,
+            controller.signal,
+            responses,
+            options.onPartialText,
+          )
+        : await readJson(response, controller.signal),
+    );
     if (!body) throw new ChatModelError("MODEL_INVALID_RESPONSE");
     const content = responses ? responsesText(body) : completionsText(body);
     const reply = agentReplySchema.safeParse(parseJson(content));
@@ -281,11 +563,13 @@ export async function generateChatReply(
     return { reply: reply.data, ...(usage ? { usage } : {}) };
   };
   try {
-    return await Promise.race([generate(), deadline]);
+    return await Promise.race([generate(), deadline, cancelled]);
   } catch (error) {
+    if (options.signal?.aborted) throw new ChatModelError("MODEL_CANCELLED");
     if (error instanceof ChatModelError) throw error;
     throw new ChatModelError("MODEL_UNAVAILABLE");
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    if (cancel) options.signal?.removeEventListener("abort", cancel);
   }
 }

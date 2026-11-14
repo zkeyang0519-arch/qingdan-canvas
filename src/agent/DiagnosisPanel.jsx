@@ -182,9 +182,6 @@ function DiagnosisScope({
       <div className="agent-card-heading">
         <div>
           <h3>诊断与恢复</h3>
-          <p className="agent-note">
-            检查这台电脑，回到已有执行处理未完成的事项。
-          </p>
         </div>
         <button
           disabled={busy}
@@ -242,7 +239,7 @@ function DiagnosisScope({
           <p className="agent-note">
             {!local
               ? "请先启动这台电脑上的轻单服务，再打开本机入口检查。"
-              : "请在电脑与项目设置中完成绑定。"}
+              : "请在设备管理中完成绑定。"}
           </p>
         )}
         <div className="agent-actions">
@@ -258,7 +255,7 @@ function DiagnosisScope({
           )}
           {onOpenSetup && (
             <button disabled={busy} onClick={onOpenSetup}>
-              电脑与项目设置
+              设备管理
             </button>
           )}
           {!local && <a href="http://127.0.0.1:8790">打开本机入口</a>}
@@ -342,7 +339,7 @@ function DiagnosisScope({
         )}
         {history && !history.binding && (
           <p className="agent-note">
-            此项目尚未关联执行目录，请先在电脑与项目设置中完成关联。
+            此项目尚未关联执行目录，请先在项目绑定中选择 agent 和 Codex 项目。
           </p>
         )}
         {history?.binding && !runs.length && (

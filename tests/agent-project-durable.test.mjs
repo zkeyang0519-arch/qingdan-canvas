@@ -16,6 +16,106 @@ async function prepare(f) {
   return { state, launch: rows["project:launch:" + state.activeRunId] };
 }
 
+test('real DO: summary read progress survives restart and ignores older reports', {timeout:60000}, async t => {
+  const f=await fixture(t);
+  const first=await f.project('initialize',input('progress'));
+  await f.dispatch(first.activeRunId);
+  const run=(await f.rows())['exec:run:'+first.activeRunId];
+  const summaryProgress={phase:'reading',totalRecords:100,readRecords:12,cachedRecords:70,pagesRead:2,startedAt:'2026-11-12T08:00:00.000Z',updatedAt:'2026-11-12T08:01:00.000Z',model:'gpt-6.1-terra',effort:'medium'};
+  const report={runId:first.activeRunId,commandId:run.view.commandId,revision:2,status:'running',threadId:'summary-thread',turnId:'summary-turn',terminal:false,stopConfirmed:false,summaryProgress};
+  assert.equal((await f.call({op:'native',action:'report',input:report})).http,200);
+  assert.deepEqual((await f.project('state',{inspectOnly:true})).summaryProgress,summaryProgress);
+  await f.restart();
+  assert.deepEqual((await f.project('state',{inspectOnly:true})).summaryProgress,summaryProgress);
+  assert.equal((await f.call({op:'native',action:'report',input:{...report,revision:1,summaryProgress:{...summaryProgress,readRecords:1}}})).http,200);
+  assert.deepEqual((await f.project('state',{inspectOnly:true})).summaryProgress,summaryProgress);
+});
+
+test(
+  "real DO: terminal summary report survives restart before its delayed result arrives",
+  { timeout: 60000 },
+  async (t) => {
+    const f = await fixture(t);
+    const first = await f.project("initialize", input("result-delivery"));
+    assert.equal(first.http, 200);
+    await f.dispatch(first.activeRunId);
+    const run = (await f.rows())["exec:run:" + first.activeRunId];
+    const report = await f.call({
+      op: "native",
+      action: "report",
+      input: {
+        runId: first.activeRunId,
+        commandId: run.view.commandId,
+        revision: 1,
+        status: "verifying",
+        threadId: "summary-thread",
+        turnId: "summary-turn",
+        terminal: true,
+        stopConfirmed: true,
+        summaryContext: {
+          workspaceId: "workspace",
+          capturedAt: new Date().toISOString(),
+          gitBaseline: { commit: null, branch: null, dirty: false },
+        },
+      },
+    });
+    assert.equal(report.http, 200);
+    assert.equal((await f.project("state")).status, "finalizing");
+    await f.restart();
+    const waiting = await f.project("state", { inspectOnly: true });
+    assert.equal(waiting.status, "finalizing");
+    assert.equal(waiting.ready, false);
+    assert.equal(waiting.error, null);
+    assert.equal((await f.project("refresh", input("premature"))).http, 409);
+    const summary = {
+      overview: "已读取完整的项目摘要。",
+      completed: [],
+      inProgress: [],
+      pending: [{ text: "补齐已发现的待办", evidenceRef: "README.md" }],
+      blockers: [],
+      verification: [],
+      uncertainties: [],
+    };
+    const delivery = await f.call({
+      op: "native",
+      action: "events",
+      input: {
+        events: [
+          {
+            protocolVersion: 1,
+            eventId: "delayed-summary-result",
+            runnerId: "runner",
+            runId: first.activeRunId,
+            threadId: "summary-thread",
+            turnId: "summary-turn",
+            seq: 1,
+            type: "turn.completed",
+            occurredAt: new Date().toISOString(),
+            payload: {
+              status: "completed",
+              summary,
+              outcome: null,
+              error: null,
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(delivery.http, 200);
+    const ready = await f.project("state");
+    assert.equal(ready.status, "ready");
+    assert.equal(ready.ready, true);
+    assert.equal(ready.error, null);
+    assert.equal(ready.summaryRevision, 1);
+    assert.deepEqual(ready.summary, summary);
+    assert.equal(
+      Object.keys(await f.rows()).filter((k) => k.startsWith("exec:run:"))
+        .length,
+      1,
+    );
+  },
+);
+
 test(
   "real DO: cancel wins, seal ACK is lost, reconstruction and late direct create cannot launch or alter a newer operation",
   { timeout: 60000 },

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { handoffSummary } from "./fixtures/project-handoff.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, mkdir, readdir, readFile, rm } from "node:fs/promises";
@@ -183,15 +184,33 @@ test(
       uncertainties: [],
     });
     const ready = {
+      sourceKind: "project_current",
       status: "ready",
       ready: true,
       summaryRevision: 1,
       sourceRunId: "run-a",
       capturedAt: "2026-11-05T00:00:00Z",
       cwd: "D:/demo",
-      summary: summary("只读检查事实甲"),
+      summary: { ...structuredClone(handoffSummary), overview: "只读检查事实甲" },
     };
     await call("/fixture/project/set", ready);
+    const imported = await state(chat.id);
+    assert.equal(
+      imported.messages.length,
+      1,
+      "ready summary is automatically published to chat",
+    );
+    assert.equal(imported.messages[0].provenance.kind, "project_summary");
+    assert.match(imported.messages[0].text, /只读检查事实甲/);
+    assert.match(imported.messages[0].text, /项目交接报告/);
+    assert.match(imported.messages[0].text, /src\/export\.ts/);
+    assert.match(imported.messages[0].text, /空列表、中文与引号/);
+    assert.equal(imported.messages[0].invalidated, false);
+    assert.equal(
+      (await state(chat.id)).messages.length,
+      1,
+      "polling must not duplicate the summary",
+    );
     const send = bound({
       requestId: "one",
       chatId: chat.id,
@@ -219,7 +238,10 @@ test(
       summary: summary("更新事实乙"),
     });
     s = await state(chat.id);
-    assert.equal(s.messages.at(-1).invalidated, true);
+    assert.equal(s.messages.at(-2).invalidated, true);
+    assert.equal(s.messages.at(-1).provenance.kind, "project_summary");
+    assert.equal(s.messages.at(-1).invalidated, false);
+    assert.match(s.messages.at(-1).text, /更新事实乙/);
     assert.equal(
       (
         await call(

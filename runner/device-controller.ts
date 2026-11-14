@@ -5,7 +5,7 @@ import {
   type DeviceConfig,
   type WorkspaceView,
 } from "./device-store";
-import { WorkspaceRegistry } from "./workspaces";
+import { WorkspaceRegistry, workspaceView } from "./workspaces";
 import {
   WindowsCredentialManager,
   credentialTarget,
@@ -27,6 +27,7 @@ import { digest, RunnerStore } from "./store";
 import type { AdapterOptions } from "./codex-adapter";
 import {
   listCodexSessions,
+  listCodexModels,
   readCodexSession,
   type SessionQuery,
 } from "./codex-sessions";
@@ -612,6 +613,41 @@ export class RunnerDeviceController {
         "ACCESS_DENIED",
         "电脑连接已变化，请重新读取会话。",
       );
+    return result;
+  }
+  private assertWorkspaceScope(ownerId: string, runnerId: string, generation: number) {
+    this.owner(ownerId);
+    this.requirePaired();
+    if (generation !== this.generation || this.config?.runnerId !== runnerId)
+      throw new RunnerError("ACCESS_DENIED", "电脑连接已变化，请重新选择项目。");
+  }
+  verifyWorkspace(ownerId: string, scope: { runnerId: string; workspaceId: string }) {
+    const generation = this.generation;
+    return this.exclusive(async () => {
+      this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
+      const workspace = await this.registry.resolve(scope.workspaceId);
+      this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
+      return { runnerId: scope.runnerId, workspace: workspaceView(workspace) };
+    });
+  }
+  async listCodexModels(ownerId: string, scope?: { runnerId: string; workspaceId: string }) {
+    this.owner(ownerId);
+    const generation = this.generation;
+    const assertCurrent = () => {
+      if (scope) return this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
+      this.owner(ownerId);
+      if (generation !== this.generation)
+        throw new RunnerError("ACCESS_DENIED", "电脑连接已变化，请重新读取模型。");
+    };
+    assertCurrent();
+    const workspace = scope ? await this.registry.resolve(scope.workspaceId) : undefined;
+    assertCurrent();
+    const result = await listCodexModels(
+      { command: process.env.QINGDAN_CODEX_BIN || "codex", ...this.options.executionCodex },
+      workspace,
+    );
+    if (scope) await this.verifyWorkspace(ownerId, scope);
+    assertCurrent();
     return result;
   }
   selectCodexSession(ownerId: string, threadId: string) {

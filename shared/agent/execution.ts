@@ -1,14 +1,19 @@
 import { z } from "zod";
+import { executionSettingsSchema, type ExecutionSettings } from "./model-settings";
 import { runnerCommandSchema, runnerEventSchema } from "./schemas";
 import { MAX_PLAN_TASKS } from "./sort-plan";
+import { summaryReadProgressSchema } from "./summary-progress";
+import type { SummaryReadProgress } from "./contracts";
 import type { QueueView } from "./queue";
 import { permissionSelectionSchema, type ExecutionPermissions, type PendingExecutionRequest } from "./permissions";
 import type {
   BatchProgress,
+  BatchItem,
   CommandEnvelope,
   ExecutionSnapshot,
   RunnerEvent,
   RunStatus,
+  ProjectSummary,
 } from "./contracts";
 export type { BatchProgress } from "./contracts";
 
@@ -50,7 +55,9 @@ export const manualIntentSchema = z
     bindingId: id,
     bindingRevision: revision,
     kind: z.enum(["task", "summary"]),
+    executionMode: z.literal("project").optional(),
     executionPermissions: permissionSelectionSchema.optional(),
+    executionSettings: executionSettingsSchema.optional(),
     instruction: manualInstruction.optional(),
     acceptance: manualAcceptance.optional(),
     items: z
@@ -86,7 +93,9 @@ export const manualIntentSchema = z
   })
   .refine(
     (v) =>
-      v.kind === "summary"
+      v.executionMode === "project"
+        ? v.kind === "task" && !!v.sourceTasks && !v.items && !v.instruction && !v.acceptance && v.autoComplete !== true
+        : v.kind === "summary"
         ? !v.items && !v.sourceTasks && v.autoComplete === undefined
         : v.sourceTasks
           ? !v.items && !v.instruction && !v.acceptance
@@ -125,7 +134,7 @@ export const nativeSummaryContextSchema = projectContextSchema.pick({
   workspaceId: true,
   capturedAt: true,
   gitBaseline: true,
-});
+}).extend({ sourceKind: z.enum(["codex_history", "project_current"]).optional() });
 export type NativeSummaryContext = z.infer<typeof nativeSummaryContextSchema>;
 export const executionContextSchema = z.strictObject({
   connectionEpoch: revision,
@@ -223,11 +232,15 @@ export const executionReportSchema = z
     turnId: id.nullable(),
     terminal: z.boolean(),
     stopConfirmed: z.boolean(),
+    output: z.string().max(32000).optional(),
     error: z.string().max(2000).optional(),
     batch: reportedBatchProgressSchema.optional(),
     summaryContext: nativeSummaryContextSchema.optional(),
+    summaryProgress: summaryReadProgressSchema.optional(),
   })
   .superRefine((v, ctx) => {
+    if (v.output !== undefined && (!v.terminal || !v.turnId))
+      ctx.addIssue({ code: "custom", message: "Final output requires a terminal turn" });
     if (v.turnId && !v.threadId)
       ctx.addIssue({ code: "custom", message: "Turn requires thread" });
     if (v.stopConfirmed && !v.terminal)
@@ -310,6 +323,21 @@ export interface ExecutionReportResponse {
   settled?: true;
 }
 export interface ExecutionRunView {
+  output?: string;
+  resultReadComplete?: boolean;
+  resultSeq?: number;
+  finishedAt?: string;
+  executionSettings?: ExecutionSettings;
+  executionMode?: "project";
+  submission?: {
+    text: string;
+    tasks: BatchItem[];
+    projectSummary: ProjectSummary | null;
+    summaryRevision: number;
+    projectCapturedAt: string | null;
+    projectSummaryStale: boolean;
+  };
+  summaryProgress?: SummaryReadProgress;
   executionPermissions?: ExecutionPermissions;
   pendingRequests?: PendingExecutionRequest[];
   queue?: QueueView;

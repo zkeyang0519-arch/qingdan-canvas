@@ -302,6 +302,7 @@ test(
         assert.deepEqual(await (await request("/api/session", "")).json(), {
           user: null,
           legacyRoomCount: 0,
+          features: { agent: false },
         });
         assert.equal(
           (await request("/api/session", "", "POST", {})).status,
@@ -655,7 +656,9 @@ test(
         );
         const firstResponse = await upload(a);
         assert.equal(firstResponse.status, 200);
-        const first = (await firstResponse.json()).user;
+        const firstSession = await firstResponse.json();
+        assert.deepEqual(firstSession.features, { agent: false });
+        const first = firstSession.user;
         assert.ok(first.avatarVersion);
         const presence = await sb.next(
           (m) =>
@@ -695,7 +698,9 @@ test(
         );
         const removed = await request("/api/profile/avatar", a, "DELETE");
         assert.equal(removed.status, 200);
-        assert.equal((await removed.json()).user.avatarVersion, null);
+        const removedSession = await removed.json();
+        assert.deepEqual(removedSession.features, { agent: false });
+        assert.equal(removedSession.user.avatarVersion, null);
         await sb.next(
           (m) =>
             m.type === "presence" &&

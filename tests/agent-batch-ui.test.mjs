@@ -29,7 +29,13 @@ test.beforeEach(() => {
 const { createRoot } = await import("react-dom/client");
 const dir = mkdtempSync(resolve("node_modules/.cache/agent-batch-ui-"));
 await build({
-  entryPoints: [resolve("src/agent/AgentExperience.jsx")],
+  stdin: {
+    contents: `
+      export { default as BatchPanel } from "./src/agent/BatchPanel.jsx";
+      export { default as PendingBatchNotice } from "./src/agent/PendingBatchNotice.jsx";
+    `,
+    resolveDir: resolve("."),
+  },
   bundle: true,
   format: "esm",
   platform: "node",
@@ -37,11 +43,9 @@ await build({
   loader: { ".css": "empty" },
   outfile: resolve(dir, "ui.mjs"),
 });
-const {
-  default: AgentExperience,
-  BatchPanel,
-  PendingBatchNotice,
-} = await import(pathToFileURL(resolve(dir, "ui.mjs")));
+const { BatchPanel, PendingBatchNotice } = await import(
+  pathToFileURL(resolve(dir, "ui.mjs"))
+);
 rmSync(dir, { recursive: true, force: true });
 const button = (label) =>
   [...document.querySelectorAll("button")].find(
@@ -849,25 +853,5 @@ test("binding changes prevent queued controls from acting on the old project", a
     assert.match(text(), /项目关联已变化/);
   } finally {
     await close();
-  }
-});
-
-test("the eighth tab renders batch execution without requiring a checklist", async () => {
-  const root = createRoot(document.getElementById("root"));
-  try {
-    await act(async () =>
-      root.render(
-        React.createElement(AgentExperience, {
-          roomId: "canvas",
-          userId: "alice",
-          pages: [],
-          onClose() {},
-        }),
-      ),
-    );
-    await click(button("8 · 批次执行"));
-    assert.match(text(), /此画布还没有清单/);
-  } finally {
-    await act(async () => root.unmount());
   }
 });

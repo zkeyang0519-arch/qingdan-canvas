@@ -48,6 +48,14 @@ test("local Runner controls authenticate the browser and never accept a caller-c
         search: query.searchTerm,
       };
     },
+    listCodexModels(ownerId, scope) {
+      this.status(ownerId);
+      return { models: [], scope };
+    },
+    verifyWorkspace(ownerId, scope) {
+      this.status(ownerId);
+      return { runnerId: scope.runnerId, workspace: { workspaceId: scope.workspaceId } };
+    },
     selectCodexSession(ownerId, threadId) {
       this.status(ownerId);
       return {
@@ -167,6 +175,19 @@ test("local Runner controls authenticate the browser and never accept a caller-c
       401,
     );
     assert.equal(seen.length, 0);
+    for (const route of ["/codex/models", "/workspaces/verify"]) {
+      const query = "?runnerId=runner&workspaceId=project";
+      const response = await request(route + query);
+      assert.equal(response.status, 200);
+      const view = await response.json();
+      assert.equal(view.scope?.workspaceId ?? view.workspace?.workspaceId, "project");
+      assert.equal((await request(route + query + "&root=D:/arbitrary")).status, 400);
+      assert.equal((await request(route + query + "&runnerId=other")).status, 400);
+      assert.equal((await request(route + query, undefined, {
+        "x-qd-account": "bob",
+        cookie: "qd_session=bob",
+      })).status, 403);
+    }
     const mismatched = await request("/status", undefined, {
       cookie: "qd_session=bob",
       "x-qd-account": "bob",

@@ -15,6 +15,8 @@ import {
   closeLifecycleControl,
 } from "./lib/agent-install-bridge.mjs";
 import { createLocalRunnerApi } from "./lib/local-runner-api.mjs";
+import { createLocalDesktopApi } from "./lib/local-desktop-api.mjs";
+import { createDesktopLauncher } from "./lib/desktop-launcher.mjs";
 import { readLocalRunnerDiagnostics } from "./lib/local-runner-diagnostics.mjs";
 import {
   prepareExecutionTrial,
@@ -44,6 +46,10 @@ const server = createExperienceServer({
     },
   ),
   upstream: "http://127.0.0.1:8788",
+  desktopApi: createLocalDesktopApi({
+    upstream: "http://127.0.0.1:8788",
+    launch: createDesktopLauncher({ projectRoot: root }).launch,
+  }),
   runnerApi: createLocalRunnerApi({
     getController: () => deviceController,
     upstream: "http://127.0.0.1:8788",

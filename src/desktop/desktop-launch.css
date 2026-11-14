@@ -1,0 +1,92 @@
+.cloud-canvas .desktop-launch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid #d9dfd2;
+  border-radius: 10px;
+  background: #f1f4eb;
+  color: #4d6246;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.cloud-canvas .desktop-launch-button:hover:not(:disabled) {
+  border-color: #a8b59b;
+  background: #e7edde;
+}
+.cloud-canvas .desktop-launch-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.desktop-launch-notice {
+  position: fixed;
+  z-index: 150;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(420px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 14px 15px;
+  border: 1px solid #cbd7bf;
+  border-radius: 12px;
+  background: #f5f8ef;
+  color: #344a2d;
+  box-shadow: 0 8px 30px #18281020;
+  font:
+    13px/1.6 system-ui,
+    "Microsoft YaHei",
+    sans-serif;
+}
+.desktop-launch-notice[data-kind="error"] {
+  border-color: #d7b89d;
+  background: #fff8ee;
+  color: #79452f;
+}
+.desktop-launch-notice > div {
+  flex: 1;
+  min-width: 0;
+}
+.desktop-launch-notice p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.desktop-launch-notice .desktop-launch-detail {
+  margin-top: 5px;
+  opacity: 0.8;
+  font-size: 12px;
+}
+.desktop-launch-notice a {
+  display: inline-block;
+  margin-top: 7px;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.desktop-launch-notice > button {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.desktop-launch-notice > button:hover {
+  background: #63754a16;
+}
+@media (max-width: 600px) {
+  .desktop-launch-notice {
+    right: 12px;
+    bottom: 12px;
+  }
+}

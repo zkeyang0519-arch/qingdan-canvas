@@ -6,3 +6,5 @@ dist/
 !.dev.vars.example
 *.log
 coverage/
+# Local design previews, screenshots and verification exports.
+/output/

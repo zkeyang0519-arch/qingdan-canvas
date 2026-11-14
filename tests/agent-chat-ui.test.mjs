@@ -28,7 +28,7 @@ test.beforeEach(() => {
 const { createRoot } = await import("react-dom/client");
 const temp = mkdtempSync(resolve("node_modules/.cache/agent-chat-ui-"));
 await build({
-  entryPoints: [resolve("src/agent/AgentExperience.jsx")],
+  entryPoints: [resolve("src/agent/ChatPanel.jsx")],
   bundle: true,
   format: "esm",
   platform: "node",
@@ -36,7 +36,9 @@ await build({
   loader: { ".css": "empty" },
   outfile: resolve(temp, "ui.mjs"),
 });
-const { ChatPanel } = await import(pathToFileURL(resolve(temp, "ui.mjs")));
+const { default: ChatPanel } = await import(
+  pathToFileURL(resolve(temp, "ui.mjs"))
+);
 rmSync(temp, { recursive: true, force: true });
 
 const field = (label) => document.querySelector(`[aria-label="${label}"]`);
@@ -271,6 +273,19 @@ function fixture({ configured = true, bound = true, existing = false } = {}) {
     setProject(value) {
       project = structuredClone(value);
     },
+    publishSummary(value) {
+      project = structuredClone(value);
+      selected = selected || thread;
+      messages.push({
+        ...assistant,
+        id: "summary-message",
+        sequence: 3,
+        text: "汇总结果：已完成登录，下一步补充退出功能。",
+        tasks: [],
+        memories: [],
+        provenance: { kind: "project_summary" },
+      });
+    },
     failNewInitialization() {
       failNew = true;
     },
@@ -356,6 +371,86 @@ async function mount(f, extra = {}) {
   return close;
 }
 
+test("a completed summary appears automatically with the drawer closed and keeps the chat draft", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = fixture({ existing: true });
+  const project = {
+    bindingId: "bound",
+    bindingRevision: 2,
+    status: "running",
+    ready: false,
+    activeRunId: "summary-run",
+    summaryRevision: 0,
+    summary: null,
+  };
+  f.setProject(project);
+  const close = await mount(f, { embedded: true, summaryOpen: false });
+  try {
+    assert.equal(document.querySelector('[aria-label="项目摘要"]'), null);
+    await edit("聊天消息", "保留我的草稿");
+    f.publishSummary({
+      ...project,
+      status: "ready",
+      ready: true,
+      summaryRevision: 1,
+      sourceRunId: "summary-run",
+      summary: { overview: "已完成登录" },
+    });
+    await act(async () => t.mock.timers.tick(2000));
+    const messages = document.querySelector('[aria-label="聊天消息记录"]');
+    assert.match(messages.textContent, /助手 · 项目摘要/);
+    assert.match(messages.textContent, /下一步补充退出功能/);
+    assert.equal(field("聊天消息").value, "保留我的草稿");
+    await act(async () => t.mock.timers.tick(6000));
+    assert.equal(messages.textContent.split("汇总结果").length - 1, 1);
+    assert.equal(
+      f.calls.filter((call) => call.route.endsWith("/send")).length,
+      0,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("summary-created first chat transfers the unsent draft without sending it", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = fixture();
+  const project = {
+    bindingId: "bound",
+    bindingRevision: 2,
+    status: "running",
+    ready: false,
+    activeRunId: "summary-run",
+    summaryRevision: 0,
+    summary: null,
+  };
+  f.setProject(project);
+  const close = await mount(f, { embedded: true, summaryOpen: false });
+  try {
+    await edit("聊天消息", "等摘要后再发送这段需求");
+    f.publishSummary({
+      ...project,
+      status: "ready",
+      ready: true,
+      summaryRevision: 1,
+      sourceRunId: "summary-run",
+      summary: { overview: "已完成登录" },
+    });
+    await act(async () => t.mock.timers.tick(2000));
+    assert.equal(field("聊天消息").value, "等摘要后再发送这段需求");
+    assert.match(
+      document.querySelector('[aria-label="聊天消息记录"]').textContent,
+      /下一步补充退出功能/,
+    );
+    assert.equal(
+      f.calls.filter((call) => call.route.endsWith("/send")).length,
+      0,
+    );
+  } finally {
+    await close();
+  }
+});
+
 test("embedded chat keeps its composer while memory drawer opens and removes trial navigation", async () => {
   window.sessionStorage.clear();
   const f = fixture({ existing: true });
@@ -422,6 +517,7 @@ test("embedded drafts are isolated by account, project and chat and never automa
     await click("新聊天");
     assert.equal(field("聊天消息").value, "");
     await edit("聊天消息", "新聊天草稿");
+    await click("查看聊天历史");
     await act(async () => {
       field("聊天历史").value = "chat";
       field("聊天历史").dispatchEvent(
@@ -463,8 +559,8 @@ test("step 6 polls a queued chat and saves an edited proposal once using the sam
   try {
     await edit("聊天消息", "帮我检查文档");
     await click("发送");
-    assert.match(document.body.textContent, /等待模型回复/);
-    assert.equal(button("发送").disabled, true);
+    assert.match(document.body.textContent, /正在整理回复/);
+    assert.equal(button("停止").disabled, false);
     f.complete();
     await act(async () => new Promise((resolve) => setTimeout(resolve, 2150)));
     assert.match(document.body.textContent, /先整理项目的安装说明/);

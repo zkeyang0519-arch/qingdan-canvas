@@ -1,0 +1,240 @@
+.agent-project-binding-picker {
+  --binding-surface: #f5f7f3;
+  --binding-border: #dfe7dd;
+  --binding-muted: #53665a;
+  --binding-ink: #243a2e;
+  --binding-accent: #39654f;
+  display: grid;
+  gap: 22px;
+  color: var(--binding-ink);
+}
+
+.agent-binding-source {
+  min-width: 0;
+  padding: 13px 15px;
+  background: var(--binding-surface);
+  border: 1px solid var(--binding-border);
+  border-radius: 12px;
+}
+
+.agent-project-binding-picker .agent-binding-device-field {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--binding-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-binding-device-control,
+.agent-binding-search {
+  display: block;
+  position: relative;
+  min-width: 0;
+}
+
+.agent-binding-device-control > svg,
+.agent-binding-search > svg {
+  position: absolute;
+  inset-inline-start: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--binding-muted);
+}
+
+.agent-binding-device-control > svg:last-child {
+  inset-inline-start: auto;
+  inset-inline-end: 12px;
+}
+
+.agent-project-binding-picker
+  .agent-binding-device-control
+  > select[aria-label],
+.agent-project-binding-picker .agent-binding-search > input[type="search"] {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  margin: 0;
+  padding-inline-start: 38px;
+  background: #fff;
+  border: 1px solid var(--binding-border);
+  border-radius: 8px;
+  color: var(--binding-ink);
+  font-weight: 400;
+}
+
+.agent-project-binding-picker
+  .agent-binding-device-control
+  > select[aria-label] {
+  appearance: none;
+  padding-inline-end: 38px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-project-binding-picker :is(button, select, input):focus-visible {
+  outline: 2px solid var(--binding-accent);
+  outline-offset: 2px;
+}
+
+.agent-binding-destinations {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.agent-binding-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.agent-binding-heading > h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.agent-binding-heading > span {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--binding-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-binding-directory {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
+  gap: 10px;
+}
+
+.agent-binding-directory-tools {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+.agent-binding-search {
+  flex: 1;
+}
+
+.agent-binding-directory-tools > button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  flex: 0 0 auto;
+}
+
+.agent-binding-directory-list {
+  width: 100%;
+  max-height: min(320px, 42dvh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--binding-border);
+  border-radius: 10px;
+}
+
+.agent-binding-directory-list > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.agent-binding-directory-list > li + li {
+  border-top: 1px solid var(--binding-border);
+}
+
+.agent-binding-directory-list > li > svg {
+  color: var(--binding-accent);
+}
+
+.agent-binding-directory-list strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-project-binding-picker .agent-binding-directory-list .agent-path {
+  color: var(--binding-muted);
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.agent-project-binding-picker .agent-binding-directory-list button {
+  color: var(--binding-accent);
+  border-color: #d6e3d7;
+  background: var(--binding-surface);
+  white-space: nowrap;
+}
+
+.agent-project-binding-picker
+  .agent-binding-directory-list
+  button:hover:not(:disabled) {
+  background: #e9f1e7;
+}
+
+.agent-binding-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+}
+
+.agent-binding-source .agent-binding-feedback {
+  margin-top: 8px;
+}
+
+.agent-project-binding-picker
+  :is(.agent-binding-feedback p, .agent-binding-message, .agent-error) {
+  margin: 0;
+}
+
+.agent-binding-message,
+.agent-binding-feedback p:not(.agent-error),
+.agent-binding-empty {
+  color: var(--binding-muted);
+}
+
+.agent-binding-empty {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--binding-border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+@media (max-width: 600px) {
+  .agent-project-binding-picker {
+    gap: 18px;
+  }
+
+  .agent-project-binding-picker .agent-binding-device-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .agent-binding-source {
+    padding: 10px 12px;
+  }
+
+  .agent-binding-directory-list > li {
+    gap: 8px;
+    padding: 10px;
+  }
+}

@@ -1,12 +1,14 @@
-import type { ProjectSummary } from "./contracts";
+import type { ProjectSummary, SummaryReadProgress } from "./contracts";
 
 export interface ProjectContext {
+  summaryProgress?: SummaryReadProgress;
   bindingId: string;
   bindingRevision: number;
   status:
     | "uninitialized"
     | "queued"
     | "running"
+    | "finalizing"
     | "ready"
     | "failed"
     | "reconciliation_required";
@@ -14,6 +16,7 @@ export interface ProjectContext {
   stale: boolean;
   summaryRevision: number;
   summary: ProjectSummary | null;
+  sourceKind?: "codex_history" | "project_current";
   capturedAt: string | null;
   sourceRunId: string | null;
   threadId: string | null;

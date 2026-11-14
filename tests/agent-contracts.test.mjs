@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { projectItems } from "./fixtures/project-execution.mjs";
 import {
   loadAgentModules,
   makeTask,
@@ -28,6 +29,31 @@ if (rules) {
     manualIntentSchema,
     executionReportSchema,
   } = rules;
+
+  test("project execution requires source tasks and keeps them separate from sequential batches", () => {
+    const request = {
+      requestId: "project-request", bindingId: "binding-a", bindingRevision: 1,
+      kind: "task", executionMode: "project",
+      sourceTasks: projectItems().map(({ source }) => ({ noteId: source.taskRef.noteId, taskId: source.taskRef.taskId, generation: source.generation, specRevision: source.specRevision })),
+    };
+    assert.equal(manualIntentSchema.parse(request).executionMode, "project");
+    for (const invalid of [
+      { ...request, kind: "summary" },
+      { ...request, sourceTasks: undefined, instruction: "do one thing" },
+      { ...request, sourceTasks: undefined, items: [{ instruction: "do one thing" }] },
+      { ...request, autoComplete: true },
+    ]) assert.equal(manualIntentSchema.safeParse(invalid).success, false);
+    const snapshot = makeSnapshot({ executionMode: "project", projectTasks: projectItems("canvas-a") });
+    assert.deepEqual(parseExecutionSnapshot(snapshot).projectTasks, snapshot.projectTasks);
+    for (const invalid of [
+      { ...snapshot, projectTasks: undefined },
+      { ...snapshot, executionMode: undefined },
+      { ...snapshot, batch: { items: snapshot.projectTasks } },
+      { ...snapshot, projectTasks: [{ ...snapshot.projectTasks[0], source: undefined }] },
+      { ...snapshot, projectTasks: projectItems("other-canvas") },
+      { ...snapshot, projectTasks: [snapshot.projectTasks[0], snapshot.projectTasks[0]] },
+    ]) assert.throws(() => parseExecutionSnapshot(invalid), { code: "VALIDATION_ERROR" });
+  });
 
   test("a plan preserves distinct IDs with identical task text and normalizes offset dates", () => {
     const input = makeCreatePlan([
@@ -431,6 +457,18 @@ if (rules) {
         code: "VALIDATION_ERROR",
       });
     }
+  });
+
+  test("execution permissions require consistent network access and never elevate summaries", () => {
+    for (const profile of ["read_only", "workspace_manual", "workspace_auto", "full_access"]) {
+      const executionPermissions = { profile, network: profile === "full_access" };
+      assert.deepEqual(parseExecutionSnapshot(makeSnapshot({ executionPermissions })).executionPermissions, executionPermissions);
+      assert.throws(() => parseExecutionSnapshot(makeSnapshot({ executionPermissions: { ...executionPermissions, network: !executionPermissions.network } })), { code: "VALIDATION_ERROR" });
+      const summary = makeSnapshot({ kind: "summary", task: null, executionPermissions });
+      if (profile === "read_only") assert.deepEqual(parseExecutionSnapshot(summary).executionPermissions, executionPermissions);
+      else assert.throws(() => parseExecutionSnapshot(summary), { code: "VALIDATION_ERROR" });
+    }
+    assert.equal(parseExecutionSnapshot(makeSnapshot()).executionPermissions, undefined, "old snapshots must not acquire the new default");
   });
 
   test("batch snapshots preserve order, bind the first item, and validate all criteria", () => {

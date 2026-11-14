@@ -70,6 +70,64 @@ function fixture() {
 }
 const pages = (f) => panePages(f.state, f.boardId);
 
+test("reopenPageTask only clears completion on the exact unlocked project task", () => {
+  const f = fixture();
+  f.note.blocks[0].done = true;
+  f.note.blocks[0].completedAt = "2026-11-13T01:00:00Z";
+  const ref = { noteId: f.note.id, taskId: f.note.blocks[0].id };
+  const next = arranged.reopenPageTask(f.state, f.boardId, "left", ref);
+  const block = next.objects.find((o) => o.id === f.note.id).blocks[0];
+  assert.deepEqual(block, {
+    ...f.note.blocks[0],
+    done: false,
+    completedAt: null,
+  });
+  assert.equal(
+    arranged.reopenPageTask(next, f.boardId, "left", ref),
+    next,
+    "repeated clicks cannot mark pending work done",
+  );
+  assert.equal(
+    arranged.reopenPageTask(f.state, f.boardId, "right", ref),
+    f.state,
+  );
+  assert.equal(
+    arranged.reopenPageTask(f.state, f.boardId, "left", {
+      ...ref,
+      noteId: "wrong",
+    }),
+    f.state,
+  );
+  assert.equal(
+    f.note.blocks[0].done,
+    true,
+    "original snapshot stays completed",
+  );
+  assert.deepEqual(
+    next.objects.find((o) => o.id === f.note.id).blocks[1],
+    f.note.blocks[1],
+  );
+  f.note.locked = true;
+  assert.equal(
+    arranged.reopenPageTask(f.state, f.boardId, "left", ref),
+    f.state,
+  );
+  f.note.locked = false;
+  f.left.locked = true;
+  assert.equal(
+    arranged.reopenPageTask(f.state, f.boardId, "left", ref),
+    f.state,
+    "inherited locks remain authoritative",
+  );
+  f.left.locked = false;
+  f.note.noteKind = "text";
+  assert.equal(
+    arranged.reopenPageTask(f.state, f.boardId, "left", ref),
+    f.state,
+    "prose is not a checklist task",
+  );
+});
+
 test("删除未分组保留其他项目、画布和默认收纳框，完整收纳额外箱子", () => {
   const f = fixture();
   const dock = f.state.objects.find((o) => o.type === "collection");
@@ -257,9 +315,16 @@ test("Agent 视图只保存个人导航，返回排列保留项目和画布坐�
   assert.equal(next.preferences.views[f.boardId].surface, "agent");
   assert.strictEqual(next.objects, selected.objects);
   assert.deepEqual(prepareEdit(next), prepareEdit(selected));
-  const restored = setSurface(JSON.parse(JSON.stringify(next)), f.boardId, "arranged");
+  const restored = setSurface(
+    JSON.parse(JSON.stringify(next)),
+    f.boardId,
+    "arranged",
+  );
   assert.equal(panePages(restored, f.boardId).page.id, "right");
-  assert.equal(restored.preferences.views[f.boardId].scale, selected.preferences.views[f.boardId].scale);
+  assert.equal(
+    restored.preferences.views[f.boardId].scale,
+    selected.preferences.views[f.boardId].scale,
+  );
 });
 
 test("添加到右栏只写入右灵感板，保留左栏和引用块的身份", () => {

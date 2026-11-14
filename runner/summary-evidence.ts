@@ -4,6 +4,7 @@ import path from "node:path";
 import { RunnerError } from "./errors";
 import type { NativeSummaryContext } from "../shared/agent/execution";
 import type { ProjectSummary } from "../shared/agent/contracts";
+import { summarySourceItems } from "../shared/agent/progress";
 
 export interface SummaryEvidence {
   capturedAt: string;
@@ -22,15 +23,7 @@ export function validateSummaryReferences(
     "native:inventory",
     ...evidence.files.map((file) => file.path),
   ]);
-  for (const items of [
-    summary.completed,
-    summary.inProgress,
-    summary.pending,
-    summary.blockers,
-    summary.verification,
-    summary.uncertainties,
-  ])
-    for (const item of items)
+    for (const item of summarySourceItems(summary))
       if (item.evidenceRef && !sources.has(item.evidenceRef))
         throw new RunnerError(
           "INVALID_SUMMARY_EVIDENCE",

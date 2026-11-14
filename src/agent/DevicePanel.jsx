@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
+import CodexProjectPicker from "./CodexProjectPicker.jsx";
 
 export async function localRunnerRequest(
   route,
@@ -220,9 +221,6 @@ function DeviceScope({
       {!embedded && (
         <div className="agent-intro">
           <h3>把这台电脑连接到轻单</h3>
-          <p>
-            绑定当前账号，选择允许执行的项目，再把项目关联到清单。关闭网页后，本机服务仍会保持连接。
-          </p>
         </div>
       )}
       {!loaded && (
@@ -415,36 +413,50 @@ function DeviceScope({
         <>
           <section className="agent-device-card" aria-label="允许的项目">
             <h4>允许执行的项目</h4>
-            <p className="agent-note">
-              {embedded
-                ? "添加你允许 Codex 执行任务的目录，再关联到当前项目。"
-                : "添加你允许 Runner 使用的目录。之后只能向已授权的项目派发任务。"}
-            </p>
-            <div className="agent-device-add">
-              <label>
-                项目目录
-                <input
-                  aria-label="允许执行的项目目录"
-                  placeholder="例如 D:\\Projects\\my-project"
-                  value={root}
-                  disabled={busy}
-                  onChange={(event) => setRoot(event.target.value)}
-                />
-              </label>
-              <button
-                disabled={
-                  !canControl || !root.trim() || connection === "revoked"
-                }
-                onClick={() =>
-                  perform(async () => {
-                    await localAction("/workspaces", { root: root.trim() });
-                    setRoot("");
-                  }, "项目目录已保存。")
-                }
-              >
-                添加项目
-              </button>
-            </div>
+            <CodexProjectPicker
+              key={local.runnerId}
+              userId={userId}
+              requestLocal={requestLocal}
+              workspaces={workspaces}
+              disabled={!canControl || connection === "revoked"}
+              onSelect={(project) =>
+                perform(async () => {
+                  const result = await localAction("/codex/select", {
+                    threadId: project.threadId,
+                  });
+                  if (mounted.current)
+                    setWorkspaceId(result.workspace.workspaceId);
+                }, "已从 Codex 添加项目，可以关联到当前清单。")
+              }
+            />
+            <details className="agent-manual-workspace">
+              <summary>手动填写目录</summary>
+              <div className="agent-device-add">
+                <label>
+                  项目目录
+                  <input
+                    aria-label="允许执行的项目目录"
+                    placeholder="例如 D:\\Projects\\my-project"
+                    value={root}
+                    disabled={busy}
+                    onChange={(event) => setRoot(event.target.value)}
+                  />
+                </label>
+                <button
+                  disabled={
+                    !canControl || !root.trim() || connection === "revoked"
+                  }
+                  onClick={() =>
+                    perform(async () => {
+                      await localAction("/workspaces", { root: root.trim() });
+                      setRoot("");
+                    }, "项目目录已保存。")
+                  }
+                >
+                  添加项目
+                </button>
+              </div>
+            </details>
             {workspaces.length ? (
               <ul className="agent-workspace-list">
                 {workspaces.map((workspace) => (

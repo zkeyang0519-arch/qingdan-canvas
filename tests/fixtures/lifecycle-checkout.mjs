@@ -68,6 +68,8 @@ export async function lifecycleCheckout(t, source) {
     "stop-child",
     "agent-experience-launcher",
     "local-runner-api",
+    "local-desktop-api",
+    "desktop-launcher",
     "local-runner-diagnostics",
     "execution-trial",
     "agent-install-bridge",

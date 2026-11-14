@@ -2,7 +2,7 @@ import readline from "node:readline";
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-const version = "0.167.0-alpha.3.2";
+const version = "0.167.0-alpha.4.1";
 if (process.argv.includes("--version")) {
   console.log(`codex-cli ${process.env.FAKE_VERSION ?? version}`);
   process.exit(0);
@@ -24,7 +24,11 @@ const save = () => {
       renameSync(`${statePath}.next`, statePath);
       break;
     } catch (error) {
-      if (process.platform !== "win32" || error.code !== "EPERM" || attempt >= 9)
+      if (
+        process.platform !== "win32" ||
+        error.code !== "EPERM" ||
+        attempt >= 9
+      )
         throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
@@ -39,15 +43,44 @@ const pending = new Map();
 function businessResult(thread, turn) {
   const schema =
     thread.responseSchemas?.[turn.id] ?? thread.dynamicTools?.[0]?.inputSchema;
-  return schema?.properties?.overview
+  const result = schema?.properties?.overview
     ? {
         overview: "测试项目",
         completed: [],
         inProgress: [],
-        pending: [],
+        pending: mode().startsWith("report-inspection")
+          ? [
+              {
+                text: "P1：补齐导出实现并验证空数据",
+                evidenceRef: "docs/deep/unfinished.ts",
+              },
+            ]
+          : [],
         blockers: [],
         verification: [],
         uncertainties: [],
+        ...(schema.properties.background
+          ? {
+              background: {
+                name: "测试项目",
+                purpose: "管理项目待办",
+                stage: "开发中",
+              },
+              modules: [],
+            }
+          : {}),
+        ...(schema.properties.handoff
+          ? {
+              handoff: {
+                technicalOverview: [],
+                recentChanges: [],
+                currentFocus: [],
+                entryPoints: [],
+                nextSteps: [],
+                constraints: [],
+              },
+            }
+          : {}),
       }
     : {
         outcome: "done",
@@ -57,9 +90,117 @@ function businessResult(thread, turn) {
         remainingIssues: [],
         nextTaskNotes: [],
       };
+  if (mode() === "report-no-handoff") delete result.handoff;
+  if (mode() === "report-history-limit" && schema?.properties?.background) {
+    result.overview = "甲".repeat(14000);
+    result.verification = [{ text: "乙".repeat(7000) }];
+    result.uncertainties = [{ text: "丙" }];
+    result.uncertainties[0].text = "丙".repeat(
+      23900 - JSON.stringify(result).length + 1,
+    );
+  }
+  if (
+    schema?.properties?.historyReceipt &&
+    thread.dynamicTools?.some(
+      (t) => t.name === "qingdan_read_project_history",
+    ) &&
+    mode() !== "report-history-no-receipt"
+  )
+    result.historyReceipt = turn.historyReceipt ?? "empty";
+  return result;
 }
 
 function finish(thread, turn, status = "completed") {
+  if (
+    status === "completed" &&
+    mode() !== "report-history-unread" &&
+    thread.dynamicTools?.some(
+      (t) => t.name === "qingdan_read_project_history",
+    ) &&
+    !turn.historyDone
+  ) {
+    const item = {
+      type: "dynamicToolCall",
+      id: `history-${turn.id}-${turn.historyStep ?? 0}`,
+      namespace: null,
+      tool: "qingdan_read_project_history",
+      arguments: {
+        cursor: turn.historyCursor ?? null,
+        notes: "正在按模块整理项目背景及剩余工作",
+      },
+      status: "inProgress",
+      contentItems: null,
+      success: null,
+    };
+    turn.historyStep = (turn.historyStep ?? 0) + 1;
+    turn.items.push(item);
+    save();
+    pending.set(item.id, { thread, turn, history: item });
+    send({
+      id: item.id,
+      method: "item/tool/call",
+      params: {
+        threadId: thread.id,
+        turnId: turn.id,
+        callId: item.id,
+        namespace: null,
+        tool: item.tool,
+        arguments: item.arguments,
+      },
+    });
+    return;
+  }
+  if (
+    status === "completed" &&
+    (mode().startsWith("report-inspection") || mode() === "report-current")
+  ) {
+    const steps =
+      mode() === "report-current"
+        ? [
+            { action: "browse", path: "." },
+            { action: "read", path: "README.md" },
+          ]
+        : mode() === "report-inspection-unread"
+          ? [{ action: "list", path: "." }]
+          : [
+              { action: "list", path: "." },
+              { action: "read", path: "docs/deep/unfinished.ts" },
+              { action: "read", path: "README.md" },
+            ];
+    const step = turn.inspectionStep ?? 0;
+    if (step < steps.length) {
+      turn.inspectionStep = step + 1;
+      const item = {
+        type: "dynamicToolCall",
+        id: `inspect-${turn.id}-${step}`,
+        namespace: null,
+        tool: "qingdan_inspect_project",
+        arguments: steps[step],
+        status: "inProgress",
+        contentItems: null,
+        success: null,
+        durationMs: null,
+      };
+      turn.items.push(item);
+      save();
+      pending.set(item.id, { thread, turn, inspection: item });
+      send({
+        id: item.id,
+        method: "item/tool/call",
+        params: {
+          threadId: thread.id,
+          turnId: turn.id,
+          callId: item.id,
+          namespace: null,
+          tool: item.tool,
+          arguments: item.arguments,
+        },
+      });
+      if (mode() === "report-inspection-disconnect")
+        setTimeout(() => process.exit(0), 1);
+      return;
+    }
+  }
   const jsonOnly = [
     "business-output",
     "legacy-output",
@@ -198,6 +339,28 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
     const request = pending.get(msg.id);
     if (request) {
       pending.delete(msg.id);
+      if (request.history) {
+        request.history.success = msg.result?.success === true;
+        request.history.status = request.history.success
+          ? "completed"
+          : "failed";
+        request.history.contentItems = msg.result?.contentItems ?? [];
+        const page = request.history.success
+          ? JSON.parse(request.history.contentItems[0].text)
+          : null;
+        request.turn.historyCursor = page?.nextCursor;
+        request.turn.historyReceipt = page?.receipt;
+        request.turn.historyDone = !page?.nextCursor;
+        save();
+      }
+      if (request.inspection) {
+        request.inspection.success = msg.result?.success === true;
+        request.inspection.status = request.inspection.success
+          ? "completed"
+          : "failed";
+        request.inspection.contentItems = msg.result?.contentItems ?? [];
+        save();
+      }
       if (request.report) {
         request.report.success = msg.result?.success === true;
         request.report.status = request.report.success ? "completed" : "failed";
@@ -237,9 +400,27 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
   const params = msg.params ?? {};
   if (msg.method === "account/read")
     return reply({ account: { type: "chatgpt" }, requiresOpenaiAuth: true });
+  if (msg.method === "config/read")
+    return reply({ config: state.config || {}, origins: {}, layers: null });
+  if (msg.method === "model/list") {
+    const models = (state.models || []).filter(
+      (model) => params.includeHidden || !model.hidden,
+    );
+    const offset = Number(params.cursor ?? 0);
+    const pageSize = Math.min(state.modelPageSize || 100, params.limit || 100);
+    return reply({
+      data: models.slice(offset, offset + pageSize),
+      nextCursor: state.modelCursorLoop
+        ? String(pageSize)
+        : offset + pageSize < models.length
+          ? String(offset + pageSize)
+          : null,
+    });
+  }
   if (msg.method === "thread/list") {
+    const directories = Array.isArray(params.cwd) ? params.cwd : [params.cwd];
     const threads = state.threads.filter(
-      (thread) => !params.cwd || params.cwd.includes(thread.cwd),
+      (thread) => !params.cwd || directories.includes(thread.cwd),
     );
     const offset = Number(params.cursor ?? 0);
     return reply({
@@ -288,7 +469,11 @@ readline.createInterface({ input: process.stdin }).on("line", (raw) => {
     return reply({});
   }
   if (msg.method === "thread/read" || msg.method === "thread/resume") {
-    if (msg.method === "thread/resume" && existsSync(`${statePath}.hold-resume`) && !state.heldResume) {
+    if (
+      msg.method === "thread/resume" &&
+      existsSync(`${statePath}.hold-resume`) &&
+      !state.heldResume
+    ) {
       state.heldResume = true;
       save();
       const timer = setInterval(() => {

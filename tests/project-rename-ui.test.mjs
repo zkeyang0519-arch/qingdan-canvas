@@ -138,9 +138,10 @@ function apiFixture(t, patch, read) {
       if (result.ok) room = (await result.clone().json()).room;
       return result;
     }
-    const delayedRead = read?.(url);
+    const delayedRead = read?.(url, options);
     if (delayedRead) return delayedRead;
-    if (url === "/api/session") return response({ user });
+    if (url === "/api/session")
+      return response({ user, features: { agent: true } });
     if (url === "/api/rooms")
       return response({
         rooms: [
@@ -202,6 +203,300 @@ async function fill(host, value) {
   });
 }
 const openRename = (host) => click(button(host, "修改项目名称：原项目"));
+
+async function sharedTodoWorkspace(t, { bound = false } = {}) {
+  localStorage.clear();
+  sessionStorage.clear();
+  const board = {
+    ...createInspirationBoard(original.id),
+    title: "共享待办项目",
+  };
+  const note = {
+    ...createObject(original.id, "note"),
+    parentId: board.id,
+    noteKind: "checklist",
+    blocks: [makeBlock("核对共享状态")],
+  };
+  const binding = {
+    bindingId: "shared-binding",
+    revision: 1,
+    enabled: true,
+    runnerId: "shared-runner",
+    workspaceId: "shared-workspace",
+  };
+  let remoteTasks = [
+    {
+      noteId: note.id,
+      taskId: note.blocks[0].id,
+      text: "核对共享状态",
+      done: false,
+      generation: 1,
+      specRevision: 1,
+      noteRevision: 1,
+      specStatus: "ready",
+      editableText: true,
+      instruction: "核对共享状态",
+      acceptance: "三个视图一致",
+      acceptanceChecks: [],
+    },
+  ];
+  const requests = apiFixture(t, undefined, (url, options) => {
+    if (url.startsWith("/api/agent/bindings?"))
+      return response({ binding: bound ? binding : null });
+    if (url === "/api/agent/devices") return response({ devices: [] });
+    if (url === "/api/agent/execution/checklist") {
+      const body = JSON.parse(options.body);
+      if (body.action === "create")
+        remoteTasks = [
+          ...remoteTasks,
+          {
+            ...remoteTasks[0],
+            noteId: "remote-new-note",
+            taskId: "remote-new-task",
+            ...body.tasks[0],
+          },
+        ];
+      return response({
+        canvasId: original.id,
+        sectionId: board.id,
+        sequence: 1,
+        tasks: remoteTasks,
+        ...(body.action === "create"
+          ? { operationId: "created-remotely" }
+          : {}),
+      });
+    }
+    if (url.startsWith("/api/agent/execution/runs?"))
+      return response({ runs: [] });
+    if (url.startsWith("/api/local-runner/"))
+      return response({
+        runnerId: binding.runnerId,
+        connectionStatus: "online",
+        models: [],
+      });
+    if (url.startsWith("/api/agent/chat/state"))
+      return response({
+        provider: { configured: true },
+        thread: null,
+        threads: [],
+        messages: [],
+        memories: [],
+        job: null,
+      });
+    if (url.startsWith("/api/agent/"))
+      return response({ error: "此隔离测试未启用其他 Agent 服务" }, 503);
+  });
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  await act(async () =>
+    sockets.at(-1).onmessage({
+      data: JSON.stringify({
+        type: "snapshot",
+        rows: [board, note].map((data) => ({
+          id: data.id,
+          revision: 1,
+          data,
+          deleted: false,
+        })),
+      }),
+    }),
+  );
+  const openAgent = async () => {
+    await click(button(host, "Agent"));
+    const closeBinding = document.querySelector(
+      '[aria-label="关闭绑定 agent"]',
+    );
+    if (closeBinding) await click(closeBinding);
+  };
+  return {
+    host,
+    requests,
+    openAgent,
+    setRemoteDone(done) {
+      remoteTasks = remoteTasks.map((task) => ({ ...task, done }));
+    },
+  };
+}
+
+for (const bound of [false, true]) {
+  test(`${bound ? "已绑定" : "未绑定"} Agent 添加的待办在排列和画布中立即可见`, async (t) => {
+    const { host, openAgent } = await sharedTodoWorkspace(t, { bound });
+    await openAgent();
+    await click(button(host, "添加待办"));
+    const input = host.querySelector('textarea[aria-label="新待办"]');
+    assert.ok(input);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      ).set.call(input, "Agent 创建的共享待办");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button(host, "保存新待办"));
+    await click(button(host, "排列"));
+    assert.ok(host.querySelector('[aria-label="完成：Agent 创建的共享待办"]'));
+    await click(button(host, "画布"));
+    const checkbox = host.querySelector(
+      'input[aria-label="完成：Agent 创建的共享待办"]',
+    );
+    assert.ok(checkbox);
+    assert.equal(checkbox.checked, false);
+    await openAgent();
+    assert.match(
+      host.querySelector('ol[aria-label="真实待办"]').textContent,
+      /Agent 创建的共享待办/,
+    );
+  });
+
+  test(`${bound ? "已绑定" : "未绑定"} Agent 与排列画布双向同步完成状态`, async (t) => {
+    const { host, openAgent, setRemoteDone } = await sharedTodoWorkspace(t, {
+      bound,
+    });
+    await click(button(host, "排列"));
+    await click(button(host, "完成：核对共享状态"));
+    await openAgent();
+    assert.ok(host.querySelector('[aria-label="移回待办：核对共享状态"]'));
+    await click(button(host, "移回待办：核对共享状态"));
+    await click(button(host, "画布"));
+    assert.equal(
+      host.querySelector('input[aria-label="完成：核对共享状态"]').checked,
+      false,
+    );
+    await openAgent();
+    await click(button(host, "标记完成待办：核对共享状态"));
+    await click(button(host, "排列"));
+    assert.equal(
+      button(host, "取消完成：核对共享状态").getAttribute("aria-checked"),
+      "true",
+    );
+    await click(button(host, "画布"));
+    assert.equal(
+      host.querySelector('input[aria-label="完成：核对共享状态"]').checked,
+      true,
+    );
+    setRemoteDone(true);
+    await click(host.querySelector('input[aria-label="完成：核对共享状态"]'));
+    await openAgent();
+    assert.match(
+      host.querySelector('ol[aria-label="真实待办"]').textContent,
+      /核对共享状态/,
+    );
+    assert.equal(
+      host.querySelector('[aria-label="移回待办：核对共享状态"]'),
+      null,
+    );
+  });
+}
+
+test("保留 Agent 文字入口，移除验证按钮，运维入口位于帮助与邀请之间", async (t) => {
+  apiFixture(t);
+  globalThis.projectRenameDraftRead = () => ({
+    view: { dynamicIsland: { enabled: true, pinned: true } },
+  });
+  t.after(() => {
+    delete globalThis.projectRenameDraftRead;
+  });
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  for (const surface of ["画布", "排列"]) {
+    await click(button(host, surface));
+    assert.deepEqual(
+      [...host.querySelectorAll(".view-mode-switch button")].map((item) =>
+        item.textContent.trim(),
+      ),
+      ["画布", "排列", "Agent"],
+    );
+    assert.equal(host.querySelector(".dynamic-island-mode-button"), null);
+    assert.equal(host.querySelector(".dynamic-island"), null);
+    assert.ok(host.querySelector('button[aria-label="轻岛"]'));
+    assert.equal(button(host, surface).getAttribute("aria-pressed"), "true");
+    assert.equal(
+      host.querySelector('.nav-start [aria-label="运维资产"]'),
+      null,
+    );
+    assert.equal(host.querySelector('[aria-label="Agent 验证"]'), null);
+    assert.equal(host.querySelector(".topbar .lucide-bot"), null);
+    const help = button(host, "帮助");
+    const operations = button(host, "运维资产");
+    assert.equal(operations.parentElement.className, "nav-end");
+    assert.equal(help.nextElementSibling, operations);
+    assert.equal(operations.nextElementSibling, button(host, "邀请协作"));
+  }
+});
+
+for (const features of [undefined, { agent: false }])
+  test(`线上 Agent ${features ? "停用" : "未声明可用"}时仅显示开发中提示，旧视图偏好不能绕过`, async (t) => {
+    const requests = apiFixture(t, undefined, (url) =>
+      url === "/api/session" ? response({ user, features }) : undefined,
+    );
+    globalThis.projectRenameDraftRead = () => ({ view: { surface: "agent" } });
+    t.after(() => {
+      delete globalThis.projectRenameDraftRead;
+    });
+    const { host } = await mount(t);
+    await click(host.querySelector(".room-card"));
+    assert.match(
+      host.querySelector('[role="status"][aria-label="Agent 开发状态"]')
+        ?.textContent || "",
+      /正在开发中/,
+    );
+    assert.equal(host.querySelector(".agent-workspace"), null);
+    assert.equal(host.querySelector(".agent-workspace textarea"), null);
+    await click(button(host, "返回画布"));
+    assert.equal(button(host, "画布").getAttribute("aria-pressed"), "true");
+    await click(button(host, "Agent"));
+    assert.match(host.textContent, /Agent 正在开发中/);
+    assert.equal(
+      requests.some(({ url }) =>
+        /^\/api\/(agent|local-runner|local-agent)/.test(url),
+      ),
+      false,
+    );
+  });
+
+test("同账号重新校验后停用 Agent 会立即卸载操作区", async (t) => {
+  let enabled = true;
+  apiFixture(t, undefined, (url) =>
+    url === "/api/session"
+      ? response({ user, features: { agent: enabled } })
+      : undefined,
+  );
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  await click(button(host, "Agent"));
+  assert.ok(host.querySelector(".agent-workspace"));
+  enabled = false;
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  assert.equal(!!host.querySelector(".agent-workspace"), false);
+  assert.match(host.textContent, /Agent 正在开发中/);
+});
+
+test("Agent 模块可进入和返回，关闭运维后恢复 Agent 工作区", async (t) => {
+  apiFixture(t);
+  const { host } = await mount(t);
+  await click(host.querySelector(".room-card"));
+  await click(button(host, "Agent"));
+  const agent = host.querySelector(".agent-workspace");
+  assert.ok(agent);
+  assert.equal(button(host, "Agent").getAttribute("aria-pressed"), "true");
+  assert.equal(host.querySelector('[aria-label="画布工具"]'), null);
+  assert.equal(host.querySelector('[aria-label="Agent 验证"]'), null);
+  assert.equal(host.querySelector(".topbar .lucide-bot"), null);
+  await click(button(host, "运维资产"));
+  assert.ok(host.querySelector(".operations-overlay"));
+  await click(button(host, "关闭运维资产"));
+  assert.equal(host.querySelector(".operations-overlay"), null);
+  assert.equal(host.querySelector(".agent-workspace"), agent);
+  assert.equal(button(host, "Agent").getAttribute("aria-pressed"), "true");
+  await click(button(host, "排列"));
+  assert.equal(host.querySelector(".agent-workspace"), null);
+  assert.equal(button(host, "排列").getAttribute("aria-pressed"), "true");
+  await click(button(host, "Agent"));
+  assert.ok(host.querySelector(".agent-workspace"));
+  await click(button(host, "画布"));
+  assert.equal(host.querySelector(".agent-workspace"), null);
+  assert.ok(host.querySelector('[aria-label="画布工具"]'));
+});
 
 test("从画布或排列进入运维时隐藏收纳入口，关闭后恢复同一个收纳箱", async (t) => {
   apiFixture(t);

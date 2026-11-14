@@ -59,8 +59,13 @@ const { default: CanvasWorkspace } = await import(
 );
 rmSync(dir, { recursive: true, force: true });
 test.after(() => dom.window.close());
-test("real CanvasWorkspace exposes the observed batch target storage warning", () => {
+test("saved Agent preferences retain the module and batch recovery without validation UI", () => {
   const state = createWorkspace();
+  const boardId = state.boards[0].id;
+  state.preferences.views[boardId] = {
+    ...state.preferences.views[boardId],
+    surface: "agent",
+  };
   globalThis.testWorkspace = {
     state,
     current: { current: state },
@@ -77,14 +82,28 @@ test("real CanvasWorkspace exposes the observed batch target storage warning", (
     "unreadable",
   );
   const markup = renderToStaticMarkup(
-    React.createElement(CanvasWorkspace, { room, user, onLeave() {} }),
+    React.createElement(CanvasWorkspace, {
+      room,
+      user,
+      agentEnabled: true,
+      onLeave() {},
+    }),
   );
   const rendered = new JSDOM(markup);
+  const document = rendered.window.document;
   assert.match(
-    [...rendered.window.document.querySelectorAll('[role="alert"]')]
-      .map((el) => el.textContent)
-      .join(" "),
+    document.querySelector('[aria-label="批次提醒保存状态"]')?.textContent ||
+      "",
     /保存|存储/,
+  );
+  assert.ok(document.querySelector(".agent-mode"));
+  assert.equal(document.querySelector('[aria-label="Agent 验证"]'), null);
+  assert.equal(document.querySelector('[aria-label="画布工具"]'), null);
+  assert.equal(
+    [...document.querySelectorAll(".view-mode-switch button")]
+      .find((button) => button.textContent.trim() === "Agent")
+      ?.getAttribute("aria-pressed"),
+    "true",
   );
   rendered.window.close();
 });

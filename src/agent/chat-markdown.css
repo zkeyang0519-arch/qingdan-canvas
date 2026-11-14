@@ -1,0 +1,277 @@
+.agent-chat-markdown {
+  min-width: 0;
+  max-width: 100%;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.agent-chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.agent-chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-chat-markdown p {
+  margin: 0 0 0.9em;
+  color: inherit;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.agent-chat-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.35em 0 0.5em;
+  color: inherit;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.5;
+}
+
+.agent-chat-markdown h1 {
+  font-size: 1.3em;
+}
+
+.agent-chat-markdown h2 {
+  font-size: 1.18em;
+}
+
+.agent-chat-markdown h3 {
+  font-size: 1.08em;
+}
+
+.agent-chat-markdown :is(h4, h5, h6) {
+  font-size: 1em;
+}
+
+.agent-chat-markdown strong {
+  font-weight: 650;
+}
+
+.agent-chat-markdown :is(ul, ol) {
+  display: block;
+  margin: 0.6em 0 1em;
+  padding: 0 0 0 1.65em;
+  list-style-position: outside;
+}
+
+.agent-chat-markdown ul {
+  list-style-type: disc;
+}
+
+.agent-chat-markdown ol {
+  list-style-type: decimal;
+}
+
+.agent-chat-markdown li {
+  display: list-item;
+  margin: 0.28em 0;
+  padding-left: 0.18em;
+}
+
+.agent-chat-markdown li::marker {
+  color: #6f7d75;
+  font-size: 0.95em;
+}
+
+.agent-chat-markdown li > p {
+  margin: 0.2em 0;
+}
+
+.agent-chat-markdown li > :is(ul, ol) {
+  margin: 0.25em 0 0.45em;
+}
+
+.agent-chat-markdown li > ul {
+  list-style-type: circle;
+}
+
+.agent-chat-markdown .agent-chat-task-item {
+  position: relative;
+  list-style: none;
+}
+
+.agent-chat-markdown .agent-chat-task-item > input {
+  position: absolute;
+  top: 0.42em;
+  left: -1.45em;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #52775f;
+}
+
+.agent-chat-markdown blockquote {
+  margin: 1em 0;
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 3px solid #bacbc0;
+  color: #65736b;
+}
+
+.agent-chat-markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-chat-markdown a {
+  color: #326649;
+  text-decoration: underline;
+  text-decoration-color: #a4c3af;
+  text-underline-offset: 3px;
+}
+
+.agent-chat-markdown a:hover {
+  color: #204b33;
+  text-decoration-color: currentColor;
+}
+
+.agent-chat-markdown
+  :is(a, button, pre, .agent-chat-table-scroll):focus-visible {
+  outline: 2px solid #78a68a;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.agent-chat-markdown code {
+  padding: 0.13em 0.38em;
+  border: 1px solid rgba(85, 108, 94, 0.1);
+  border-radius: 5px;
+  background: rgba(85, 108, 94, 0.065);
+  color: inherit;
+  font:
+    0.89em/1.6 "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    monospace;
+  overflow-wrap: anywhere;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.agent-chat-markdown .agent-chat-code-block {
+  min-width: 0;
+  max-width: 100%;
+  margin: 1em 0;
+  overflow: hidden;
+  border: 1px solid #dfe6e1;
+  border-radius: 10px;
+  background: #f7f9f7;
+}
+
+.agent-chat-markdown .agent-chat-code-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid #e4eae6;
+  background: #eef2ef;
+  color: #69776e;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.agent-chat-markdown .agent-chat-code-heading > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-chat-markdown .agent-chat-code-heading > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  margin: -3px -5px -3px 0;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.agent-chat-markdown .agent-chat-code-heading > button:hover {
+  background: #e0e9e3;
+  color: #355a43;
+}
+
+.agent-chat-markdown pre {
+  max-width: 100%;
+  margin: 0;
+  padding: 13px 15px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  color: #34463b;
+  font-size: 12px;
+  line-height: 1.7;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.agent-chat-markdown pre code {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: inherit;
+  line-height: inherit;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.agent-chat-markdown .agent-chat-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  margin: 1em 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid #dfe6e1;
+  border-radius: 9px;
+}
+
+.agent-chat-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.65;
+  text-align: left;
+}
+
+.agent-chat-markdown :is(th, td) {
+  min-width: 80px;
+  max-width: 360px;
+  padding: 9px 12px;
+  border-right: 1px solid #e7ece8;
+  border-bottom: 1px solid #e3e9e5;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.agent-chat-markdown th {
+  background: #f0f4f1;
+  color: #4c6153;
+  font-weight: 600;
+}
+
+.agent-chat-markdown tr > :last-child {
+  border-right: 0;
+}
+
+.agent-chat-markdown tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+.agent-chat-markdown hr {
+  height: 0;
+  margin: 1.25em 0;
+  border: 0;
+  border-top: 1px solid #dfe6e1;
+}

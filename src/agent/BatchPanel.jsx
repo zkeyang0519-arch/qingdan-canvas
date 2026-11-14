@@ -59,7 +59,13 @@ const writebackText = {
   failed: "清单更新失败，需核对",
   disabled: "按提交时的选择保留清单状态",
 };
-const isBatch = (run) => run?.sourceBacked && run.kind !== "summary";
+const isBatch = (run) =>
+  (run?.sourceBacked || run?.executionSettings) && run.kind !== "summary";
+export const executionIsActive = (run) =>
+  !!run &&
+  (!(run.terminal && run.stopConfirmed) ||
+    (run.queue?.managed &&
+      !["completed", "cancelled"].includes(run.queue.phase)));
 const observedPhase = (run) =>
   run.queue?.phase === "cancelled" && !(run.terminal && run.stopConfirmed)
     ? "cancel_requested"
@@ -362,7 +368,7 @@ function BatchItems({ run, completed, cancelled, current }) {
   );
 }
 
-function BoundBatch({
+export function BoundBatch({
   userId,
   roomId,
   binding,
@@ -374,6 +380,8 @@ function BoundBatch({
   onSelectBatch,
   onRunChange,
   embedded,
+  renderConversation,
+  onExecutionChange,
 }) {
   const targetMatches =
     !initialTarget ||
@@ -451,6 +459,7 @@ function BoundBatch({
           return;
         if (
           !isBatch(result.run) ||
+          result.run.runId !== id ||
           (result.run.bindingId && result.run.bindingId !== binding.bindingId)
         )
           throw Error("该记录不是当前清单的执行批次。");
@@ -464,17 +473,33 @@ function BoundBatch({
               result.run.updatedAt < observed.updatedAt))
         )
           return;
-        const events = [
-          ...new Map(
-            [...(prior?.events || []), ...(result.events || [])].map(
-              (event) => [event.eventId, event],
-            ),
-          ).values(),
-        ].slice(-300);
+        const finalOnly =
+          renderConversation &&
+          result.run.terminal &&
+          result.run.stopConfirmed &&
+          (result.run.output?.trim() || result.run.resultReadComplete);
+        const allEvents = finalOnly
+          ? []
+          : [
+              ...new Map(
+                [...(prior?.events || []), ...(result.events || [])].map(
+                  (event) => [event.eventId, event],
+                ),
+              ).values(),
+            ];
+        const events = renderConversation ? allEvents : allEvents.slice(-300);
         prior = {
           ...result,
           events,
           truncated: prior?.truncated || result.truncated,
+          // Events may arrive before the next turn's state report. Only skip
+          // through this completed turn, never through a later turn's deltas.
+          ...(finalOnly
+            ? {
+                nextAfterSeq: result.run.resultSeq ?? prior?.nextAfterSeq ?? 0,
+                hasMore: false,
+              }
+            : {}),
         };
         priorDetail.current = prior;
         acceptedRead.current = order;
@@ -482,10 +507,10 @@ function BoundBatch({
         setRuns((previous) =>
           previous.map((entry) => (entry.runId === id ? result.run : entry)),
         );
-        if (!result.hasMore) break;
+        if (!prior.hasMore) break;
       }
     },
-    [binding.bindingId, tool, valid],
+    [binding.bindingId, tool, valid, !!renderConversation],
   );
   const refresh = useCallback(
     async (version) => {
@@ -504,6 +529,21 @@ function BoundBatch({
           setRuns(batches);
         }
         let id = currentId.current;
+        const activeRun = renderConversation && batches.find(executionIsActive);
+        const selectedRun = batches.find((entry) => entry.runId === id);
+        if (
+          activeRun &&
+          activeRun.runId !== id &&
+          (!selectedRun || !executionIsActive(selectedRun))
+        ) {
+          id = activeRun.runId;
+          currentId.current = id;
+          setSelectedId(id);
+          priorDetail.current = null;
+          setDetail(null);
+          setStopping(false);
+          setConfirmingStop(false);
+        }
         if (!id && targetMatches && batches.length) {
           id = batches[0].runId;
           currentId.current = id;
@@ -521,23 +561,36 @@ function BoundBatch({
         }
       }
     },
-    [binding, callCloud, loadBinding, readRun, targetMatches, valid],
+    [
+      binding,
+      callCloud,
+      loadBinding,
+      readRun,
+      targetMatches,
+      valid,
+      !!renderConversation,
+    ],
   );
   useEffect(() => {
     alive.current = true;
-    const version = epoch.current;
-    void refresh(version);
-    const timer = window.setInterval(() => {
-      if (working.current) return;
-      const current = epoch.current;
-      void refresh(current);
-    }, 2500);
+    let reading = false;
+    const poll = async () => {
+      if (working.current || (renderConversation && reading)) return;
+      reading = true;
+      try {
+        await refresh(epoch.current);
+      } finally {
+        reading = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, renderConversation ? 700 : 2500);
     return () => {
       alive.current = false;
       epoch.current++;
       window.clearInterval(timer);
     };
-  }, [refresh, valid]);
+  }, [refresh, valid, !!renderConversation]);
   useEffect(() => {
     if (busy || receivedTarget.current === initialId) return;
     receivedTarget.current = initialId;
@@ -660,7 +713,11 @@ function BoundBatch({
       setMessage("原操作已收到回执，正在核对当前执行。");
       await refresh(version);
     });
-  const run = detail?.run;
+  const run =
+    detail?.run ||
+    (renderConversation
+      ? runs.find((entry) => entry.runId === selectedId)
+      : null);
   const queue = run?.queue;
   useEffect(() => {
     if (run)
@@ -755,6 +812,66 @@ function BoundBatch({
       setFollowup("");
       setMessage("补充说明已发送到原会话，等待本机接收。");
       await refresh(version);
+    });
+  const executionActions = useRef(null);
+  executionActions.current = { stop };
+  const executionCallback = useRef(onExecutionChange);
+  executionCallback.current = onExecutionChange;
+  const activeExecution = executionIsActive(run);
+  const stopPending =
+    activeExecution &&
+    (stopping ||
+      run.status === "cancel_requested" ||
+      ["cancel_requested", "cancelled"].includes(queue?.phase));
+  useEffect(() => {
+    executionCallback.current?.({
+      runId: run?.runId,
+      active: activeExecution,
+      stopping: stopPending,
+      busy,
+      stop: () => executionActions.current?.stop(),
+    });
+  }, [run?.runId, activeExecution, stopPending, busy]);
+  useEffect(() => () => executionCallback.current?.(null), []);
+  if (renderConversation)
+    return renderConversation({
+      runs,
+      detail,
+      busy,
+      stopping: stopPending,
+      control,
+      notices: (
+        <>
+          {(requests.warning || error || readError) && (
+            <p className="agent-error" role="alert">
+              {requests.warning || error || readError}
+            </p>
+          )}
+          <UnknownWorkspaceRequests requests={requests} />
+          {requests.ownedRecords.map((record) => (
+            <div key={record.requestId} className="agent-actions">
+              <span className="agent-note">操作结果待确认</span>
+              <button disabled={busy} onClick={() => perform(refresh)}>
+                核对原操作
+              </button>
+              <button disabled={busy} onClick={() => retryOriginal(record)}>
+                重试原操作
+              </button>
+            </div>
+          ))}
+          {nativeRequest && (
+            <NativeRequestPrompt
+              key={`${run.runId}:${nativeRequest.requestId}`}
+              request={nativeRequest}
+              busy={busy}
+              delivered={responded.has(nativeRequest.requestId)}
+              receiptStatus={responded.get(nativeRequest.requestId)}
+              error={error}
+              onRespond={respond}
+            />
+          )}
+        </>
+      ),
     });
   return (
     <>
@@ -961,12 +1078,12 @@ function BatchSection({
             {binding === undefined
               ? "正在读取项目关联…"
               : embedded
-                ? "选择 Codex 会话关联项目后，可以查看批次进度。"
+                ? "关联执行项目后，可以查看批次进度。"
                 : "此清单尚未关联执行项目。请先在第 3 步绑定电脑和项目。"}
           </p>
         )}
         {embedded && binding === null && onOpenSettings && (
-          <button onClick={onOpenSettings}>选择 Codex 会话</button>
+          <button onClick={onOpenSettings}>选择项目</button>
         )}
         {(error || binding === null) && (
           <button
@@ -1026,7 +1143,6 @@ export default function BatchPanel({
       {!embedded && (
         <div className="agent-intro">
           <h3>批次执行</h3>
-          <p>查看逐项进度，核对验收结果，并处理暂停或异常。</p>
         </div>
       )}
       <section className="agent-device-card" aria-label="批次执行项目">

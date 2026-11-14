@@ -22,6 +22,10 @@ const seeds = [
   ...[
     "GetAccountParams",
     "GetAccountResponse",
+    "ModelListParams",
+    "ModelListResponse",
+    "ConfigReadParams",
+    "ConfigReadResponse",
     "ThreadStartParams",
     "ThreadStartResponse",
     "ThreadResumeParams",

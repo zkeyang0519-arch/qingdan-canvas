@@ -17,7 +17,7 @@ test(
     const root = path.resolve(".");
     await mkdir(path.join(root, ".tmp"), { recursive: true });
     const out = await mkdtemp(path.join(root, ".tmp/chat-router-test-"));
-    const script = `import app from './worker/index'; import {CanvasRoom} from './worker/room'; import {AgentChatRouter} from './worker/agent/chat-router'; import {DurableObject} from 'cloudflare:workers';
+    const script = `import app from './worker/index'; import {CanvasRoom} from './worker/room'; import {AgentChatRouter} from './worker/agent/chat-router'; import {generateChatReply} from './worker/agent/chat-model'; import {DurableObject} from 'cloudflare:workers';
  export class ModelGate extends DurableObject {calls=[]; hold=false; failCanvas=false; waiting=[]; async fetch(request){const route=new URL(request.url).pathname;
  if(route==='/fail-canvas'){this.failCanvas=true;return Response.json({ok:true});}
  if(route==='/allow-canvas'){this.failCanvas=false;return Response.json({ok:true});}
@@ -32,8 +32,16 @@ test(
  else reply.text=JSON.stringify(context.messages);
  return Response.json({reply,usage:{inputTokens:10,outputTokens:10}});}}
  export class TestCanvasRoom extends CanvasRoom {async fetch(request){const input=await request.clone().json().catch(()=>null);if(input?.input?.action==='create'){const state=await(await this.env.MODEL_GATE.get(this.env.MODEL_GATE.idFromName('gate')).fetch('https://model/canvas-failure')).json();if(state.fail)return Response.json({error:'temporary canvas failure'},{status:503});}return super.fetch(request);}}
- export class TestAgentChat extends AgentChatRouter {async fetch(request){if(new URL(request.url).pathname==='/lost-receipt'){const {messageId}=await request.json();this.ctx.storage.sql.exec("UPDATE agent_chat_task_proposals SET status='saving',receipt=NULL WHERE message_id=?",messageId);return Response.json({ok:true});}return super.fetch(request);}async generate(context){return (await this.env.MODEL_GATE.get(this.env.MODEL_GATE.idFromName('gate')).fetch('https://model/generate',{method:'POST',body:JSON.stringify(context)})).json();}}
- export default {fetch(request,env,ctx){const url=new URL(request.url);if(url.pathname==='/fixture/lost-receipt')return env.AGENT_CHATS.get(env.AGENT_CHATS.idFromName('alice')).fetch(new Request('https://agent.internal/lost-receipt',request));if(url.pathname.startsWith('/fixture/'))return env.MODEL_GATE.get(env.MODEL_GATE.idFromName('gate')).fetch(new Request('https://model/'+url.pathname.slice('/fixture/'.length),request));return app.fetch(request,env,ctx);}};`;
+ export class TestAgentChat extends AgentChatRouter {
+ streaming={calls:0,aborted:false,cancelled:false};
+ async fetch(request){const route=new URL(request.url).pathname;if(route==='/stream-state')return Response.json({...this.streaming,running:this.running.size});if(route==='/lost-receipt'){const {messageId}=await request.json();this.ctx.storage.sql.exec("UPDATE agent_chat_task_proposals SET status='saving',receipt=NULL WHERE message_id=?",messageId);return Response.json({ok:true});}return super.fetch(request);}
+ async generate(context,options){
+ if(context.messages.at(-1).content.includes('流式取消'))return generateChatReply(this.env,context,async(_,init)=>{
+ this.streaming.calls++;init.signal.addEventListener('abort',()=>{this.streaming.aborted=true;},{once:true});
+ return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{index:0,delta:{role:'assistant',content:'{"text":"先看到的回复'},finish_reason:null}]})+'\\n\\n'));},cancel:()=>{this.streaming.cancelled=true;}}),{headers:{'Content-Type':'text/event-stream'}});
+ },options);
+ return (await this.env.MODEL_GATE.get(this.env.MODEL_GATE.idFromName('gate')).fetch('https://model/generate',{method:'POST',body:JSON.stringify(context)})).json();}}
+ export default {fetch(request,env,ctx){const url=new URL(request.url);if(url.pathname==='/fixture/chat-stream-state')return env.AGENT_CHATS.get(env.AGENT_CHATS.idFromName('alice')).fetch('https://agent.internal/stream-state');if(url.pathname==='/fixture/lost-receipt')return env.AGENT_CHATS.get(env.AGENT_CHATS.idFromName('alice')).fetch(new Request('https://agent.internal/lost-receipt',request));if(url.pathname.startsWith('/fixture/'))return env.MODEL_GATE.get(env.MODEL_GATE.idFromName('gate')).fetch(new Request('https://model/'+url.pathname.slice('/fixture/'.length),request));return app.fetch(request,env,ctx);}};`;
     await build({
       stdin: { contents: script, resolveDir: root },
       bundle: true,
@@ -539,6 +547,127 @@ test(
       ).memoryStates[0],
       "stale",
     );
+    const streamingInput = {
+      requestId: "streaming-cancel",
+      bindingId: "binding-a",
+      text: "流式取消测试",
+    };
+    const streamingSent = await call("/api/agent/chat/send", streamingInput);
+    const streamingState = await until(async () => {
+      const value = await state("binding-a", streamingSent.thread.id);
+      return value.job.partialText === "先看到的回复" ? value : null;
+    });
+    assert.equal(streamingState.job.status, "running");
+    assert.equal(streamingState.messages.length, 1);
+    const cancellation = {
+      requestId: "stop-stream",
+      bindingId: "binding-a",
+      bindingRevision: 1,
+      chatId: streamingSent.thread.id,
+      jobId: streamingSent.job.id,
+    };
+    assert.equal(
+      (await call("/api/agent/chat/cancel", cancellation, "bob")).http,
+      403,
+    );
+    assert.equal(
+      (
+        await call("/api/agent/chat/cancel", {
+          ...cancellation,
+          bindingId: "binding-b",
+        })
+      ).http,
+      404,
+    );
+    assert.equal(
+      (
+        await call("/api/agent/chat/cancel", {
+          ...cancellation,
+          chatId: sent.thread.id,
+        })
+      ).http,
+      404,
+    );
+    assert.equal(
+      (
+        await call("/api/agent/chat/cancel", {
+          ...cancellation,
+          bindingRevision: 99,
+        })
+      ).http,
+      409,
+    );
+    const stopped = await call("/api/agent/chat/cancel", cancellation);
+    assert.equal(stopped.http, 200);
+    assert.equal(stopped.job.status, "cancelled");
+    assert.equal(stopped.job.partialText, "先看到的回复");
+    assert.deepEqual(
+      await call("/api/agent/chat/cancel", cancellation),
+      stopped,
+    );
+    const transport = await until(async () => {
+      const value = await call("/fixture/chat-stream-state");
+      return value.aborted && value.cancelled && value.running === 0
+        ? value
+        : null;
+    });
+    assert.equal(transport.calls, 1);
+    assert.equal(
+      (await call("/api/agent/chat/send", streamingInput)).job.status,
+      "cancelled",
+    );
+    const cancelledState = await state("binding-a", streamingSent.thread.id);
+    assert.equal(cancelledState.job.partialText, "先看到的回复");
+    assert.equal(cancelledState.messages.length, 2);
+    const stoppedMessage = cancelledState.messages[1];
+    assert.equal(stoppedMessage.id, stopped.job.assistantMessageId);
+    assert.equal(stoppedMessage.text, "先看到的回复");
+    assert.equal(stoppedMessage.provenance.kind, "cancelled_reply");
+    assert.equal(stoppedMessage.tasks.length, 0);
+    assert.equal(stoppedMessage.memories.length, 0);
+    await call("/api/agent/chat/send", {
+      requestId: "send-after-cancel",
+      bindingId: "binding-a",
+      chatId: streamingSent.thread.id,
+      text: "取消之后继续讨论",
+    });
+    const afterCancel = await settled(streamingSent.thread.id);
+    assert.equal(afterCancel.job.status, "succeeded");
+    assert.equal(
+      afterCancel.messages.find((message) => message.id === stoppedMessage.id)
+        .text,
+      "先看到的回复",
+    );
+
+    // A provider that ignores abort must still be unable to publish a late result.
+    await call("/fixture/hold", {});
+    const lateCancelled = await call("/api/agent/chat/send", {
+      requestId: "cancel-late-provider",
+      bindingId: "binding-a",
+      text: "整理待办，晚到回复",
+    });
+    await until(
+      async () =>
+        (await state("binding-a", lateCancelled.thread.id)).job.status ===
+        "running",
+    );
+    await call("/api/agent/chat/cancel", {
+      ...cancellation,
+      requestId: "stop-late-provider",
+      chatId: lateCancelled.thread.id,
+      jobId: lateCancelled.job.id,
+    });
+    await call("/fixture/release", {});
+    await until(
+      async () => (await call("/fixture/chat-stream-state")).running === 0,
+    );
+    const lateCancelledState = await state(
+      "binding-a",
+      lateCancelled.thread.id,
+    );
+    assert.equal(lateCancelledState.job.status, "cancelled");
+    assert.equal(lateCancelledState.messages.length, 1);
+    assert.equal((await call("/fixture/chat-stream-state")).calls, 1);
     await db
       .prepare(
         "UPDATE agent_bindings SET revision=2 WHERE binding_id='binding-a'",

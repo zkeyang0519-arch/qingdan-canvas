@@ -5,6 +5,26 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const projectSummary = (overrides = {}) => ({
+  bindingId: "p",
+  bindingRevision: 1,
+  ready: true,
+  stale: false,
+  sourceRunId: "summary-run-1",
+  summaryRevision: 1,
+  sourceKind: "codex_history",
+  capturedAt: "2026-11-12T00:00:00Z",
+  summary: {
+    overview: "项目已有登录功能",
+    completed: [{ text: "登录已完成" }],
+    inProgress: [],
+    pending: [{ text: "P1：补充退出功能" }],
+    blockers: [],
+    verification: [{ text: "历史记录报告测试通过" }],
+    uncertainties: [{ text: "未重新检查代码" }],
+  },
+  ...overrides,
+});
 const api = (async () => {
   const { outputFiles } = await build({
     stdin: {
@@ -23,10 +43,16 @@ const api = (async () => {
   );
 })();
 
-async function fixture(t) {
+async function fixture(t, legacyJobs = false) {
   const { ChatStore, buildChatContext } = await api;
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
+  if (legacyJobs)
+    db.exec(`CREATE TABLE agent_chat_jobs(
+      id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,chat_id TEXT NOT NULL,user_message_id TEXT NOT NULL,
+      status TEXT NOT NULL,revision INTEGER NOT NULL,memory_epoch INTEGER NOT NULL,lease_until INTEGER,
+      assistant_message_id TEXT,error TEXT);
+      INSERT INTO agent_chat_jobs VALUES('legacy-job','p','legacy-chat','legacy-message','running',2,0,9007199254740991,NULL,NULL);`);
   const sql = {
     exec(query, ...args) {
       if (/^\s*CREATE TABLE/i.test(query)) {
@@ -75,9 +101,83 @@ async function fixture(t) {
     claim,
     context,
     finish,
+    reload: () => new ChatStore(sql, now),
     advance: (delta) => (time += delta),
   };
 }
+
+test("project summaries create a persistent chat message once per source and revision", async (t) => {
+  const f = await fixture(t);
+  assert.equal(typeof f.store.publishProjectSummary, "function");
+  const project = projectSummary();
+  const published = f.store.publishProjectSummary("p", project);
+  const first = f.store.readThread("p", published.thread.id);
+  assert.equal(first.messages.length, 1);
+  assert.equal(first.messages[0].role, "assistant");
+  assert.equal(first.messages[0].provenance.kind, "project_summary");
+  assert.match(first.messages[0].text, /登录已完成/);
+  assert.match(first.messages[0].text, /下一步待办/);
+  assert.match(first.messages[0].text, /Codex.*任务总结/);
+  assert.equal(first.job, null);
+  assert.equal(
+    f.store.publishProjectSummary("p", project).message.id,
+    published.message.id,
+  );
+  assert.equal(
+    f.store.publishProjectSummary("p", project, published.thread.id).message.id,
+    published.message.id,
+  );
+  assert.equal(f.store.readThread("p", published.thread.id).messages.length, 1);
+  const next = projectSummary({
+    summaryRevision: 2,
+    sourceRunId: "summary-run-2",
+  });
+  f.store.publishProjectSummary("p", next, published.thread.id);
+  const messages = f.store.readThread("p", published.thread.id).messages;
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].id, published.message.id);
+  assert.equal(messages[1].provenance.project.summaryRevision, 2);
+  assert.equal(
+    f.store.publishProjectSummary(
+      "p",
+      { ...next, stale: true },
+      published.thread.id,
+    ).message.id,
+    messages[1].id,
+  );
+  assert.equal(f.store.readThread("p", published.thread.id).messages.length, 2);
+  assert.throws(
+    () => f.store.publishProjectSummary("other", next, published.thread.id),
+    /项目|绑定/,
+  );
+  assert.throws(
+    () => f.store.publishProjectSummary("p", { ...next, ready: false }),
+    /摘要/,
+  );
+});
+
+test("summary publishing preserves an existing conversation and does not duplicate background context", async (t) => {
+  const f = await fixture(t);
+  const existing = f.begin("p", "先前讨论");
+  const published = f.store.publishProjectSummary("p", projectSummary());
+  assert.equal(published.thread.id, existing.thread.id);
+  const data = f.store.readThread("p", existing.thread.id);
+  assert.equal(data.messages[0].text, "先前讨论");
+  assert.equal(data.job.id, existing.job.id);
+  f.finish(existing);
+  const next = f.begin("p", "继续整理待办", existing.thread.id);
+  const { buildChatContext } = await api;
+  const context = buildChatContext(f.store, {
+    bindingId: "p",
+    chatId: next.thread.id,
+    currentMessageId: next.message.id,
+    project: projectSummary(),
+  });
+  assert.equal(
+    context.provenance.messageIds.includes(published.message.id),
+    false,
+  );
+});
 
 test("requests replay without duplicating jobs; projects cannot read each other's chats", async (t) => {
   const f = await fixture(t);
@@ -109,6 +209,163 @@ test("requests replay without duplicating jobs; projects cannot read each other'
   );
   assert.equal(f.claim(started).status, "running");
   assert.equal(f.claim(started), null);
+});
+
+test("partial replies survive reload without creating adoptable suggestions", async (t) => {
+  const f = await fixture(t);
+  const started = f.begin("p", "帮我整理");
+  const active = f.claim(started);
+  assert.equal(active.partialText, "");
+  const updated = f.store.updatePartialText({
+    jobId: active.id,
+    expectedRevision: active.revision,
+    partialText: "正在整理第一项",
+  });
+  assert.equal(updated.revision, active.revision);
+  const data = f.reload().readThread("p", started.thread.id);
+  assert.equal(data.job.partialText, "正在整理第一项");
+  assert.equal(data.job.status, "running");
+  assert.equal(data.messages.length, 1);
+  assert.deepEqual(data.messages[0].tasks, []);
+  assert.deepEqual(data.messages[0].memories, []);
+  assert.equal(
+    f.store.updatePartialText({
+      jobId: active.id,
+      expectedRevision: active.revision - 1,
+      partialText: "晚到的文本",
+    }),
+    null,
+  );
+  f.advance(60_001);
+  assert.equal(
+    f.store.updatePartialText({
+      jobId: active.id,
+      expectedRevision: active.revision,
+      partialText: "正在整理第一项但已过期",
+    }),
+    null,
+  );
+});
+
+test("existing chat databases gain partial storage without losing running jobs", async (t) => {
+  const f = await fixture(t, true);
+  const legacy = f.store.getJob("legacy-job");
+  assert.equal(legacy.status, "running");
+  assert.equal(legacy.partialText, "");
+  f.store.updatePartialText({
+    jobId: legacy.id,
+    expectedRevision: legacy.revision,
+    partialText: "迁移后仍可继续",
+  });
+  assert.equal(f.reload().getJob(legacy.id).partialText, "迁移后仍可继续");
+  assert.equal(f.begin("p", "迁移之后的新消息").job.partialText, "");
+});
+
+test("cancellation is durable, scoped and idempotent while fencing late output and final proposals", async (t) => {
+  const f = await fixture(t);
+  const started = f.begin("p", "整理后可以停止");
+  const active = f.claim(started);
+  f.store.updatePartialText({
+    jobId: active.id,
+    expectedRevision: active.revision,
+    partialText: "保留这些字",
+  });
+  const input = {
+    requestId: "cancel-1",
+    bindingId: "p",
+    bindingRevision: 1,
+    chatId: started.thread.id,
+    jobId: active.id,
+  };
+  assert.throws(() => f.store.cancelJob({ ...input, bindingId: "other" }), {
+    status: 404,
+  });
+  const cancelled = f.store.cancelJob(input);
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.partialText, "保留这些字");
+  assert.equal(cancelled.leaseUntil, null);
+  assert.equal(cancelled.revision, active.revision + 1);
+  assert.deepEqual(f.reload().cancelJob(input), cancelled);
+  assert.deepEqual(
+    f.store.cancelJob({ ...input, requestId: "cancel-2" }),
+    cancelled,
+  );
+  assert.throws(() => f.store.cancelJob({ ...input, bindingRevision: 2 }), {
+    status: 409,
+  });
+  assert.equal(
+    f.store.updatePartialText({
+      jobId: active.id,
+      expectedRevision: active.revision,
+      partialText: "保留这些字但不能再加",
+    }),
+    null,
+  );
+  assert.equal(
+    f.store.replyJob({
+      jobId: active.id,
+      expectedRevision: active.revision,
+      provenance: f.context(started).provenance,
+      reply: {
+        text: "晚到结果",
+        tasks: [
+          { text: "不要采用", instruction: "不应执行", acceptance: "不会出现" },
+        ],
+        memories: [],
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    f.store.failJob({
+      jobId: active.id,
+      expectedRevision: active.revision,
+      error: "晚到错误",
+    }),
+    null,
+  );
+  const stoppedMessages = f
+    .reload()
+    .readThread("p", started.thread.id).messages;
+  assert.equal(stoppedMessages.length, 2);
+  assert.equal(stoppedMessages[1].id, cancelled.assistantMessageId);
+  assert.equal(stoppedMessages[1].text, "保留这些字");
+  assert.equal(stoppedMessages[1].provenance.kind, "cancelled_reply");
+  assert.deepEqual(stoppedMessages[1].tasks, []);
+  assert.deepEqual(stoppedMessages[1].memories, []);
+  assert.equal(
+    f.store.contextMessage("p", started.thread.id, stoppedMessages[1].id),
+    null,
+  );
+  assert.deepEqual(f.store.listPendingJobs(), []);
+  const next = f.begin("p", "取消之后可以再发", started.thread.id);
+  assert.equal(next.job.status, "queued");
+  assert.deepEqual(
+    f
+      .reload()
+      .readThread("p", started.thread.id)
+      .messages.map((message) => message.text),
+    ["整理后可以停止", "保留这些字", "取消之后可以再发"],
+  );
+  assert.ok(!JSON.stringify(f.context(next).messages).includes("保留这些字"));
+});
+
+test("queued jobs cancel without being claimed and completed replies are not rewritten", async (t) => {
+  const f = await fixture(t);
+  const queued = f.begin("p", "尚未开始");
+  const cancel = (started, requestId) =>
+    f.store.cancelJob({
+      requestId,
+      bindingId: "p",
+      bindingRevision: 1,
+      chatId: started.thread.id,
+      jobId: started.job.id,
+    });
+  assert.equal(cancel(queued, "cancel-queued").status, "cancelled");
+  assert.equal(f.claim(queued), null);
+  const completed = f.begin("p", "已经完成", queued.thread.id);
+  const result = f.finish(completed);
+  assert.deepEqual(cancel(completed, "cancel-completed"), result);
 });
 
 test("project context is bounded data and old summary-derived history is excluded", async (t) => {

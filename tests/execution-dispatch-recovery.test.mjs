@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { projectItems, savedProjectSummary } from "./fixtures/project-execution.mjs";
 Error.stackTraceLimit = 0;
 const bundle = await build({
   entryPoints: [resolve("worker/execution/dispatch.ts")],
@@ -27,7 +29,7 @@ function fixture({ managed = false } = {}) {
     reservations = new Map();
   let failKey = null,
     leases = [];
-  const canvasCalls = [];
+  const canvasCalls = [], eventReads = [];
   let canvasHandler = async () => ({});
   const storage = {
     async get(key) {
@@ -46,12 +48,14 @@ function fixture({ managed = false } = {}) {
       }
       return rows.delete(key);
     },
-    async list({ prefix = "", limit = 1000, reverse = false } = {}) {
+    async list({ prefix = "", limit = 1000, reverse = false, startAfter } = {}) {
       let found = [...rows]
-        .filter(([key]) => key.startsWith(prefix))
+        .filter(([key]) => key.startsWith(prefix) && (!startAfter || (reverse ? key < startAfter : key > startAfter)))
         .sort(([a], [b]) => a.localeCompare(b));
       if (reverse) found.reverse();
-      return new Map(structuredClone(found.slice(0, limit)));
+      const selected = found.slice(0, limit);
+      if (prefix.startsWith("exec:event:")) eventReads.push({ reverse, count: selected.length });
+      return new Map(structuredClone(selected));
     },
   };
   const device = {
@@ -136,7 +140,7 @@ function fixture({ managed = false } = {}) {
       },
     },
   };
-  const dispatch = new ExecutionDispatch(storage, env);
+  let dispatch = new ExecutionDispatch(storage, env);
   const intent = async (input) =>
     (
       await dispatch.fetch(
@@ -240,9 +244,11 @@ function fixture({ managed = false } = {}) {
     rows,
     native,
     intent,
-    dispatch,
+    get dispatch() { return dispatch; },
+    restart() { dispatch = new ExecutionDispatch(storage, env); },
     putRun,
     canvasCalls,
+    eventReads,
     canvas(handler) {
       canvasHandler = handler;
     },
@@ -264,6 +270,219 @@ const report = {
   terminal: true,
   stopConfirmed: true,
 };
+
+for (const reportFirst of [true, false]) {
+  test(`final answer survives restart with ${reportFirst ? "report" : "events"} delivered first and is cleared on continuation`, async () => {
+    const f = fixture();
+    await f.putRun();
+    const event = { protocolVersion: 1, eventId: "final-output", runnerId: "runner", runId: "run", threadId: "thread", turnId: "turn-new", seq: 1, occurredAt: new Date().toISOString(), type: "turn.completed", payload: { status: "completed", outcome: null, summary: null, error: null, output: "已修复导出，测试通过。" } };
+    const sendReport = () => f.native("report", { ...report, output: "已修复导出，测试通过。" });
+    const sendEvents = () => f.native("events", { events: [event] });
+    await (reportFirst ? sendReport() : sendEvents());
+    f.restart();
+    await (reportFirst ? sendEvents() : sendReport());
+    f.restart();
+    const result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+    assert.equal(result.run.output, "已修复导出，测试通过。");
+    assert.equal(result.events[0].payload.output, "已修复导出，测试通过。");
+    await f.dispatch.tool(principal, "codex_continue_run", { requestId: "follow-final", runId: "run", expectedTurnId: "turn-new", mode: "reply", message: "继续检查" });
+    assert.equal((await f.dispatch.tool(principal, "codex_get_run", { runId: "run" })).run.output, undefined);
+    await sendReport();
+    assert.equal((await f.dispatch.tool(principal, "codex_get_run", { runId: "run" })).run.output, undefined);
+  });
+}
+
+test("truncated display output retains the assistant phase and item boundary", async () => {
+  const f = fixture();
+  const run = await f.putRun();
+  run.outputBytes = 999999;
+  await f.storage.put("exec:run:run", run);
+  await f.native("events", { events: [{ protocolVersion: 1, eventId: "truncated-output", runnerId: "runner", runId: "run", threadId: "thread", turnId: "turn-new", seq: 1, occurredAt: new Date().toISOString(), type: "output.delta", payload: { text: "final answer", channel: "assistant", itemId: "answer", phase: "completed", messagePhase: "final_answer" } }] });
+  const result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+  assert.equal(result.events[0].payload.messagePhase, "final_answer");
+  assert.equal(result.events[0].payload.phase, "completed");
+  assert.equal(result.events[0].payload.channel, "assistant");
+  assert.equal(result.events[0].payload.itemId, "answer");
+});
+
+const finalEvent = (overrides = {}) => ({
+  protocolVersion: 1, eventId: "legacy-result", runnerId: "runner", runId: "run", threadId: "thread", turnId: "turn-new", seq: 30001, occurredAt: new Date().toISOString(), type: "turn.completed",
+  payload: { status: "completed", summary: null, error: null, outcome: { runId: "run", taskId: "task", outcome: "done", summary: "六项修改已完成，测试通过。", changedFiles: [], evidenceRefs: [], remainingIssues: [], nextTaskNotes: [] } }, ...overrides,
+});
+const eventKey = (runId, seq) => `exec:event:${runId}:${String(seq).padStart(16, "0")}`;
+
+test("legacy terminal list and get return the final result from a small tail despite 30000 progress events", async () => {
+  const f = fixture();
+  const run = await f.putRun("run", { terminal: true });
+  run.view.lastSeq = 30001;
+  f.rows.set("exec:run:run", run);
+  f.rows.set("exec:list:binding:" + run.view.createdAt + ":run", "run");
+  for (let seq = 1; seq <= 30000; seq++) f.rows.set(eventKey("run", seq), { ...finalEvent({ seq, type: "output.delta" }), payload: { text: "[output truncated]", channel: "assistant" } });
+  f.rows.set(eventKey("run", 30001), finalEvent());
+  const list = await (await f.dispatch.fetch(new Request("https://runner/execution/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ principal }) }))).json();
+  assert.equal(list.runs[0].output, "六项修改已完成，测试通过。");
+  assert.equal(list.runs[0].resultReadComplete, true);
+  assert.ok(f.eventReads.reduce((sum, read) => sum + read.count, 0) <= 64);
+  assert.ok(f.eventReads.every(read => read.reverse));
+  f.eventReads.length = 0;
+  const result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+  assert.equal(result.run.output, "六项修改已完成，测试通过。");
+  assert.equal(result.run.resultReadComplete, true);
+  assert.equal(result.hasMore, true);
+  assert.ok(f.eventReads.reduce((sum, read) => sum + read.count, 0) <= 165);
+});
+
+test("indexed completion survives restart without scanning older event pages and keeps the detailed report answer", async () => {
+  const f = fixture();
+  await f.putRun();
+  await f.native("events", { events: [finalEvent({ seq: 1 })] });
+  await f.native("report", report);
+  f.restart();
+  const result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+  assert.equal(result.run.output, "六项修改已完成，测试通过。");
+  assert.equal(result.run.resultReadComplete, true);
+  assert.equal(f.eventReads.filter(read => read.reverse).length, 0);
+  await f.native("report", { ...report, revision: 2, output: "详细结果及验证说明。" });
+  assert.equal((await f.dispatch.tool(principal, "codex_get_run", { runId: "run" })).run.output, "详细结果及验证说明。");
+});
+
+test("terminal lookup never reuses another turn and distinguishes pending delivery from a receipt with no answer", async () => {
+  const f = fixture();
+  await f.putRun("run", { terminal: true });
+  f.rows.set(eventKey("run", 1), finalEvent({ seq: 1, turnId: "old-turn" }));
+  let result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+  assert.equal(result.run.output, undefined);
+  assert.equal(result.run.resultReadComplete, false);
+  f.rows.set(eventKey("run", 2), finalEvent({ seq: 2, payload: { status: "completed", output: "", outcome: null, summary: null, error: null } }));
+  result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+  assert.equal(result.run.output, undefined);
+  assert.equal(result.run.resultReadComplete, true);
+});
+
+for (const indexed of [false, true]) {
+  test(`${indexed ? "indexed" : "legacy"} result boundary excludes later next-turn events while preserving the report answer`, async () => {
+    const f = fixture();
+    await f.putRun();
+    const completion = finalEvent({ seq: 1 });
+    if (indexed) await f.native("events", { events: [completion] });
+    else f.rows.set(eventKey("run", 1), completion);
+    await f.native("report", { ...report, output: "详细的本轮最终答复。" });
+    await f.native("events", { events: [
+      { ...completion, eventId: "next-turn-started", turnId: "next-turn", seq: 2, type: "turn.started", payload: {} },
+      { ...completion, eventId: "next-turn-output", turnId: "next-turn", seq: 3, type: "output.delta", payload: { text: "下一轮已经开始", channel: "assistant", itemId: "next-message", phase: "delta" } },
+    ] });
+    const result = await f.dispatch.tool(principal, "codex_get_run", { runId: "run" });
+    assert.equal(result.run.resultSeq, 1);
+    assert.equal(result.run.lastSeq, 3);
+    assert.equal(result.run.output, "详细的本轮最终答复。");
+    assert.equal(result.run.resultReadComplete, true);
+  });
+}
+
+test("composer settings survive the intent, immutable snapshot and run history", async () => {
+  const f = fixture();
+  await f.native("context", { contexts: [{ workspaceId: "workspace", capturedAt: new Date().toISOString(), gitBaseline: { commit: null, branch: "main", dirty: false }, threads: [] }] });
+  const projectKey = "project:state:" + createHash("sha256").update(JSON.stringify({ p: { authEpoch: 1, bindingId: "binding", bindingRevision: 1, ownerId: "alice", runnerId: "runner" }, workspaceRevision: 1 })).digest("hex");
+  await f.storage.put(projectKey, { state: { bindingId: "binding", bindingRevision: 1, status: "ready", ready: true, stale: true, summaryRevision: 7, summary: savedProjectSummary, capturedAt: "2026-11-12T02:00:00.000Z", sourceRunId: "summary-run", threadId: null, turnId: null, cwd: "demo", gitBaseline: null, error: null, activeRunId: null }, acceptedPrevious: true, operationId: null, cwd: "demo" });
+  const executionSettings = { model: "test-model", fastMode: true };
+  const request = { requestId: "composer-submit", bindingId: "binding", bindingRevision: 1, kind: "task", instruction: "检查项目", executionSettings };
+  const { input } = await f.intent(request);
+  assert.deepEqual((await f.storage.get("exec:snapshot:" + input.snapshotId)).snapshot.executionSettings, executionSettings);
+  await assert.rejects(f.intent({ ...request, executionSettings: { model: "other", fastMode: false } }), { status: 409 });
+  await f.dispatch.tool(principal, "codex_create_run", input);
+  const { run } = await f.dispatch.tool(principal, "codex_get_run", { runId: input.runId });
+  assert.deepEqual(run.executionSettings, executionSettings);
+  assert.equal(run.submission.text, "检查项目");
+  assert.equal(run.submission.projectSummaryStale, true);
+  assert.equal(run.submission.projectCapturedAt, "2026-11-12T02:00:00.000Z");
+});
+
+test("project submission snapshots all sources and saved context, revalidates them, and never schedules per-item completion", async () => {
+  const f = fixture({ managed: true });
+  await f.native("context", { contexts: [{ workspaceId: "workspace", capturedAt: new Date().toISOString(), gitBaseline: { commit: null, branch: "main", dirty: true }, threads: [] }] });
+  const projectKey = "project:state:" + createHash("sha256").update(JSON.stringify({
+    p: { authEpoch: 1, bindingId: "binding", bindingRevision: 1, ownerId: "alice", runnerId: "runner" }, workspaceRevision: 1,
+  })).digest("hex");
+  await f.storage.put(projectKey, { state: { bindingId: "binding", bindingRevision: 1, status: "ready", ready: true, stale: false, summaryRevision: 7, summary: savedProjectSummary, capturedAt: "2026-11-12T02:00:00.000Z", sourceRunId: "summary-run", threadId: null, turnId: null, cwd: "demo", gitBaseline: null, error: null, activeRunId: null }, acceptedPrevious: false, operationId: null, cwd: "demo" });
+  const items = projectItems();
+  const sourceTasks = items.map(({ source }) => ({ noteId: source.taskRef.noteId, taskId: source.taskRef.taskId, generation: source.generation, specRevision: source.specRevision }));
+  let stale = false;
+  f.canvas(async input => {
+    assert.equal(input.action, "snapshot");
+    assert.deepEqual(input.tasks, sourceTasks);
+    return stale ? Response.json({ error: "待办已变化" }, { status: 409 }) : { items };
+  });
+  const request = { requestId: "project-submit", bindingId: "binding", bindingRevision: 1, kind: "task", executionMode: "project", sourceTasks };
+  const { input } = await f.intent(request);
+  assert.deepEqual(await f.intent(request), { input });
+  await assert.rejects(f.intent({ ...request, executionMode: undefined }), { status: 409 });
+  const { snapshot } = await f.storage.get("exec:snapshot:" + input.snapshotId);
+  assert.equal(snapshot.executionMode, "project");
+  assert.deepEqual(snapshot.projectTasks, items);
+  assert.equal(snapshot.batch, undefined);
+  assert.ok(items.every(item => item.taskId !== snapshot.task.taskRef.taskId));
+  assert.deepEqual(snapshot.context.projectSummary, savedProjectSummary);
+  assert.equal(snapshot.summaryRevision, 7);
+  stale = true;
+  await assert.rejects(f.dispatch.tool(principal, "codex_create_run", input), { status: 409 });
+  assert.equal(await f.storage.get("exec:run:" + input.runId), undefined);
+  stale = false;
+  const receipt = await f.dispatch.tool(principal, "codex_create_run", input);
+  assert.deepEqual(await f.dispatch.tool(principal, "codex_create_run", input), receipt);
+  const read = async () => f.dispatch.tool(principal, "codex_get_run", { runId: input.runId });
+  const { run } = await read();
+  assert.equal(run.executionMode, "project");
+  assert.equal(run.sourceBacked, true);
+  assert.equal(run.batch, undefined);
+  assert.equal(run.queue, undefined);
+  assert.deepEqual(run.submission.tasks, items);
+  assert.deepEqual(run.submission.projectSummary, savedProjectSummary);
+  assert.equal(run.submission.summaryRevision, 7);
+  assert.equal(run.submission.projectCapturedAt, "2026-11-12T02:00:00.000Z");
+  assert.equal(run.submission.projectSummaryStale, false);
+  assert.match(run.submission.text, /CSV 导出/);
+  assert.match(run.submission.text, /按钮溢出/);
+  const list = await (await f.dispatch.fetch(new Request("https://runner/execution/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ principal }) }))).json();
+  assert.deepEqual(list.runs[0].submission, run.submission);
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), input.runId);
+  const second = await f.intent({ ...request, requestId: "another-project-submit" });
+  await assert.rejects(f.dispatch.tool(principal, "codex_create_run", second.input), { status: 409 });
+  f.lease([{ run_id: input.runId, workspace_id: "workspace", lease_epoch: 1, expires_at: Date.now() + 60000 }]);
+  const delivered = await f.native("poll", {});
+  assert.equal(delivered.deliveries.length, 1);
+  assert.deepEqual(delivered.deliveries[0].snapshot.projectTasks, items);
+  for (const status of ["stored", "applied"]) await f.native("ack", { commandId: receipt.commandId, status });
+  const eventBase = { protocolVersion: 1, runnerId: "runner", runId: input.runId, threadId: report.threadId, turnId: report.turnId, occurredAt: new Date().toISOString() };
+  await f.native("events", { events: [
+    { ...eventBase, eventId: "project-command", seq: 1, type: "output.delta", payload: { channel: "command", itemId: "command-item", phase: "started", title: "npm test", text: "" } },
+    { ...eventBase, eventId: "project-answer", seq: 2, type: "output.delta", payload: { channel: "assistant", itemId: "answer-item", phase: "completed", text: "已处理所选待办，详见验证。" } },
+    { ...eventBase, eventId: "project-result", seq: 3, type: "turn.completed", payload: { status: "completed", outcome: { runId: input.runId, taskId: snapshot.task.taskRef.taskId, outcome: "done", summary: "导出和移动端修改完成，待用户核对。", changedFiles: [], evidenceRefs: [], remainingIssues: [], nextTaskNotes: [] }, summary: null, error: null } },
+  ] });
+  await f.native("report", { ...report, runId: input.runId, commandId: receipt.commandId });
+  assert.equal((await read()).run.status, "verifying");
+  assert.equal((await read()).run.stopConfirmed, true);
+  assert.equal((await read()).events[0].payload.channel, "command");
+  assert.equal((await read()).events[2].payload.outcome.summary, "导出和移动端修改完成，待用户核对。");
+  assert.equal(await f.storage.get("exec:writebacks:" + input.runId), undefined);
+  assert.equal(f.canvasCalls.filter(c => c.input.action === "finalize").length, 0);
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), undefined);
+  const followup = { requestId: "follow-project", runId: input.runId, expectedTurnId: report.turnId, mode: "reply", message: "继续核对导出。" };
+  stale = true;
+  await assert.rejects(f.dispatch.tool(principal, "codex_continue_run", followup), { status: 409 });
+  stale = false;
+  await f.dispatch.tool(principal, "codex_continue_run", followup);
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), input.runId);
+  const cancelled = await f.dispatch.tool(principal, "codex_cancel_run", { requestId: "stop-project", runId: input.runId });
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), input.runId);
+  // A request to stop is not enough to release the project reservation.
+  f.lease([{ run_id: input.runId, workspace_id: "workspace", lease_epoch: 2, expires_at: Date.now() + 60000 }]);
+  await f.native("poll", {});
+  for (const status of ["stored", "applied"]) await f.native("ack", { commandId: cancelled.commandId, status });
+  await f.native("report", { ...report, runId: input.runId, commandId: cancelled.commandId, revision: 2, status: "cancelled" });
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), undefined);
+  await f.dispatch.tool(principal, "codex_create_run", second.input);
+  assert.equal(await f.storage.get("exec:queue-workspace:workspace"), second.input.runId);
+});
 
 async function cancelledContinuation(mode = "steer", delivered = false) {
   const f = fixture();
@@ -1094,9 +1313,9 @@ test("fifty long criterion proofs survive native ingest and replay without dupli
 
 test("permission selection is immutable in user-issued snapshots and summary always stays read-only",async()=>{
   const f=fixture();await f.native("context",{contexts:[{workspaceId:"workspace",capturedAt:new Date().toISOString(),gitBaseline:{commit:null,branch:null,dirty:false},threads:[]}]});
-  for(const [kind,selection,profile] of [["task",undefined,"workspace_manual"],["task","workspace_auto","workspace_auto"],["task","read_only","read_only"],["summary","workspace_auto","read_only"]]) {
+  for(const [kind,selection,profile] of [["task",undefined,"full_access"],["task","full_access","full_access"],["task","workspace_manual","workspace_manual"],["task","workspace_auto","workspace_auto"],["task","read_only","read_only"],["summary","full_access","read_only"],["summary","workspace_auto","read_only"]]) {
     const {input}=await f.intent({requestId:crypto.randomUUID(),bindingId:"binding",bindingRevision:1,kind,instruction:"test",...(selection?{executionPermissions:{profile:selection}}:{})});
-    const stored=await f.storage.get("exec:snapshot:"+input.snapshotId);assert.deepEqual(stored.snapshot.executionPermissions,{profile,network:false});
+    const stored=await f.storage.get("exec:snapshot:"+input.snapshotId);assert.deepEqual(stored.snapshot.executionPermissions,{profile,network:profile === "full_access"});
     await assert.rejects(f.dispatch.tool(principal,"codex_create_run",{...input,executionPermissions:{profile:"workspace_auto"}}),{status:400});
   }
   await assert.rejects(f.intent({requestId:"full-access",bindingId:"binding",bindingRevision:1,kind:"task",instruction:"x",executionPermissions:{profile:"workspace_auto",network:true}}),{status:400});

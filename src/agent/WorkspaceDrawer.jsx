@@ -1,9 +1,18 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
-export default function WorkspaceDrawer({ title, onClose, children }) {
+export default function WorkspaceDrawer({
+  title,
+  description,
+  label = title,
+  closeLabel = `关闭${title}`,
+  size = "standard",
+  onClose,
+  children,
+}) {
   const panel = useRef(null);
+  const descriptionId = useId();
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
@@ -57,15 +66,20 @@ export default function WorkspaceDrawer({ title, onClose, children }) {
         className="agent-workspace-drawer agent-trial"
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={label}
+        aria-describedby={description ? descriptionId : undefined}
+        data-size={size}
         tabIndex={-1}
         ref={panel}
       >
         <header>
-          <h2>{title}</h2>
+          <div>
+            <h2>{title}</h2>
+            {description && <p id={descriptionId}>{description}</p>}
+          </div>
           <button
             className="agent-icon-button"
-            aria-label={`关闭${title}`}
+            aria-label={closeLabel}
             onClick={onClose}
           >
             <X size={19} />

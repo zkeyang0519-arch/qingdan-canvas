@@ -1,5 +1,6 @@
 import type { Env, Room, Session } from "./types";
 import { body, check, json } from "./http";
+import { sessionFeatures } from "./agent-availability";
 export const lifetime = 60 * 60 * 24 * 30;
 export const token = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) =>
@@ -70,6 +71,7 @@ export async function sessionEndpoint(request: Request, env: Env) {
     return json({
       user: existing ? publicUser(existing) : null,
       legacyRoomCount: legacy?.room_count || 0,
+      features: sessionFeatures(env),
     });
   }
   check(request.method === "POST", "方法不支持。", 405);
@@ -91,7 +93,10 @@ export async function sessionEndpoint(request: Request, env: Env) {
   await env.DB.prepare("UPDATE accounts SET name=? WHERE id=?")
     .bind(name, existing.id)
     .run();
-  return json({ user: publicUser({ ...existing, name }) });
+  return json({
+    user: publicUser({ ...existing, name }),
+    features: sessionFeatures(env),
+  });
 }
 export async function membership(env: Env, roomId: string, userId: string) {
   const room = await env.DB.prepare(

@@ -1,28 +1,29 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bot,
-  CheckCheck,
+  Activity,
   Folder,
   ListTodo,
   MessageSquare,
+  Monitor,
   Plus,
-  Settings2,
   Sparkles,
   StickyNote,
-  X,
 } from "lucide-react";
 import { api } from "../api.js";
 import ChatPanel from "./ChatPanel.jsx";
 import ChecklistPanel from "./ChecklistPanel.jsx";
-import BatchPanel from "./BatchPanel.jsx";
+import { canvasChecklistTasks } from "./checklist-tasks.js";
 import DevicePanel, { localRunnerRequest } from "./DevicePanel.jsx";
 import DiagnosisPanel from "./DiagnosisPanel.jsx";
 import PendingBatchNotice from "./PendingBatchNotice.jsx";
 import WorkspaceDrawer from "./WorkspaceDrawer.jsx";
-import CodexSessionPicker from "./CodexSessionPicker.jsx";
+import ProjectBindingPicker from "./ProjectBindingPicker.jsx";
 import { useWorkspaceDraft } from "./workspace-state.js";
 import "./experience.css";
 import "./agent.css";
+import "./noto-sans-sc.css";
+import "./workbench.css";
 
 function validTarget(target) {
   return (
@@ -45,80 +46,20 @@ const validTargets = (value) =>
     ([id, target]) => validTarget(target) && target.sectionId === id,
   );
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const countTasks = (page) => ({
-  total: page?.tasks?.length || 0,
-  pending: page?.tasks?.filter((task) => !task.block?.done).length || 0,
-});
+const countTasks = (page) => {
+  const tasks = canvasChecklistTasks(page);
+  return {
+    total: tasks.length,
+    pending: tasks.filter((task) => !task.block.done).length,
+    review: 0,
+  };
+};
 
-function SettingsDrawer({ children, onClose }) {
-  const panel = useRef(null);
-  useEffect(() => {
-    const previous = document.activeElement;
-    if (!document.querySelector(".agent-request-dialog"))
-      panel.current?.focus();
-    const key = (event) => {
-      if (document.querySelector(".agent-request-dialog")) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        onClose();
-      }
-      if (event.key !== "Tab") return;
-      const items = [
-        ...panel.current.querySelectorAll(
-          "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary",
-        ),
-      ].filter((item) => {
-        const collapsed = item.closest("details:not([open])");
-        return !collapsed || collapsed.querySelector("summary") === item;
-      });
-      const first = items[0],
-        last = items.at(-1);
-      if (
-        !items.includes(document.activeElement) ||
-        (!event.shiftKey && document.activeElement === last)
-      ) {
-        event.preventDefault();
-        first?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      }
-      event.stopImmediatePropagation();
-    };
-    window.addEventListener("keydown", key, true);
-    return () => {
-      window.removeEventListener("keydown", key, true);
-      if (
-        previous?.isConnected &&
-        !document.querySelector(".agent-request-dialog")
-      )
-        previous.focus?.();
-    };
-  }, [onClose]);
+function BindingDrawer({ children, onClose }) {
   return (
-    <div className="agent-workspace-drawer-backdrop">
-      <section
-        className="agent-workspace-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label="电脑与项目设置"
-        ref={panel}
-        tabIndex={-1}
-      >
-        <header>
-          <h2>设置</h2>
-          <button
-            className="agent-icon-button"
-            aria-label="关闭电脑设置"
-            onClick={onClose}
-          >
-            <X size={19} />
-          </button>
-        </header>
-        <div className="agent-workspace-drawer-body">{children}</div>
-      </section>
-    </div>
+    <WorkspaceDrawer title="绑定 agent" size="wide" onClose={onClose}>
+      {children}
+    </WorkspaceDrawer>
   );
 }
 
@@ -129,8 +70,11 @@ function WorkspaceScope({
   initialBatchTarget,
   startAtBatch = false,
   onBatchTargetChange,
-  onOpenDiagnostics,
   onCreateProject,
+  onAddTodo,
+  onDeleteTodo,
+  onReopenTodo,
+  onSetTodoDone,
   requestCloud,
   requestLocal,
 }) {
@@ -151,44 +95,69 @@ function WorkspaceScope({
     true,
     { storageKey: storage + ":batches", validate: validTargets },
   );
-  const [mobilePane, setMobilePane] = useState(startAtBatch ? "tasks" : "chat");
+  const [mobilePane, setMobilePane] = useState("chat");
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sessionsOpen, setSessionsOpen] = useState(
-    () => !(startAtBatch && validTarget(initialBatchTarget)),
-  );
-  const [settingsView, setSettingsView] = useState("setup");
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [settingsView, setSettingsView] = useState("binding");
   const [creating, setCreating] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [createError, setCreateError] = useState("");
   const [connection, setConnection] = useState("checking");
   const [refreshTokens, setRefreshTokens] = useState({});
   const [bindingTokens, setBindingTokens] = useState({});
+  const [checklistCounts, setChecklistCounts] = useState({});
+  const receiveCounts = useCallback((sourcePage, next) => {
+    setChecklistCounts((previous) => {
+      const old = previous[sourcePage.id];
+      if (old?.tasks === sourcePage.tasks && same(old.counts, next))
+        return previous;
+      return {
+        ...previous,
+        [sourcePage.id]: { tasks: sourcePage.tasks, counts: next },
+      };
+    });
+  }, []);
+  const displayedCounts = (sourcePage) => {
+    const saved = checklistCounts[sourcePage?.id];
+    return saved && saved.tasks === sourcePage?.tasks
+      ? saved.counts
+      : countTasks(sourcePage);
+  };
+  const bindingRead = useRef(0);
+  const promptedProjects = useRef(new Set());
+  const automaticPicker = useRef(false);
+  const otherDrawerOpen = useRef(false);
+  otherDrawerOpen.current = memoryOpen || summaryOpen || creating;
   const progressSeen = useRef(new Map());
   const page = pages.find((item) => item.id === selected) || pages[0];
   const selectedRef = useRef(page?.id);
   selectedRef.current = page?.id;
   const taskPane = useRef(null);
-  const batchAnchor = useRef(null);
+  const chatPane = useRef(null);
   const pageId = page?.id;
-  const counts = countTasks(page);
+  const bindingToken = bindingTokens[pageId] || 0;
+  const initialRunSection =
+    startAtBatch && validTarget(initialBatchTarget)
+      ? initialBatchTarget.sectionId
+      : null;
+  const projectPickerLabel = "绑定 agent";
+  const counts = displayedCounts(page);
   const common = { roomId, userId, requestCloud, requestLocal };
   const pageList = page ? [page] : [];
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
-  const openSettings = useCallback(() => {
-    setSessionsOpen(false);
+  const closeSettings = useCallback(() => setProjectPickerOpen(false), []);
+  const selectBindingView = (view) => {
+    automaticPicker.current = false;
+    setSettingsView(view);
+  };
+  const openProjectPicker = useCallback(() => {
+    automaticPicker.current = false;
+    promptedProjects.current.add(selectedRef.current);
     setMemoryOpen(false);
     setSummaryOpen(false);
-    setSettingsView("setup");
-    setSettingsOpen(true);
-  }, []);
-  const openSessions = useCallback(() => {
-    setMemoryOpen(false);
-    setSummaryOpen(false);
-    setSettingsOpen(false);
+    setSettingsView("binding");
     setCreating(false);
-    setSessionsOpen(true);
+    setProjectPickerOpen(true);
   }, []);
 
   useEffect(() => {
@@ -203,6 +172,46 @@ function WorkspaceScope({
         : { ...prior, [initialBatchTarget.sectionId]: initialBatchTarget },
     );
   }, [initialBatchTarget, startAtBatch]);
+  useEffect(() => {
+    let active = true;
+    const version = ++bindingRead.current;
+    const isCurrent = () =>
+      active &&
+      version === bindingRead.current &&
+      selectedRef.current === pageId;
+    const promptIfNeeded = () => {
+      if (otherDrawerOpen.current || promptedProjects.current.has(pageId))
+        return;
+      promptedProjects.current.add(pageId);
+      automaticPicker.current = true;
+      setSettingsView("binding");
+      setProjectPickerOpen(true);
+    };
+    if (!pageId) {
+      if (!initialRunSection) promptIfNeeded();
+    } else {
+      void (async () => {
+        try {
+          const { binding } = await requestCloud(
+            `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(pageId)}`,
+            { accountId: userId, isCurrentSession: isCurrent },
+          );
+          if (!isCurrent() || binding === undefined) return;
+          if (binding) {
+            if (automaticPicker.current) {
+              automaticPicker.current = false;
+              setProjectPickerOpen(false);
+            }
+          } else if (pageId !== initialRunSection) promptIfNeeded();
+        } catch {
+          // An unavailable binding lookup does not mean the project is unbound.
+        }
+      })();
+    }
+    return () => {
+      active = false;
+    };
+  }, [roomId, userId, pageId, bindingToken, initialRunSection, requestCloud]);
   useEffect(() => {
     let active = true,
       reading = false;
@@ -243,8 +252,7 @@ function WorkspaceScope({
     setSelected(id);
     setMemoryOpen(false);
     setSummaryOpen(false);
-    setSettingsOpen(false);
-    setSessionsOpen(false);
+    setProjectPickerOpen(false);
   };
   const selectBatch = useCallback(
     (target) => {
@@ -264,8 +272,8 @@ function WorkspaceScope({
       if (!validTarget(target) || target.sectionId !== selectedRef.current)
         return;
       selectBatch(target);
-      setMobilePane("tasks");
-      batchAnchor.current?.scrollIntoView?.({
+      setMobilePane("chat");
+      chatPane.current?.scrollIntoView?.({
         block: "nearest",
         behavior: "smooth",
       });
@@ -307,7 +315,7 @@ function WorkspaceScope({
     )
       return;
     selectProject(target.sectionId);
-    setMobilePane("tasks");
+    setMobilePane("chat");
     setTargets((prior) => ({ ...prior, [target.sectionId]: target }));
     onBatchTargetChange?.(target);
   };
@@ -338,20 +346,16 @@ function WorkspaceScope({
   return (
     <section className="agent-workspace" aria-label="Agent 工作区">
       <aside className="agent-workspace-sidebar" aria-label="Agent 项目导航">
-        <div className="agent-workspace-brand">
-          <span>
-            <Bot size={22} />
-          </span>
-          <strong>Agent</strong>
-        </div>
         <div className="agent-sidebar-heading">
-          <span>我的项目</span>
+          <span>
+            我的项目 <small>{pages.length}</small>
+          </span>
           {onCreateProject && (
             <button
               className="agent-icon-button"
               aria-label="新建项目"
               onClick={() => {
-                setSessionsOpen(false);
+                setProjectPickerOpen(false);
                 setCreating((value) => !value);
               }}
             >
@@ -361,7 +365,7 @@ function WorkspaceScope({
         </div>
         <div className="agent-project-list">
           {pages.map((item) => {
-            const count = countTasks(item);
+            const count = displayedCounts(item);
             return (
               <button
                 key={item.id}
@@ -388,59 +392,72 @@ function WorkspaceScope({
         )}
         <header className="agent-workspace-header">
           <div className="agent-workspace-heading">
-            <h1>{page?.title || "开始你的第一个项目"}</h1>
-            <p>
-              {counts.total
-                ? `${counts.pending} 项待办 · ${counts.total - counts.pending} 项已完成`
-                : "暂无待办"}
-            </p>
+            <span className="agent-heading-icon" aria-hidden="true">
+              <Folder size={20} />
+            </span>
+            <div>
+              <h1 title={page?.title}>{page?.title || "开始你的第一个项目"}</h1>
+              <p>
+                {counts.total
+                  ? `${counts.pending} 项待办 · ${counts.total - counts.pending} 项已完成${counts.review ? ` · ${counts.review} 项待核对` : ""}`
+                  : "暂无待办"}
+              </p>
+            </div>
           </div>
           <div className="agent-workspace-tools">
-            <button onClick={openSessions}>
-              <MessageSquare size={16} />
-              <span>选择 Codex 会话</span>
-            </button>
-            <button
-              className={`agent-connection-chip ${connection === "online" ? "is-online" : ""}`}
-              onClick={openSettings}
+            <div
+              className="agent-project-tools"
+              role="group"
+              aria-label="项目工具"
             >
-              <i />
-              {connectionText}
-            </button>
-            <button
-              aria-label="打开项目摘要"
-              title="项目摘要"
-              onClick={() => {
-                setSessionsOpen(false);
-                setSummaryOpen(true);
-                setMemoryOpen(false);
-                setMobilePane("chat");
-              }}
+              <button
+                aria-label={projectPickerLabel}
+                title={projectPickerLabel}
+                onClick={openProjectPicker}
+              >
+                <Folder size={16} />
+                <span>{projectPickerLabel}</span>
+              </button>
+              <button
+                aria-label="打开项目摘要"
+                title="项目摘要"
+                onClick={() => {
+                  setProjectPickerOpen(false);
+                  setSummaryOpen(true);
+                  setMemoryOpen(false);
+                  setMobilePane("chat");
+                }}
+              >
+                <StickyNote size={16} />
+                <span>项目摘要</span>
+              </button>
+              <button
+                aria-label="打开记忆"
+                title="记忆"
+                onClick={() => {
+                  setProjectPickerOpen(false);
+                  setMemoryOpen(true);
+                  setSummaryOpen(false);
+                  setMobilePane("chat");
+                }}
+              >
+                <Sparkles size={16} />
+                <span>记忆</span>
+              </button>
+            </div>
+            <div
+              className="agent-device-tools"
+              role="group"
+              aria-label="电脑连接与设置"
             >
-              <StickyNote size={16} />
-              <span>项目摘要</span>
-            </button>
-            <button
-              aria-label="打开记忆"
-              title="记忆"
-              onClick={() => {
-                setSessionsOpen(false);
-                setMemoryOpen(true);
-                setSummaryOpen(false);
-                setMobilePane("chat");
-              }}
-            >
-              <Sparkles size={16} />
-              <span>记忆</span>
-            </button>
-            <button
-              className="agent-icon-button"
-              aria-label="电脑与项目设置"
-              title="设置"
-              onClick={openSettings}
-            >
-              <Settings2 size={18} />
-            </button>
+              <span
+                className={`agent-connection-chip ${connection === "online" ? "is-online" : ""}`}
+                role="status"
+              >
+                <i aria-hidden="true" />
+                {connectionText}
+              </span>
+            </div>
           </div>
         </header>
         <div className="agent-mobile-navigation">
@@ -463,7 +480,7 @@ function WorkspaceScope({
               className="agent-icon-button"
               aria-label="新建项目"
               onClick={() => {
-                setSessionsOpen(false);
+                setProjectPickerOpen(false);
                 setCreating(true);
                 setMobilePane("projects");
               }}
@@ -514,13 +531,11 @@ function WorkspaceScope({
         </div>
         {page ? (
           <div className="agent-workspace-columns" data-pane={mobilePane}>
-            <div className="agent-workspace-chat-pane" aria-label="项目对话">
-              <div className="agent-pane-title">
-                <div>
-                  <MessageSquare size={17} />
-                  <h2>项目聊天</h2>
-                </div>
-              </div>
+            <div
+              className="agent-workspace-chat-pane"
+              aria-label="项目对话"
+              ref={chatPane}
+            >
               <ChatPanel
                 key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
                 {...common}
@@ -534,9 +549,15 @@ function WorkspaceScope({
                   setSummaryOpen(true);
                   setMemoryOpen(false);
                 }}
-                onOpenSettings={openSessions}
+                onOpenSettings={openProjectPicker}
                 onOpenChecklist={openChecklist}
                 onTasksSaved={() => refreshChecklist(page.id)}
+                execution={{
+                  page,
+                  initialTarget: targets[page.id],
+                  onSelectBatch: selectBatch,
+                  onRunChange,
+                }}
               />
             </div>
             <aside
@@ -549,7 +570,9 @@ function WorkspaceScope({
                   <ListTodo size={17} />
                   <h2>待办与执行</h2>
                 </div>
-                <span>{counts.pending} 项待办</span>
+                <span className="agent-pane-count">
+                  {counts.pending} 项待办
+                </span>
               </div>
               <div className="agent-workspace-checklist">
                 <ChecklistPanel
@@ -559,27 +582,12 @@ function WorkspaceScope({
                   embedded
                   refreshToken={refreshTokens[page.id] || 0}
                   onOpenBatch={openBatch}
-                  onOpenSettings={openSessions}
-                />
-              </div>
-              <div className="agent-workspace-batch" ref={batchAnchor}>
-                <div className="agent-pane-title">
-                  <div>
-                    <CheckCheck size={17} />
-                    <h2>执行进度</h2>
-                  </div>
-                </div>
-                <BatchPanel
-                  key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
-                  {...common}
-                  pages={pageList}
-                  embedded
-                  initialTarget={targets[page.id]}
-                  initialPageId={page.id}
-                  onSelectBatch={selectBatch}
-                  onRunChange={onRunChange}
-                  onOpenChecklist={openChecklist}
-                  onOpenSettings={openSessions}
+                  onOpenSettings={openProjectPicker}
+                  onAddTodo={onAddTodo}
+                  onDeleteTodo={onDeleteTodo}
+                  onReopenTodo={onReopenTodo}
+                  onSetTodoDone={onSetTodoDone}
+                  onCountsChange={receiveCounts}
                 />
               </div>
             </aside>
@@ -590,14 +598,11 @@ function WorkspaceScope({
               <Bot size={34} />
             </div>
             <h2>给你的计划一个开始</h2>
-            <p>
-              新建一个项目，和 Agent 一起整理需求，再把确认好的待办交给 Codex。
-            </p>
             {onCreateProject && (
               <button
                 className="primary"
                 onClick={() => {
-                  setSessionsOpen(false);
+                  setProjectPickerOpen(false);
                   setCreating(true);
                 }}
               >
@@ -607,27 +612,79 @@ function WorkspaceScope({
           </div>
         )}
       </div>
-      {sessionsOpen && (
-        <WorkspaceDrawer
-          title="选择 Codex 会话"
-          onClose={() => setSessionsOpen(false)}
-        >
-          <CodexSessionPicker
-            {...common}
-            page={page}
-            onCreateProject={onCreateProject}
-            onOpenSettings={openSettings}
-            onBound={({ sectionId }) => {
-              setSelected(sectionId);
-              setBindingTokens((prior) => ({
-                ...prior,
-                [sectionId]: (prior[sectionId] || 0) + 1,
-              }));
-              setSessionsOpen(false);
-              setConnection("online");
-            }}
-          />
-        </WorkspaceDrawer>
+      {projectPickerOpen && (
+        <BindingDrawer onClose={closeSettings}>
+          <div
+            className="agent-settings-navigation"
+            role="group"
+            aria-label="agent 绑定管理"
+          >
+            <button
+              aria-pressed={settingsView === "binding"}
+              onClick={() => selectBindingView("binding")}
+            >
+              <Folder size={16} aria-hidden="true" />
+              <span>项目绑定</span>
+            </button>
+            <button
+              aria-pressed={settingsView === "setup"}
+              onClick={() => selectBindingView("setup")}
+            >
+              <Monitor size={16} aria-hidden="true" />
+              <span>设备管理</span>
+            </button>
+            <button
+              aria-pressed={settingsView === "diagnosis"}
+              onClick={() => selectBindingView("diagnosis")}
+            >
+              <Activity size={16} aria-hidden="true" />
+              <span>诊断与恢复</span>
+            </button>
+          </div>
+          {settingsView === "binding" ? (
+            <ProjectBindingPicker
+              {...common}
+              page={page}
+              onCreateProject={onCreateProject}
+              onBound={({ sectionId, isLocalAgent }) => {
+                bindingRead.current++;
+                promptedProjects.current.add(sectionId);
+                automaticPicker.current = false;
+                setSelected(sectionId);
+                setBindingTokens((prior) => ({
+                  ...prior,
+                  [sectionId]: (prior[sectionId] || 0) + 1,
+                }));
+                setProjectPickerOpen(false);
+                if (isLocalAgent) setConnection("online");
+              }}
+            />
+          ) : settingsView === "diagnosis" ? (
+            <DiagnosisPanel
+              {...common}
+              page={page}
+              onOpenSetup={() => setSettingsView("setup")}
+              onOpenRun={(target) => {
+                closeSettings();
+                openBatch(target);
+              }}
+            />
+          ) : (
+            <DevicePanel
+              {...common}
+              pages={pageList}
+              embedded
+              initialPageId={pageId}
+              onBindingChanged={() => {
+                if (pageId)
+                  setBindingTokens((prior) => ({
+                    ...prior,
+                    [pageId]: (prior[pageId] || 0) + 1,
+                  }));
+              }}
+            />
+          )}
+        </BindingDrawer>
       )}
       {creating && (
         <WorkspaceDrawer
@@ -666,62 +723,6 @@ function WorkspaceScope({
             {createError && <p role="alert">{createError}</p>}
           </form>
         </WorkspaceDrawer>
-      )}
-      {settingsOpen && (
-        <SettingsDrawer onClose={closeSettings}>
-          <div className="agent-settings-navigation" aria-label="设置页面">
-            <button
-              aria-pressed={settingsView === "setup"}
-              onClick={() => setSettingsView("setup")}
-            >
-              电脑与项目
-            </button>
-            <button
-              aria-pressed={settingsView === "diagnosis"}
-              onClick={() => setSettingsView("diagnosis")}
-            >
-              诊断与恢复
-            </button>
-          </div>
-          {settingsView === "diagnosis" ? (
-            <DiagnosisPanel
-              {...common}
-              page={page}
-              onOpenSetup={() => setSettingsView("setup")}
-              onOpenRun={(target) => {
-                closeSettings();
-                openBatch(target);
-              }}
-            />
-          ) : (
-            <DevicePanel
-              {...common}
-              pages={pageList}
-              embedded
-              initialPageId={pageId}
-              onBindingChanged={() => {
-                if (pageId)
-                  setBindingTokens((prior) => ({
-                    ...prior,
-                    [pageId]: (prior[pageId] || 0) + 1,
-                  }));
-              }}
-            />
-          )}
-          {onOpenDiagnostics && (
-            <details className="agent-advanced-settings">
-              <summary>高级工具</summary>
-              <button
-                onClick={() => {
-                  closeSettings();
-                  onOpenDiagnostics();
-                }}
-              >
-                功能诊断
-              </button>
-            </details>
-          )}
-        </SettingsDrawer>
       )}
     </section>
   );

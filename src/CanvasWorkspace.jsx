@@ -33,11 +33,17 @@ import {
   Columns2,
   Pencil,
   Server,
-  Bot,
 } from "lucide-react";
+import DesktopLaunchButton from "./desktop/DesktopLaunchButton.jsx";
+import AgentComingSoon from "./agent/AgentComingSoon.jsx";
 import Canvas from "./canvas/Canvas.jsx";
 import ArrangedWorkspace from "./canvas/ArrangedWorkspace.jsx";
-import { setSurface, createChecklistPage } from "./canvas/arranged-model.js";
+import {
+  setSurface,
+  createChecklistPage,
+  appendPageObjects,
+  deletePageTasks,
+} from "./canvas/arranged-model.js";
 import ContextMenu from "./canvas/ContextMenu.jsx";
 import { TodoToolsProvider } from "./canvas/TodoTools.jsx";
 import {
@@ -57,6 +63,8 @@ import {
 } from "./canvas/Panels.jsx";
 import {
   createInspirationBoard,
+  createObject,
+  makeBlock,
   patchObjects,
   deleteObjects,
   duplicateObjects,
@@ -87,7 +95,6 @@ import { todoPages } from "./canvas/todoPages.js";
 import PendingBatchNotice, {
   useObservedBatchTarget,
 } from "./agent/PendingBatchNotice.jsx";
-const AgentExperience = lazy(() => import("./agent/AgentExperience.jsx"));
 const AgentWorkspace = lazy(() => import("./agent/AgentWorkspace.jsx"));
 
 const contextIcons = {
@@ -121,6 +128,7 @@ export default function CanvasWorkspace({
   initialInvite,
   onLeave,
   onRoomRenamed,
+  agentEnabled = false,
 }) {
   const workspace = useRoomWorkspace(room, user);
   const { state, update, readOnly } = workspace;
@@ -201,6 +209,71 @@ export default function CanvasWorkspace({
       ? createdId
       : null;
   };
+  const addAgentTodo = (pageId, text) => {
+    if (readOnly || !text.trim()) return false;
+    const note = {
+      ...createObject(room.id, "note"),
+      noteKind: "checklist",
+      blocks: [makeBlock(text.replace(/\r\n?/g, "\n"))],
+    };
+    update((current) => appendPageObjects(current, room.id, pageId, [note]));
+    return (
+      workspace.current.current?.objects.some(
+        (object) => object.id === note.id,
+      ) || false
+    );
+  };
+  const deleteAgentTodo = (pageId, { noteId, taskId }) => {
+    if (readOnly) return false;
+    const before = workspace.current.current;
+    update((current) => {
+      const page = todoPages(current, room.id).find(
+        (item) => item.id === pageId,
+      );
+      if (
+        !page?.tasks.some(
+          (task) => task.note.id === noteId && task.key === taskId,
+        )
+      )
+        return current;
+      return deletePageTasks(current, room.id, pageId, [taskId]);
+    });
+    const batch = workspace.current.current?.trash.find(
+      (item) => !before.trash.some((previous) => previous.id === item.id),
+    );
+    if (!batch) return false;
+    showToast("待办及备注已移入回收站", {
+      label: "撤销",
+      run: () => {
+        update((current) => restoreTrash(current, batch.id));
+        if (
+          workspace.current.current.trash.some((item) => item.id === batch.id)
+        )
+          showToast("内容仍在回收站，请解锁原清单后恢复。");
+        else setToast(null);
+      },
+    });
+    return true;
+  };
+  const setAgentTodoDone = (pageId, taskRef, done) => {
+    if (readOnly || typeof done !== "boolean") return false;
+    const findTask = (current) =>
+      current &&
+      todoPages(current, room.id)
+        .find((page) => page.id === pageId)
+        ?.tasks.find(
+          (item) =>
+            item.note.id === taskRef.noteId && item.key === taskRef.taskId,
+        );
+    const task = findTask(workspace.current.current);
+    if (!task || task.note.noteKind === "text" || task.locked) return false;
+    if (task.block.done !== done)
+      workspace.toggleBlock(taskRef.noteId, taskRef.taskId);
+    const saved = findTask(workspace.current.current);
+    return !!saved && !saved.locked && saved.block.done === done;
+  };
+  const reopenAgentTodo = (pageId, taskRef) =>
+    setAgentTodoDone(pageId, taskRef, false);
   const onView = (next) =>
     update(
       (s) => ({
@@ -617,7 +690,10 @@ export default function CanvasWorkspace({
             queueMicrotask(() => {
               const pending = pendingMode.current;
               pendingMode.current = null;
-              if (pending) switchSurface(pending.surface, { showBatch: pending.showBatch });
+              if (pending)
+                switchSurface(pending.surface, {
+                  showBatch: pending.showBatch,
+                });
             });
           }}
         >
@@ -658,23 +734,6 @@ export default function CanvasWorkspace({
                   <Pencil size={15} />
                 </button>
               )}
-              <button
-                className="ops-nav-entry"
-                aria-label="运维资产"
-                aria-pressed={operationsOpen}
-                title={operationsOpen ? "再次点击返回原界面" : "打开运维资产"}
-                onClick={() => {
-                  exitEdit();
-                  setPanel(null);
-                  setContext(null);
-                  setCollection(null);
-                  setMenuDialog(null);
-                  setOperationsOpen((open) => !open);
-                }}
-              >
-                <Server size={15} />
-                <span>运维资产</span>
-              </button>
               <span
                 className={`sync-indicator ${workspace.status}`}
                 role="status"
@@ -706,32 +765,12 @@ export default function CanvasWorkspace({
                 aria-pressed={agentMode}
                 onClick={() => switchSurface("agent")}
               >
-                <Bot size={14} />
                 Agent
               </button>
             </div>
             <div className="nav-end">
-              {!agentMode && (
-                <>
-                  <button
-                    className="agent-nav-entry"
-                    aria-label="Agent 验证"
-                    aria-haspopup="dialog"
-                    onClick={() => {
-                      exitEdit();
-                      setOperationsOpen(false);
-                      setContext(null);
-                      setCollection(null);
-                      setPanel("agent");
-                      setAgentStartAtBatch(false);
-                    }}
-                  >
-                    <Bot size={17} />
-                    <span>Agent 验证</span>
-                  </button>
-                  <AuthorAvatarToggle />
-                </>
-              )}
+              <DesktopLaunchButton user={user} room={room} />
+              {!agentMode && <AuthorAvatarToggle />}
               <div
                 className="presence"
                 aria-label={`${members.length} 位成员在线`}
@@ -788,6 +827,23 @@ export default function CanvasWorkspace({
                 <span>帮助</span>
               </button>
               <button
+                className="ops-nav-entry"
+                aria-label="运维资产"
+                aria-pressed={operationsOpen}
+                title={operationsOpen ? "再次点击返回原界面" : "打开运维资产"}
+                onClick={() => {
+                  exitEdit();
+                  setPanel(null);
+                  setContext(null);
+                  setCollection(null);
+                  setMenuDialog(null);
+                  setOperationsOpen((open) => !open);
+                }}
+              >
+                <Server size={15} />
+                <span>运维资产</span>
+              </button>
+              <button
                 className="primary share-button"
                 aria-label="邀请协作"
                 disabled={room.role !== "owner"}
@@ -805,7 +861,7 @@ export default function CanvasWorkspace({
               </button>
             </div>
           </nav>
-          {observedBatchStorage.warning && (
+          {agentEnabled && observedBatchStorage.warning && (
             <p
               className="agent-error"
               role="alert"
@@ -814,26 +870,7 @@ export default function CanvasWorkspace({
               批次提醒的恢复位置未保存：{observedBatchStorage.warning}
             </p>
           )}
-          {panel === "agent" && (
-            <Suspense
-              fallback={
-                <div className="modal-backdrop" role="status">
-                  正在打开 Agent 验证…
-                </div>
-              }
-            >
-              <AgentExperience
-                roomId={room.id}
-                userId={user.id}
-                pages={todoPages(state, room.id)}
-                initialBatchTarget={observedBatch}
-                initialStep={agentStartAtBatch ? "batch" : "rules"}
-                onBatchTargetChange={setObservedBatch}
-                onClose={() => setPanel(null)}
-              />
-            </Suspense>
-          )}
-          {panel !== "agent" && !agentMode && observedBatch && (
+          {agentEnabled && !agentMode && observedBatch && (
             <PendingBatchNotice
               roomId={room.id}
               userId={user.id}
@@ -852,7 +889,9 @@ export default function CanvasWorkspace({
               readOnly={readOnly}
             />
           )}
-          {agentMode ? (
+          {agentMode && !agentEnabled ? (
+            <AgentComingSoon onBack={() => switchSurface("canvas")} />
+          ) : agentMode ? (
             <Suspense
               fallback={
                 <div className="agent-loading" role="status">
@@ -869,10 +908,10 @@ export default function CanvasWorkspace({
                 startAtBatch={agentStartAtBatch}
                 onBatchTargetChange={setObservedBatch}
                 onCreateProject={readOnly ? undefined : createAgentProject}
-                onOpenDiagnostics={() => {
-                  setAgentStartAtBatch(false);
-                  setPanel("agent");
-                }}
+                onAddTodo={readOnly ? undefined : addAgentTodo}
+                onDeleteTodo={readOnly ? undefined : deleteAgentTodo}
+                onReopenTodo={readOnly ? undefined : reopenAgentTodo}
+                onSetTodoDone={readOnly ? undefined : setAgentTodoDone}
               />
             </Suspense>
           ) : arranged ? (

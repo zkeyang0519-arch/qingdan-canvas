@@ -15,6 +15,7 @@ import { AgentValidationError } from "./errors";
 import { normalizeAgentDeadline } from "./deadlines";
 import { MAX_PLAN_TASKS, sortPlan } from "./sort-plan";
 import { approvalDetailsSchema, executionPermissionsSchema, inputQuestionSchema } from "./permissions";
+import { executionSettingsSchema } from "./model-settings";
 
 const id = z
   .string()
@@ -146,7 +147,10 @@ export const agentCommandSchema = z.discriminatedUnion("type", [
 
 const summaryItem = z.strictObject({
   text: text(8000),
-  evidenceRef: id.optional(),
+  evidenceRef: z.string().min(1).max(4096).refine(
+    (value) => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value),
+    "Invalid summary source",
+  ).optional(),
 });
 const summaryItems = z.array(summaryItem).max(100);
 export const projectSummarySchema = z.strictObject({
@@ -157,7 +161,37 @@ export const projectSummarySchema = z.strictObject({
   blockers: summaryItems,
   verification: summaryItems,
   uncertainties: summaryItems,
-}) satisfies z.ZodType<ProjectSummary>;
+  background: z.strictObject({ name: text(200), purpose: text(3000), stage: text(1000) }).optional(),
+  modules: z.array(z.strictObject({
+    name: text(200),
+    status: z.enum(["completed", "in_progress", "partial", "blocked", "not_started", "unknown"]),
+    current: summaryItems,
+    remaining: summaryItems,
+    nextSteps: summaryItems,
+  })).max(40).optional(),
+  handoff: z.strictObject({
+    technicalOverview: summaryItems,
+    recentChanges: summaryItems,
+    currentFocus: summaryItems,
+    entryPoints: z.array(z.strictObject({
+      path: relativePath,
+      responsibility: text(2000),
+      changeWhen: text(2000),
+    })).max(40),
+    nextSteps: z.array(summaryItem.extend({
+      priority: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+      acceptance: text(3000),
+    })).max(40),
+    constraints: summaryItems,
+  }).optional(),
+  coverage: z.strictObject({
+    totalRecords: revision, deliveredRecords: revision, cachedRecords: revision.optional(), threadCount: revision,
+    failedThreadCount: revision, excludedForkCount: revision, missingFinalCount: revision,
+    incompleteTurnCount: revision, partial: z.boolean(),
+  }).optional(),
+}).refine(value => !!value.background === !!value.modules, "Project background and modules must be provided together")
+  .refine(value => !value.handoff || !!value.modules, "Handoff requires project background and modules")
+  .refine(value => !value.modules || JSON.stringify(value).length <= 24000, "Module progress report exceeds 24000 characters") satisfies z.ZodType<ProjectSummary>;
 export const runOutcomeSchema = z
   .strictObject({
     runId: id,
@@ -273,7 +307,14 @@ export const runnerEventSchema = z
       ...eventBase,
       ...turnIdentity,
       type: z.literal("output.delta"),
-      payload: z.strictObject({ text: z.string().min(1).max(32000) }),
+      payload: z.strictObject({
+        text: z.string().max(32000),
+        channel: z.enum(["assistant", "command", "file_change"]).optional(),
+        itemId: id.optional(),
+        title: z.string().max(2000).optional(),
+        phase: z.enum(["started", "delta", "completed"]).optional(),
+        messagePhase: z.enum(["commentary", "partial_answer", "final_answer"]).optional(),
+      }).refine(value => value.text.length > 0 || !!(value.itemId && value.channel && value.phase && value.phase !== "delta"), "Empty output requires an item lifecycle boundary"),
     }),
     z.strictObject({
       ...eventBase,
@@ -312,6 +353,7 @@ export const runnerEventSchema = z
         outcome: runOutcomeSchema.nullable(),
         summary: projectSummarySchema.nullable(),
         error: text(8000).nullable(),
+        output: z.string().max(32000).optional(),
       }),
     }),
     z.strictObject({
@@ -361,6 +403,7 @@ export const runnerEventSchema = z
   }) satisfies z.ZodType<RunnerEvent>;
 
 const snapshotBase = {
+  executionSettings: executionSettingsSchema.optional(),
   executionPermissions: executionPermissionsSchema.optional(),
   snapshotId: id,
   runId: id,
@@ -376,6 +419,8 @@ const snapshotBase = {
   allowedCheckIds: ids(100),
   context: z.strictObject({
     projectSummary: projectSummarySchema.nullable(),
+    projectCapturedAt: instant.nullable().optional(),
+    projectSummaryStale: z.boolean().optional(),
     decisions: z.array(text(8000)).max(100),
     previousTaskNotes: z.array(text(8000)).max(100),
     gitBaseline: z.strictObject({
@@ -434,6 +479,8 @@ export const executionSnapshotSchema = z
       ...snapshotBase,
       kind: z.literal("task"),
       task: taskSpecSchema,
+      executionMode: z.literal("project").optional(),
+      projectTasks: batchSchema.shape.items.optional(),
       batch: batchSchema.optional(),
     }),
   ])
@@ -447,6 +494,15 @@ export const executionSnapshotSchema = z
       issue("Stale task specifications cannot be dispatched");
     if (snapshot.task.dependsOn.includes(snapshot.task.taskRef.taskId))
       issue("A task cannot depend on itself");
+    if (snapshot.executionMode === "project") {
+      if (!snapshot.projectTasks || snapshot.batch)
+        issue("Project execution requires selected tasks without a sequential batch");
+      if (snapshot.projectTasks?.some(({ source, taskId }) => !source ||
+        source.taskRef.taskId !== taskId ||
+        source.taskRef.canvasId !== snapshot.task.taskRef.canvasId ||
+        taskId === snapshot.task.taskRef.taskId))
+        issue("Project tasks require distinct checklist sources in the authorized canvas");
+    } else if (snapshot.projectTasks) issue("Project tasks require project execution mode");
     const first = snapshot.batch?.items[0];
     if (
       first &&
@@ -474,7 +530,7 @@ export const executionSnapshotSchema = z
       )
         issue("Checklist source must identify its batch item and canvas");
     }
-    const tasks = snapshot.batch?.items ?? [snapshot.task];
+    const tasks = snapshot.projectTasks ?? snapshot.batch?.items ?? [snapshot.task];
     for (const task of tasks)
       for (const criterion of task.acceptance)
         if (

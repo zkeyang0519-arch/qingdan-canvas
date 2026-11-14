@@ -7,6 +7,10 @@ import type { InitializeParams } from "./protocol/InitializeParams";
 import type { InitializeResponse } from "./protocol/InitializeResponse";
 import type { GetAccountParams } from "./protocol/v2/GetAccountParams";
 import type { GetAccountResponse } from "./protocol/v2/GetAccountResponse";
+import type { ConfigReadParams } from "./protocol/v2/ConfigReadParams";
+import type { ConfigReadResponse } from "./protocol/v2/ConfigReadResponse";
+import type { ModelListParams } from "./protocol/v2/ModelListParams";
+import type { ModelListResponse } from "./protocol/v2/ModelListResponse";
 import type { ThreadStartParams } from "./protocol/v2/ThreadStartParams";
 import type { ThreadStartResponse } from "./protocol/v2/ThreadStartResponse";
 import type { ThreadResumeParams } from "./protocol/v2/ThreadResumeParams";
@@ -31,6 +35,8 @@ import type { ThreadBackgroundTerminalsTerminateParams } from "./protocol/v2/Thr
 import type { ThreadBackgroundTerminalsTerminateResponse } from "./protocol/v2/ThreadBackgroundTerminalsTerminateResponse";
 
 type Methods = {
+  "config/read": [ConfigReadParams, ConfigReadResponse];
+  "model/list": [ModelListParams, ModelListResponse];
   "thread/backgroundTerminals/list": [
     ThreadBackgroundTerminalsListParams,
     ThreadBackgroundTerminalsListResponse,

@@ -14,6 +14,7 @@ import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { makeSnapshot } from "./fixtures/agent-fixtures.mjs";
+import { projectItems, savedProjectSummary } from "./fixtures/project-execution.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 await mkdir(path.join(root, ".tmp"), { recursive: true });
@@ -479,6 +480,44 @@ if (api) {
       },
     };
   }
+  test("native project run releases after one turn and a follow-up stays in the same thread", async (t) => {
+    const f = await fixture(t);
+    const project = { executionMode: "project", projectTasks: projectItems("canvas-a") };
+    const delivery = f.delivery({ type: "create_run" }, project);
+    delivery.snapshot.context.projectSummary = savedProjectSummary;
+    delivery.snapshot.payloadHash = api.digest({ ...delivery.snapshot, payloadHash: undefined });
+    delivery.envelope.payload.payloadHash = delivery.snapshot.payloadHash;
+    delivery.envelope.payloadHash = api.digest(delivery.envelope.payload);
+    f.queue(delivery);
+    await f.tickUntil(() => f.releases.length === 1);
+    await f.restart();
+    await f.executor.tick();
+    assert.equal((await f.calls("turn/start")).length, 1);
+    assert.equal(f.gates.length, 0);
+    assert.equal(f.reports.at(-1).batch, undefined);
+    assert.equal(f.reports.at(-1).output, "已完成本次任务，并核对了结果。");
+    assert.equal(f.events.find(event => event.type === "turn.completed").payload.output, "已完成本次任务，并核对了结果。");
+    assert.equal(f.runner.getRun("run-a").status, "verifying");
+    const turnId = f.runner.getRun("run-a").activeTurnId;
+    f.queue({ ...f.delivery({ type: "continue_run", expectedTurnId: turnId, mode: "reply", message: "再核对导出文件的编码。", commandId: "follow-project" }, project), snapshot: delivery.snapshot });
+    await f.tickUntil(() => f.releases.length === 2);
+    assert.equal((await f.calls("thread/start")).length, 1);
+    assert.equal((await f.calls("turn/start")).length, 2);
+  });
+
+  test("native project cancellation waits for a confirmed stop and never advances selected tasks", async (t) => {
+    const f = await fixture(t, "hang");
+    const project = { executionMode: "project", projectTasks: projectItems("canvas-a") };
+    f.queue(f.delivery({ type: "create_run" }, project));
+    await f.tickUntil(async () => (await f.calls("turn/start")).length === 1);
+    f.queue(f.delivery({ type: "cancel_run", commandId: "cancel-project" }, project));
+    await f.tickUntil(() => f.releases.length === 1);
+    assert.equal((await f.calls("turn/start")).length, 1);
+    assert.equal(f.gates.length, 0);
+    assert.equal(f.reports.at(-1).status, "cancelled");
+    assert.equal(f.reports.at(-1).stopConfirmed, true);
+    assert.ok((await f.calls("turn/interrupt")).length >= 1);
+  });
   for (const mode of ["approval", "input"]) {
     test(`native ${mode} delivery survives ACK loss and restart without repeating wire response or storing answer text`, async (t) => {
       const f = await fixture(t, mode);
@@ -1279,14 +1318,15 @@ if (api) {
     const evidence = JSON.parse(
       turn.additionalContext.qingdan_project_evidence.value,
     );
-    assert.ok(
-      evidence.files.some(
-        (file) =>
-          file.path === "prior-task.txt" &&
-          file.content === "preceding task result",
-      ),
-    );
-    assert.equal(evidence.gitBaseline.dirty, true);
+    assert.equal(evidence.mode, "project_inspection");
+    assert.equal(evidence.cwd, f.workspace);
+    assert.equal((await f.calls("thread/start")).at(-1).params.dynamicTools.some((tool) => tool.name === "qingdan_inspect_project"), true);
+    assert.equal(report.summaryContext.gitBaseline.dirty, true);
+    assert.equal(report.summaryContext.sourceKind, "project_current");
+    assert.equal(report.summaryProgress.model, "gpt-6.1-terra");
+    assert.equal(report.summaryProgress.effort, "medium");
+    assert.equal(report.summaryProgress.mode, "project");
+    assert.equal(report.summaryProgress.totalRecords, null);
     await f.restart();
     assert.deepEqual(
       f.runner.getRun("summary-run").summaryContext,
@@ -1343,8 +1383,8 @@ if (api) {
     );
     await f.tickUntil(() => f.runner.getRun("run-a")?.activeTurnId);
     const lease = f.device.lease("run-a");
-    f.device.saveLease({ ...lease, expiresAt: lease.expiresAt + 300_000 });
-    f.advance(299_999);
+    f.device.saveLease({ ...lease, expiresAt: lease.expiresAt + 1_800_000 });
+    f.advance(1_799_999);
     await f.executor.tick();
     assert.equal((await f.calls("turn/interrupt")).length, 0);
     f.advance(2);

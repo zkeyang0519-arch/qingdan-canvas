@@ -19,7 +19,7 @@
   position: fixed;
   inset: 64px 0 0;
   z-index: 35;
-  color: #293d30;
+  color: #202b28;
   background: #fff;
 }
 .ops-app,
@@ -36,9 +36,11 @@
     "Microsoft YaHei",
     system-ui,
     sans-serif;
-  color: #334b38;
-  --ops-border: #e4e9e2;
-  --ops-green: #50795e;
+  color: #35413c;
+  --ops-border: #e6e9e7;
+  --ops-green: #245d4b;
+  --ops-muted: #7b8580;
+  --ops-surface: #f7f9f8;
 }
 .ops-app button,
 .ops-app input,
@@ -60,18 +62,18 @@
 .ops-layout {
   height: 100%;
   display: grid;
-  grid-template-columns: 194px minmax(0, 1fr);
+  grid-template-columns: 182px minmax(0, 1fr);
   min-height: 0;
 }
 .ops-sidebar {
-  background: #f6f8f4;
+  background: var(--ops-surface);
   border-right: 1px solid var(--ops-border);
-  padding: 30px 14px;
+  padding: 31px 12px;
   min-width: 0;
 }
 .ops-sidebar-label {
-  margin: 0 12px 14px;
-  color: #8c9885;
+  margin: 0 12px 10px;
+  color: #929a96;
   font-size: 10px;
   letter-spacing: 0.07em;
 }
@@ -83,29 +85,29 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: 0;
   border-radius: 6px;
-  color: #66785c;
+  color: #67726b;
   background: transparent;
   text-align: left;
   font-size: 13px;
-  min-height: 40px;
+  min-height: 38px;
 }
 .ops-sidebar button + button {
   margin-top: 5px;
 }
 .ops-sidebar button span {
   margin-left: auto;
-  color: #8a9a7c;
+  color: #929b95;
   font-size: 11px;
 }
 .ops-sidebar button:hover {
-  background: #eaf0e5;
+  background: #edf1ee;
 }
 .ops-sidebar button.active {
-  background: #e4eddf;
-  color: #426b4d;
+  background: #e8f0ec;
+  color: #245d4b;
   font-weight: 600;
 }
 .ops-mini-dot,
@@ -129,10 +131,10 @@
   min-height: 0;
   position: relative;
   overflow: auto;
-  padding: 34px 36px 28px;
+  padding: 32px 40px 28px;
   background: #fff;
   scrollbar-width: thin;
-  scrollbar-color: #d9e1d1 transparent;
+  scrollbar-color: #d7ded9 transparent;
 }
 .ops-close,
 .ops-icon-button {
@@ -142,7 +144,7 @@
   place-items: center;
   border: 0;
   border-radius: 5px;
-  color: #8b9b7c;
+  color: #87928b;
   background: transparent;
   flex-shrink: 0;
 }
@@ -153,8 +155,8 @@
 }
 .ops-close:hover,
 .ops-icon-button:hover {
-  color: #4b704e;
-  background: #edf3e7;
+  color: #245d4b;
+  background: #edf3ef;
 }
 .ops-page-title {
   display: flex;
@@ -164,18 +166,18 @@
 }
 .ops-page-title h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 25px;
   font-weight: 650;
   letter-spacing: -0.03em;
-  color: #263c2c;
+  color: #202b28;
 }
 .ops-breadcrumb {
-  margin: 0 0 14px;
+  margin: 0 0 10px;
   font-size: 11px;
-  color: #8d9a81;
+  color: #8b948e;
 }
 .ops-page-actions {
-  padding-top: 22px;
+  padding-top: 18px;
 }
 .ops-primary,
 .ops-quiet,
@@ -185,11 +187,11 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid #dfe6d8;
+  border: 1px solid #dfe5e1;
   border-radius: 6px;
   padding: 8px 12px;
   background: #fff;
-  color: #607755;
+  color: #53665b;
   font-size: 12px;
   line-height: 1.5;
   white-space: nowrap;
@@ -197,76 +199,84 @@
 .ops-primary,
 .ops-detail-actions .ops-primary,
 .ops-modal-actions .ops-primary {
-  background: #50795e;
-  border-color: #50795e;
+  background: #245d4b;
+  border-color: #245d4b;
   color: #fff;
 }
 .ops-primary:hover:not(:disabled),
 .ops-detail-actions .ops-primary:hover:not(:disabled) {
-  background: #42694e;
+  background: #1b4c3c;
 }
 .ops-quiet:hover:not(:disabled),
 .ops-detail-actions button:hover:not(:disabled),
 .ops-back:hover {
-  background: #f1f5ec;
+  background: #f2f6f3;
 }
 .ops-metrics {
-  display: flex;
-  align-items: center;
-  margin: 25px 0 22px;
-  padding-bottom: 23px;
-  border-bottom: 1px solid var(--ops-border);
-  gap: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  margin: 25px 0 24px;
+  gap: 12px;
 }
 .ops-metrics > * {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 0 27px;
-  border: 0;
-  border-right: 1px solid #e6ebdf;
-  background: transparent;
-}
-.ops-metrics > :first-child {
-  padding-left: 0;
-}
-.ops-metrics > :last-child {
-  border-right: 0;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 102px;
+  padding: 18px 20px;
+  border: 1px solid var(--ops-border);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
 }
 .ops-metrics strong {
-  font-size: 22px;
+  font-size: 27px;
   font-weight: 600;
   line-height: 1;
-  color: #3e593e;
+  letter-spacing: -0.04em;
+  color: #273b31;
   font-variant-numeric: tabular-nums;
 }
 .ops-metrics span {
-  font-size: 12px;
-  color: #819174;
+  font-size: 11px;
+  color: var(--ops-muted);
+  line-height: 1.4;
+}
+.ops-metrics .ops-upcoming-metric {
+  background: #fdfbf7;
+  border-color: #eee7db;
+}
+.ops-metrics .ops-upcoming-metric:hover {
+  background: #faf6ec;
+  border-color: #e4d6bb;
 }
 .ops-metrics .ops-upcoming-metric strong {
-  color: #aa7a35;
+  color: #a87732;
 }
 .ops-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .ops-search {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1;
-  max-width: 338px;
+  max-width: 350px;
   min-width: 200px;
   height: 36px;
   padding: 8px 10px;
-  border: 1px solid #dfe6d8;
+  border: 1px solid #e2e7e3;
   border-radius: 6px;
-  color: #8fa080;
-  background: #fff;
+  color: #87948b;
+  background: #f9faf9;
 }
 .ops-search input {
   width: 100%;
@@ -275,21 +285,21 @@
   border: 0;
   outline: 0;
   background: transparent;
-  color: #3a5033;
-  font-size: 13px;
+  color: #35473b;
+  font-size: 12px;
 }
 .ops-search input::placeholder {
-  color: #94a386;
+  color: #929d95;
 }
 .ops-search:focus-within {
-  border-color: #87a779;
-  box-shadow: 0 0 0 3px #edf3e8;
+  border-color: #84a897;
+  box-shadow: 0 0 0 3px #eaf2ee;
 }
 .ops-toolbar select {
-  border: 1px solid #dfe6d8;
+  border: 1px solid #e2e7e3;
   border-radius: 6px;
   background: #fff;
-  color: #6b805d;
+  color: #65746a;
   font-size: 12px;
   height: 36px;
   padding: 0 9px;
@@ -301,7 +311,7 @@
   display: flex;
   gap: 4px;
   align-items: center;
-  color: #90a17e;
+  color: #8c9990;
 }
 .ops-sort > svg {
   display: none;
@@ -310,23 +320,24 @@
   display: flex;
   gap: 3px;
   padding: 3px;
-  background: #f1f5eb;
+  background: #f1f4f2;
+  border: 1px solid #e4e9e6;
   border-radius: 6px;
 }
 .ops-view-switch button {
   display: grid;
   place-items: center;
   width: 29px;
-  height: 28px;
+  height: 26px;
   border: 0;
   border-radius: 4px;
-  color: #93a480;
+  color: #96a098;
   background: transparent;
 }
 .ops-view-switch button[aria-pressed="true"] {
   background: #fff;
-  color: #527747;
-  box-shadow: 0 1px 3px #24412315;
+  color: #245d4b;
+  box-shadow: 0 1px 3px #163a2812;
 }
 .ops-filter-note {
   display: flex;
@@ -343,6 +354,7 @@
 .ops-table-wrap {
   border: 1px solid var(--ops-border);
   border-radius: 8px;
+  background: #fff;
 }
 .ops-table {
   width: 100%;
@@ -353,11 +365,11 @@
   font-size: 12px;
 }
 .ops-table th {
-  height: 41px;
-  padding: 11px 13px;
+  height: 39px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--ops-border);
-  background: #f8faf6;
-  color: #7e9070;
+  background: var(--ops-surface);
+  color: #7d8981;
   font-size: 11px;
   font-weight: 500;
 }
@@ -370,9 +382,9 @@
 }
 .ops-table td {
   vertical-align: middle;
-  padding: 16px 13px;
-  border-bottom: 1px solid #edf0e8;
-  height: 82px;
+  padding: 13px 14px;
+  border-bottom: 1px solid #edf0ee;
+  height: 72px;
 }
 .ops-table td:first-child {
   padding-left: 20px;
@@ -381,19 +393,19 @@
   border-bottom: 0;
 }
 .ops-table tbody tr:hover {
-  background: #fafcf7;
+  background: #fafcfb;
 }
 .ops-name-column {
-  width: 25%;
+  width: 27%;
 }
 .ops-resource-column {
-  width: 19%;
+  width: 18%;
 }
 .ops-environment-column {
   width: 9%;
 }
 .ops-date-column {
-  width: 30%;
+  width: 29%;
 }
 .ops-status-column {
   width: 11%;
@@ -414,37 +426,37 @@
   text-align: left;
 }
 .ops-record-icon {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  border: 1px solid #e3ebdb;
-  border-radius: 8px;
-  background: #f0f5e9;
-  color: #608151;
-  font-size: 14px;
+  border: 1px solid #dfe9e3;
+  border-radius: 7px;
+  background: #edf4f0;
+  color: #3f705b;
+  font-size: 13px;
   font-weight: 600;
 }
 .ops-record-icon.server {
-  border-color: #e0e8eb;
-  background: #f1f6f8;
-  color: #648899;
+  border-color: #e1e7eb;
+  background: #f3f6f8;
+  color: #647c8c;
 }
 .ops-record-main {
   flex: 1;
   display: grid;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
 .ops-record-main strong {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  color: #2b422c;
+  color: #263a2e;
   overflow-wrap: anywhere;
 }
 .ops-record-main > small {
-  color: #839575;
+  color: #8b968e;
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -459,22 +471,22 @@
   align-items: center;
   gap: 6px;
   min-height: 36px;
-  color: #637f54;
+  color: #617367;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 .ops-resource-stack svg {
   flex-shrink: 0;
-  color: #96aa85;
+  color: #98a59c;
 }
 .ops-provider {
   display: grid;
   gap: 5px;
-  color: #657b56;
+  color: #607366;
   overflow-wrap: anywhere;
 }
 .ops-provider small {
-  color: #91a17f;
+  color: #95a097;
   font-size: 11px;
 }
 .ops-environments {
@@ -483,40 +495,45 @@
   flex-wrap: wrap;
 }
 .ops-environments > span {
-  padding: 2px 5px;
-  border: 1px solid #e3e9db;
+  padding: 2px 6px;
+  border: 1px solid #e6eae7;
   border-radius: 4px;
   font-size: 10px;
   white-space: nowrap;
-  color: #7b8d6c;
-  background: #fafcf7;
+  color: #7a8980;
+  background: #f8faf8;
 }
 .ops-status {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: #628660;
-  font-size: 11px;
+  gap: 6px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #eef6f0;
+  color: #527c5e;
+  font-size: 10px;
   white-space: nowrap;
 }
 .ops-status.maintenance {
-  color: #a88142;
+  color: #a47c37;
+  background: #fbf5e9;
 }
 .ops-status.retired {
-  color: #909e84;
+  color: #8a968d;
+  background: #f0f3f1;
 }
 .ops-no-date {
-  color: #9aa98b;
+  color: #9aa79e;
 }
 .ops-record-menu {
   min-width: 166px;
   max-width: calc(100vw - 24px);
   z-index: 90;
   padding: 5px;
-  border: 1px solid #dde6d4;
+  border: 1px solid #e1e7e3;
   border-radius: 8px;
   background: #fff;
-  box-shadow: 0 10px 30px #263a251b;
+  box-shadow: 0 10px 30px #243c2b18;
   font:
     12px/1.5 Inter,
     "Microsoft YaHei",
@@ -531,7 +548,7 @@
   padding: 8px 10px;
   border: 0;
   border-radius: 4px;
-  color: #637a53;
+  color: #617568;
   background: transparent;
   font: inherit;
   text-align: left;
@@ -539,7 +556,7 @@
 }
 .ops-record-menu button:hover:not(:disabled),
 .ops-record-menu button:focus-visible {
-  background: #f0f5e9;
+  background: #eff5f1;
   outline: 0;
 }
 .ops-record-menu button:disabled {
@@ -584,7 +601,7 @@
   min-width: 0;
 }
 .ops-asset-card:hover {
-  border-color: #b6c8a7;
+  border-color: #b4cbbd;
 }
 .ops-card-header {
   display: flex;
@@ -608,9 +625,9 @@
   display: flex;
   gap: 15px;
   justify-content: space-between;
-  color: #91a07e;
+  color: #96a199;
   font-size: 11px;
-  padding-top: 17px;
+  padding-top: 14px;
 }
 .ops-empty {
   display: grid;
@@ -730,7 +747,7 @@
   border-radius: 10px;
 }
 .ops-detail-card > .ops-status {
-  width: 100%;
+  width: fit-content;
   margin-top: 6px;
 }
 .ops-fields-grid {
@@ -864,7 +881,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #7a8d66;
+  color: #617668;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   line-height: 1.6;
@@ -908,7 +925,7 @@
   flex-basis: auto;
   padding: 2px 5px;
   border-radius: 4px;
-  background: #f0f5e9;
+  background: #eef4f0;
 }
 .ops-date-cell .todo-deadline-ring,
 .ops-card-dates .todo-deadline-ring {
@@ -926,6 +943,9 @@
 }
 .ops-date-cell [data-upcoming="true"] .todo-deadline-value,
 .ops-card-dates [data-upcoming="true"] .todo-deadline-value {
+  color: #9b722f;
+}
+.ops-date-cell [data-upcoming="true"] .ops-deadline-date {
   color: #9b722f;
 }
 .ops-date-cell [data-deadline="late"] .todo-deadline-button,
@@ -1231,15 +1251,16 @@
     padding: 8px 10px;
   }
   .ops-metrics {
-    margin: 23px 0 18px;
-    padding-bottom: 20px;
+    margin: 20px 0 18px;
+    gap: 8px;
   }
   .ops-metrics > * {
-    padding: 0 18px;
-    gap: 6px;
+    min-height: 84px;
+    padding: 13px 12px;
+    gap: 10px;
   }
   .ops-metrics strong {
-    font-size: 20px;
+    font-size: 23px;
   }
   .ops-metrics span {
     font-size: 10px;
@@ -1317,6 +1338,17 @@
     align-items: flex-start;
     flex-direction: column;
     gap: 4px;
+  }
+  .ops-date-cell .ops-deadline-server-name.sr-only {
+    position: static;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    font-size: 10px;
+    color: #8b978f;
   }
   .ops-deadline-date {
     font-size: 10px;

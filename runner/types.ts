@@ -6,9 +6,15 @@ import type {
   RunnerEvent,
   BatchProgress,
   VerificationResult,
+  SummaryReadProgress,
 } from "../shared/agent/contracts";
+import type { SummaryHistoryCache } from "./summary-cache";
+import type { ReasoningEffort } from "./protocol/ReasoningEffort";
 import type { NativeSummaryContext } from "../shared/agent/execution";
 import type { SummaryEvidence } from "./summary-evidence";
+import type { InspectionRoot, InspectionSource } from "./project-inspection";
+import type { ProjectHistory } from "./project-history";
+import type { HistoryReadState } from "./project-history-pages";
 import type {
   ApprovalDetails,
   InputQuestion,
@@ -48,11 +54,21 @@ export type RunRecord = {
   resultValid: boolean;
   resultError: string | null;
   output: string;
+  // Display progress is separate from result evidence and survives reconnects.
+  outputItems?: { turnId: string; items: Record<string, { length: number; completed: boolean }> };
   // Missing on legacy runs, whose final messages still use outputSchema.
   resultChannel?: "tool";
   // Captured by the native runner at the actual start, never by the model.
   summaryContext?: NativeSummaryContext;
   summaryEvidence?: SummaryEvidence;
+  summaryInspection?: { root: InspectionRoot; sources: InspectionSource[]; mode?: "current"; reportFormat?: "handoff"; historySources?: string[]; historyReads?: number };
+  summaryHistory?: ProjectHistory;
+  summaryHistoryRead?: HistoryReadState;
+  summaryHistoryCache?: SummaryHistoryCache;
+  summarySettings?: { model: string; effort: ReasoningEffort };
+  taskModel?: string;
+  taskServiceTier?: string;
+  summaryProgress?: SummaryReadProgress;
   reportedResult?: {
     turnId: string;
     callId: string;

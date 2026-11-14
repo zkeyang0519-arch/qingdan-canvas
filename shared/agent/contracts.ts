@@ -155,6 +155,21 @@ export type RunMapping = {
 };
 
 export type SummaryItem = { text: string; evidenceRef?: string };
+export type ProgressModule = {
+  name: string;
+  status: "completed" | "in_progress" | "partial" | "blocked" | "not_started" | "unknown";
+  current: SummaryItem[];
+  remaining: SummaryItem[];
+  nextSteps: SummaryItem[];
+};
+export type ProjectHandoff = {
+  technicalOverview: SummaryItem[];
+  recentChanges: SummaryItem[];
+  currentFocus: SummaryItem[];
+  entryPoints: { path: string; responsibility: string; changeWhen: string }[];
+  nextSteps: (SummaryItem & { priority: 0 | 1 | 2; acceptance: string })[];
+  constraints: SummaryItem[];
+};
 export type ProjectSummary = {
   overview: string;
   completed: SummaryItem[];
@@ -163,6 +178,34 @@ export type ProjectSummary = {
   blockers: SummaryItem[];
   verification: SummaryItem[];
   uncertainties: SummaryItem[];
+  background?: { name: string; purpose: string; stage: string };
+  modules?: ProgressModule[];
+  handoff?: ProjectHandoff;
+  coverage?: {
+    totalRecords: number;
+    deliveredRecords: number;
+    cachedRecords?: number;
+    threadCount: number;
+    failedThreadCount: number;
+    excludedForkCount: number;
+    missingFinalCount: number;
+    incompleteTurnCount: number;
+    partial: boolean;
+  };
+};
+export type SummaryReadProgress = {
+  mode?: "project";
+  filesRead?: number;
+  historyReads?: number;
+  phase: "collecting" | "reading_cache" | "reading" | "summarizing";
+  totalRecords: number | null;
+  readRecords: number;
+  cachedRecords: number;
+  pagesRead: number;
+  startedAt: string;
+  updatedAt: string;
+  model: string;
+  effort: string;
 };
 export type MemoryRecord = {
   id: string;
@@ -182,6 +225,7 @@ export type MemoryRecord = {
 };
 type SnapshotBase = {
   executionPermissions?: ExecutionPermissions;
+  executionSettings?: import("./model-settings").ExecutionSettings;
   snapshotId: string;
   runId: string;
   ownerId: string;
@@ -196,6 +240,8 @@ type SnapshotBase = {
   allowedCheckIds: string[];
   context: {
     projectSummary: ProjectSummary | null;
+    projectCapturedAt?: string | null;
+    projectSummaryStale?: boolean;
     decisions: string[];
     previousTaskNotes: string[];
     gitBaseline: {
@@ -244,6 +290,8 @@ export type ExecutionSnapshot = SnapshotBase &
     | {
         kind: "task";
         task: TaskSpec;
+        executionMode?: "project";
+        projectTasks?: BatchItem[];
         batch?: { items: BatchItem[]; autoComplete?: boolean; managed?: true };
       }
   );
@@ -305,7 +353,14 @@ export type RunnerEventPayloads = {
   "run.accepted": { status: "queued" | "preparing" };
   "thread.created": Record<string, never>;
   "turn.started": Record<string, never>;
-  "output.delta": { text: string };
+  "output.delta": {
+    text: string;
+    channel?: "assistant" | "command" | "file_change";
+    itemId?: string;
+    title?: string;
+    phase?: "started" | "delta" | "completed";
+    messagePhase?: "commentary" | "partial_answer" | "final_answer";
+  };
   "approval.requested": { requestId: string; description: string; details?: ApprovalDetails };
   "input.requested": {
     requestId: string;
@@ -317,6 +372,7 @@ export type RunnerEventPayloads = {
     outcome: RunOutcome | null;
     summary: ProjectSummary | null;
     error: string | null;
+    output?: string;
   };
   "verification.completed": { results: VerificationResult[] };
   "run.cancelled": { reason: string };

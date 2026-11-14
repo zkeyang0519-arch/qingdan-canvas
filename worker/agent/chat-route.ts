@@ -25,6 +25,7 @@ export async function chatRoute(
       "request",
       "new",
       "send",
+      "cancel",
       "memory",
       "remember",
       "save-tasks",

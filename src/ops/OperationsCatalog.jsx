@@ -4,6 +4,7 @@ import {
   Boxes,
   Check,
   CircleAlert,
+  Network,
   Plus,
   Server,
   Trash2,
@@ -14,6 +15,7 @@ import {
   addOpsTask,
   addProduct,
   addServer,
+  deleteDeployment,
   deleteProduct,
   deleteServer,
   filterProducts,
@@ -24,6 +26,7 @@ import {
   saveOpsState,
   toggleOpsTask,
   updateProduct,
+  updateDeployment,
   updateServer,
 } from "./model.js";
 import { validDeadline } from "../../shared/deadline.js";
@@ -33,6 +36,7 @@ import ServerDeadline, {
   DeadlineRing,
 } from "./ServerDeadline.jsx";
 import OperationsDirectory, { isDueSoon } from "./OperationsDirectory.jsx";
+import OperationsMap from "./OperationsMap.jsx";
 
 const STATUS_LABELS = {
   running: "运行中",
@@ -62,6 +66,11 @@ function restoreFocus(target) {
 }
 
 function recordTasks(state, targetType, targetId) {
+  if (targetType === "deployment") {
+    return state.tasks.filter(
+      (task) => task.targetType === targetType && task.targetId === targetId,
+    );
+  }
   const deploymentIds = state.deployments
     .filter((item) =>
       targetType === "product"
@@ -118,9 +127,10 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const [loaded] = useState(() => loadOpsState());
   const [ops, setOps] = useState(loaded.state);
   const [loadError, setLoadError] = useState(loaded.error);
-  const [view, setView] = useState("products");
+  const [view, setView] = useState("map");
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [selectedServerId, setSelectedServerId] = useState(null);
+  const [selectedDeploymentId, setSelectedDeploymentId] = useState(null);
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
   const [environment, setEnvironment] = useState("");
@@ -145,33 +155,37 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const formOpenerRef = useRef(null);
 
   const commit = (next) => {
-    setOps(next);
     const saved = saveOpsState(next);
-    if (!saved.ok) setLoadError(saved.error);
-    else setLoadError("");
-    return saved.ok ? "" : saved.error;
+    if (!saved.ok) {
+      setLoadError(saved.error);
+      return saved.error;
+    }
+    setOps(next);
+    setLoadError("");
+    return "";
   };
 
   const confirmDelete = (type, record) => {
     if (readOnly) return;
-    const label = type === "product" ? "产品" : "服务器";
-    if (
-      typeof window.confirm === "function" &&
-      !window.confirm(
-        `确定删除${label}“${record.name}”吗？关联的部署关系和运维待办也会删除。`,
-      )
-    )
+    const label = { product: "产品", server: "服务器", deployment: "部署关系" }[
+      type
+    ];
+    const message =
+      type === "deployment"
+        ? "确定删除此部署关系吗？关联的运维待办也会删除。"
+        : `确定删除${label}“${record.name}”吗？关联的部署关系和运维待办也会删除。`;
+    if (typeof window.confirm === "function" && !window.confirm(message))
       return;
     try {
-      commit(
-        type === "product"
-          ? deleteProduct(ops, record.id)
-          : deleteServer(ops, record.id),
-      );
+      const remove = {
+        product: deleteProduct,
+        server: deleteServer,
+        deployment: deleteDeployment,
+      }[type];
+      if (commit(remove(ops, record.id))) return;
       setForm(null);
       setFormError("");
-      if (type === "product") setSelectedProductId(null);
-      else setSelectedServerId(null);
+      closeDetails();
     } catch (error) {
       setLoadError(error.message);
     }
@@ -201,7 +215,17 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const selectedServer = ops.servers.find(
     (item) => item.id === selectedServerId,
   );
-  const hasDetail = Boolean(selectedProduct || selectedServer);
+  const selectedDeployment = ops.deployments.find(
+    (item) => item.id === selectedDeploymentId,
+  );
+  const hasDetail = Boolean(
+    selectedProduct || selectedServer || selectedDeployment,
+  );
+  const detailLabel = selectedProduct
+    ? "产品详情"
+    : selectedServer
+      ? "服务器详情"
+      : "部署详情";
   const hasForm = Boolean(form);
   const soonCount = ops.servers.filter((server) =>
     isDueSoon(server, now),
@@ -219,7 +243,13 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
           ?.focus({ preventScroll: true });
       detailOpenerRef.current = null;
     }
-  }, [hasDetail, selectedProductId, selectedServerId, hasForm]);
+  }, [
+    hasDetail,
+    selectedProductId,
+    selectedServerId,
+    selectedDeploymentId,
+    hasForm,
+  ]);
 
   useEffect(() => {
     if (hasForm) {
@@ -274,11 +304,13 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   const closeDetails = () => {
     setSelectedProductId(null);
     setSelectedServerId(null);
+    setSelectedDeploymentId(null);
   };
   const openDetails = (type, id, opener = document.activeElement) => {
     if (!hasDetail) detailOpenerRef.current = opener;
     setSelectedProductId(type === "product" ? id : null);
     setSelectedServerId(type === "server" ? id : null);
+    setSelectedDeploymentId(type === "deployment" ? id : null);
   };
 
   const resetFilters = () => {
@@ -307,13 +339,12 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
   };
   const submitForm = (event) => {
     event.preventDefault();
+    if (readOnly) return;
     const data = Object.fromEntries(
       new window.FormData(event.currentTarget).entries(),
     );
     try {
       let next = ops;
-      if (form.targetId && !hasDetail)
-        detailOpenerRef.current = formOpenerRef.current;
       if (form.type === "product") {
         const input = {
           name: data["product-name"],
@@ -330,17 +361,15 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
         next = form.targetId
           ? updateProduct(ops, form.targetId, input)
           : addProduct(ops, input);
-        setSelectedProductId(form.targetId || null);
-        setSelectedServerId(null);
       } else if (form.type === "server") {
         const input = { ...data, ...deadlineDraft, name: data["server-name"] };
         next = form.targetId
           ? updateServer(ops, form.targetId, input)
           : addServer(ops, input);
-        setSelectedServerId(form.targetId || null);
-        setSelectedProductId(null);
       } else if (form.type === "deployment") {
-        next = addDeployment(ops, data);
+        next = form.targetId
+          ? updateDeployment(ops, form.targetId, data)
+          : addDeployment(ops, data);
       } else if (form.type === "task") {
         next = addOpsTask(ops, {
           text: data.text,
@@ -348,25 +377,26 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
           targetId: data.targetId,
         });
       }
-      commit(next);
+      const saveError = commit(next);
+      if (saveError) {
+        setFormError(saveError);
+        return;
+      }
+      if ((form.type === "product" || form.type === "server") && form.targetId)
+        openDetails(form.type, form.targetId, formOpenerRef.current);
       closeForm();
     } catch (error) {
       setFormError(error.message);
     }
   };
 
-  const goProducts = () => {
-    setView("products");
-    closeDetails();
-    resetFilters();
-  };
-  const goServers = () => {
-    setView("servers");
+  const goToView = (nextView) => {
+    setView(nextView);
     closeDetails();
     resetFilters();
   };
   const showSoon = () => {
-    goServers();
+    goToView("servers");
     setSoonOnly(true);
   };
   const toggleTask = (task) => {
@@ -476,11 +506,11 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
         <div className="ops-detail-top">
           <button
             className="ops-back"
-            aria-label="返回产品目录"
+            aria-label={view === "map" ? "返回部署地图" : "返回产品目录"}
             onClick={closeDetails}
           >
             <ArrowLeft size={14} />
-            产品目录
+            {view === "map" ? "部署地图" : "产品目录"}
           </button>
           <div className="ops-detail-actions">
             <button
@@ -602,11 +632,11 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
         <div className="ops-detail-top">
           <button
             className="ops-back"
-            aria-label="返回服务器台账"
+            aria-label={view === "map" ? "返回部署地图" : "返回服务器台账"}
             onClick={closeDetails}
           >
             <ArrowLeft size={14} />
-            服务器台账
+            {view === "map" ? "部署地图" : "服务器台账"}
           </button>
           <div className="ops-detail-actions">
             <button
@@ -707,6 +737,72 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     );
   };
 
+  const renderDeploymentDetail = () => {
+    const { id, productId, serverId, environment, role, version } =
+      selectedDeployment;
+    const product = ops.products.find((item) => item.id === productId);
+    const server = ops.servers.find((item) => item.id === serverId);
+    return (
+      <>
+        <div className="ops-detail-top">
+          <button className="ops-back" onClick={closeDetails}>
+            <ArrowLeft size={14} /> 部署地图
+          </button>
+          <div className="ops-detail-actions">
+            <button
+              className="ops-danger"
+              aria-label="删除部署关系"
+              onClick={() => confirmDelete("deployment", selectedDeployment)}
+              disabled={readOnly}
+            >
+              <Trash2 size={13} /> 删除
+            </button>
+            <button
+              aria-label="编辑部署关系"
+              onClick={() => openForm("deployment", id)}
+              disabled={readOnly}
+            >
+              编辑
+            </button>
+          </div>
+        </div>
+        <div className="ops-detail-card ops-identity">
+          <span className="ops-record-icon">
+            <Network size={18} />
+          </span>
+          <div className="ops-grow">
+            <h1>{role || "未分类"}</h1>
+            <p>
+              {ENVIRONMENT_LABELS[environment]}
+              {version && ` · ${version}`}
+            </p>
+          </div>
+        </div>
+        <div className="ops-fields-grid">
+          <div>
+            <small>产品</small>
+            <button
+              className="ops-related-link"
+              onClick={() => openDetails("product", productId)}
+            >
+              {product.name}
+            </button>
+          </div>
+          <div>
+            <small>服务器</small>
+            <button
+              className="ops-related-link"
+              onClick={() => openDetails("server", serverId)}
+            >
+              {server.name}
+            </button>
+          </div>
+        </div>
+        {renderTaskList("deployment", id)}
+      </>
+    );
+  };
+
   const renderForm = () => {
     if (!form) return null;
     const editing = form.targetId;
@@ -717,8 +813,13 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
       form.type === "server" &&
       (editing ? ops.servers.find((item) => item.id === editing) : null);
     if (form.type === "task") {
-      const targetType = selectedServerId ? "server" : "product";
-      const targetId = selectedServerId || selectedProductId;
+      const targetType = selectedDeploymentId
+        ? "deployment"
+        : selectedServerId
+          ? "server"
+          : "product";
+      const targetId =
+        selectedDeploymentId || selectedServerId || selectedProductId;
       return (
         <div className="ops-modal-backdrop" role="presentation">
           <form
@@ -762,6 +863,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
     }
     if (form.type === "deployment") {
       const product = selectedProduct;
+      const deployment = editing ? selectedDeployment : null;
       return (
         <div className="ops-modal-backdrop" role="presentation">
           <form
@@ -772,17 +874,31 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
             onSubmit={submitForm}
           >
             <div className="ops-modal-head">
-              <h2 id="ops-form-title">新增部署关系</h2>
+              <h2 id="ops-form-title">{editing ? "编辑" : "新增"}部署关系</h2>
               <button type="button" aria-label="关闭表单" onClick={closeForm}>
                 <X size={16} />
               </button>
             </div>
-            <FormField label="产品" name="product">
-              <input value={product?.name || ""} readOnly />
+            <FormField label="产品" name="productId" required>
+              <select
+                name="productId"
+                defaultValue={deployment?.productId || product?.id || ""}
+                required
+              >
+                <option value="">选择产品</option>
+                {ops.products.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
             </FormField>
-            <input type="hidden" name="productId" value={product?.id || ""} />
             <FormField label="服务器" name="serverId" required>
-              <select name="serverId" defaultValue="">
+              <select
+                name="serverId"
+                defaultValue={deployment?.serverId || ""}
+                required
+              >
                 <option value="">选择服务器</option>
                 {ops.servers.map((item) => (
                   <option key={item.id} value={item.id}>
@@ -792,16 +908,25 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
               </select>
             </FormField>
             <FormField label="环境" name="environment" required>
-              <select name="environment" defaultValue="production">
+              <select
+                name="environment"
+                defaultValue={deployment?.environment || "production"}
+              >
                 {selectOptions(ENVIRONMENT_OPTIONS)}
               </select>
             </FormField>
             <FormField
               label="角色"
               name="role"
+              value={deployment?.role}
               placeholder="例如 API、数据库、应用"
             />
-            <FormField label="版本" name="version" placeholder="可选" />
+            <FormField
+              label="版本"
+              name="version"
+              value={deployment?.version}
+              placeholder="可选"
+            />
             {formError && (
               <div className="ops-form-error">
                 <CircleAlert size={14} />
@@ -904,15 +1029,6 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
                   {selectOptions(ENVIRONMENT_OPTIONS)}
                 </select>
               </FormField>
-              <FormField label="服务器状态" name="status">
-                <select
-                  name="status"
-                  aria-label="服务器状态"
-                  defaultValue={record?.status || "running"}
-                >
-                  {selectOptions(STATUS_OPTIONS)}
-                </select>
-              </FormField>
               <div className="ops-field">
                 <span>DDL</span>
                 <ServerDeadline
@@ -927,6 +1043,14 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
               </div>
             </>
           )}
+          <FormField
+            label={isProduct ? "产品状态" : "服务器状态"}
+            name="status"
+          >
+            <select name="status" defaultValue={record?.status || "running"}>
+              {selectOptions(STATUS_OPTIONS)}
+            </select>
+          </FormField>
           {formError && (
             <div className="ops-form-error">
               <CircleAlert size={14} />
@@ -966,21 +1090,37 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
       }}
     >
       <div className="ops-app">
-        <div className="ops-layout" inert={hasDetail || hasForm || undefined}>
+        <div
+          className={`ops-layout${view === "map" ? " ops-map-layout" : ""}`}
+          inert={hasDetail || hasForm || undefined}
+        >
           <aside className="ops-sidebar">
             <p className="ops-sidebar-label">资产空间</p>
             <button
+              aria-label="部署地图"
+              aria-current={view === "map" ? "page" : undefined}
+              className={view === "map" ? "active" : ""}
+              onClick={() => goToView("map")}
+            >
+              <Network size={16} />
+              部署地图<span>{ops.deployments.length}</span>
+            </button>
+            <button
               aria-label="产品目录"
+              aria-current={view === "products" ? "page" : undefined}
               className={view === "products" ? "active" : ""}
-              onClick={goProducts}
+              onClick={() => goToView("products")}
             >
               <Boxes size={16} />
               产品目录<span>{ops.products.length}</span>
             </button>
             <button
               aria-label="服务器台账"
+              aria-current={
+                view === "servers" && !soonOnly ? "page" : undefined
+              }
               className={view === "servers" && !soonOnly ? "active" : ""}
-              onClick={goServers}
+              onClick={() => goToView("servers")}
             >
               <Server size={16} />
               服务器台账<span>{ops.servers.length}</span>
@@ -988,6 +1128,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
             <p className="ops-sidebar-label second">快速查看</p>
             <button
               aria-label="7 天内到期"
+              aria-current={soonOnly ? "page" : undefined}
               className={soonOnly ? "ops-upcoming active" : "ops-upcoming"}
               onClick={showSoon}
             >
@@ -1010,28 +1151,44 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
                 {loadError}
               </div>
             )}
-            <OperationsDirectory
-              ops={ops}
-              view={view}
-              records={view === "products" ? products : servers}
-              keyword={keyword}
-              setKeyword={setKeyword}
-              status={status}
-              setStatus={setStatus}
-              environment={environment}
-              setEnvironment={setEnvironment}
-              soonOnly={soonOnly}
-              soonCount={soonCount}
-              showSoon={showSoon}
-              resetFilters={resetFilters}
-              readOnly={readOnly}
-              onOpen={openDetails}
-              openForm={openForm}
-              confirmDelete={confirmDelete}
-              changeServerStatus={changeServerStatus}
-              productDates={productDates}
-              serverDeadline={serverDeadline}
-            />
+            {view === "map" ? (
+              <OperationsMap
+                ops={ops}
+                keyword={keyword}
+                setKeyword={setKeyword}
+                status={status}
+                setStatus={setStatus}
+                environment={environment}
+                setEnvironment={setEnvironment}
+                resetFilters={resetFilters}
+                readOnly={readOnly}
+                onOpen={openDetails}
+                openForm={openForm}
+              />
+            ) : (
+              <OperationsDirectory
+                ops={ops}
+                view={view}
+                records={view === "products" ? products : servers}
+                keyword={keyword}
+                setKeyword={setKeyword}
+                status={status}
+                setStatus={setStatus}
+                environment={environment}
+                setEnvironment={setEnvironment}
+                soonOnly={soonOnly}
+                soonCount={soonCount}
+                showSoon={showSoon}
+                resetFilters={resetFilters}
+                readOnly={readOnly}
+                onOpen={openDetails}
+                openForm={openForm}
+                confirmDelete={confirmDelete}
+                changeServerStatus={changeServerStatus}
+                productDates={productDates}
+                serverDeadline={serverDeadline}
+              />
+            )}
           </main>
         </div>
         {hasDetail && (
@@ -1050,9 +1207,7 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
               ref={drawerRef}
             >
               <header className="ops-drawer-header">
-                <span>
-                  运维资产 / {selectedProduct ? "产品详情" : "服务器详情"}
-                </span>
+                <span>运维资产 / {detailLabel}</span>
                 <button
                   className="ops-icon-button"
                   aria-label="关闭资产详情"
@@ -1068,7 +1223,11 @@ export default function OperationsCatalog({ onClose, readOnly = false }) {
                     {loadError}
                   </div>
                 )}
-                {selectedProduct ? renderProductDetail() : renderServerDetail()}
+                {selectedProduct
+                  ? renderProductDetail()
+                  : selectedServer
+                    ? renderServerDetail()
+                    : renderDeploymentDetail()}
               </div>
             </section>
           </div>

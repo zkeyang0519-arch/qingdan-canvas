@@ -1,9 +1,35 @@
 import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Pencil, RefreshCw } from "lucide-react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { MAX_PLAN_TASKS } from "../../shared/agent/sort-plan.ts";
 import { api } from "../api.js";
 import { localRunnerRequest } from "./DevicePanel.jsx";
+import { blockText } from "../canvas/model.js";
+import TaskComposer from "./TaskComposer.jsx";
+import ExecutionSettings from "./ExecutionSettings.jsx";
+import {
+  defaultExecutionSettings,
+  executionSettingsIssue,
+  executionSettingsPayload,
+  useCodexModelCatalog,
+  validExecutionDefaults,
+} from "./execution-settings.js";
+import {
+  canvasChecklistTasks,
+  mergeCanvasChecklistTasks,
+  checklistTaskVersion as taskVersion,
+  projectReviewSources,
+  projectTaskHistory,
+  validProjectHistory,
+} from "./checklist-tasks.js";
 import { batchStatusLabel, batchItemLabel } from "./BatchPanel.jsx";
 import {
   useWorkspaceDraft,
@@ -31,8 +57,9 @@ const executionApi = "/api/agent/execution";
 const emptyDraft = { text: "", instruction: "", acceptance: "" };
 const specText = {
   ready: "可派单",
-  missing: "待填写执行要求",
+  missing: "",
   stale: "待重新确认执行要求",
+  syncing: "正在同步待办…",
 };
 const runText = {
   queued: "已排队，等待电脑接单",
@@ -72,10 +99,12 @@ const bindingKey = (binding) =>
     binding.workspaceId,
   ]);
 const taskRef = ({ noteId, taskId }) => ({ noteId, taskId });
-const taskVersion = ({ noteId, taskId, generation, specRevision }) =>
-  JSON.stringify([noteId, taskId, generation, specRevision]);
 const eligible = (task) =>
-  !task.done && !task.locked && task.specStatus === "ready";
+  !!task.text.trim() &&
+  !task.done &&
+  !task.reviewRunId &&
+  !task.locked &&
+  ["ready", "missing"].includes(task.specStatus);
 const draftFromTask = (task) => {
   const checks = task.acceptanceChecks || [];
   const check = checks.length === 1 ? checks[0] : null;
@@ -130,12 +159,69 @@ const trimDraft = (value) => {
   return result;
 };
 
+function CompletedTasks({ count, children, review = false }) {
+  const details = useRef(null);
+  const previous = useRef(count);
+  useEffect(() => {
+    if (count > previous.current && details.current)
+      details.current.open = false;
+    previous.current = count;
+  }, [count]);
+  return (
+    <details
+      ref={details}
+      className="agent-completed-tasks"
+      aria-label={review ? "已执行待核对" : "已完成待办"}
+    >
+      <summary>
+        {review ? "已执行，待核对" : "已完成"} <span>{count}</span>
+      </summary>
+      {count ? (
+        <ol
+          className="agent-checklist-tasks"
+          aria-label={review ? "已执行待核对列表" : "已完成待办列表"}
+        >
+          {children}
+        </ol>
+      ) : (
+        <p className="agent-note">
+          {review ? "还没有待核对的执行结果。" : "还没有已完成的待办。"}
+        </p>
+      )}
+    </details>
+  );
+}
+
+function AddTaskButton({ buttonRef, disabled, onClick }) {
+  return (
+    <button
+      ref={buttonRef}
+      className="agent-add-task"
+      aria-label="添加待办"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <Plus size={16} /> 添加待办
+    </button>
+  );
+}
+
+function useComposerFocus(adding, addButton) {
+  const wasAdding = useRef(adding);
+  useEffect(() => {
+    if (wasAdding.current && !adding)
+      addButton.current?.focus({ preventScroll: true });
+    wasAdding.current = adding;
+  }, [adding, addButton]);
+}
+
 function DraftFields({
   label,
   value,
   onChange,
   disabled,
   editableText = true,
+  simple = false,
 }) {
   return (
     <>
@@ -154,99 +240,104 @@ function DraftFields({
           />
         </label>
       )}
-      <label>
-        执行要求
-        <textarea
-          aria-label={`${label}执行要求`}
-          value={value.instruction}
-          onChange={(event) =>
-            onChange({ ...value, instruction: event.target.value })
-          }
-          rows={2}
-          maxLength={32000}
-          disabled={disabled}
-        />
-      </label>
-      <label>
-        验收方式
-        <select
-          aria-label={`${label}验收方式`}
-          value={value.checkMode || "human"}
-          disabled={disabled}
-          onChange={(event) =>
-            onChange({ ...value, checkMode: event.target.value })
-          }
-        >
-          <option value="human">人工确认</option>
-          <option value="file">文件检查</option>
-          {value.acceptanceChecks?.length > 0 && (
-            <option value="custom">保留已有验收条件</option>
-          )}
-        </select>
-      </label>
-      {value.checkMode === "file" ? (
-        <div className="agent-file-check">
+      {!simple && (
+        <>
           <label>
-            项目内文件路径
-            <input
-              aria-label={`${label}检查文件`}
-              placeholder="例如 reports/result.txt"
-              value={value.checkPath || ""}
-              disabled={disabled}
+            执行要求
+            <textarea
+              aria-label={`${label}执行要求`}
+              placeholder="不填写时，按待办内容执行"
+              value={value.instruction}
               onChange={(event) =>
-                onChange({ ...value, checkPath: event.target.value })
+                onChange({ ...value, instruction: event.target.value })
               }
+              rows={2}
+              maxLength={32000}
+              disabled={disabled}
             />
           </label>
           <label>
-            检查内容
+            验收方式
             <select
-              aria-label={`${label}文件检查`}
-              value={value.checkPredicate || "exists"}
+              aria-label={`${label}验收方式`}
+              value={value.checkMode || "human"}
               disabled={disabled}
               onChange={(event) =>
-                onChange({ ...value, checkPredicate: event.target.value })
+                onChange({ ...value, checkMode: event.target.value })
               }
             >
-              <option value="exists">文件存在</option>
-              <option value="textContains">文件包含指定文字</option>
+              <option value="human">人工确认</option>
+              <option value="file">文件检查</option>
+              {value.acceptanceChecks?.length > 0 && (
+                <option value="custom">保留已有验收条件</option>
+              )}
             </select>
           </label>
-          {value.checkPredicate === "textContains" && (
-            <label>
-              需要包含的文字
-              <textarea
-                aria-label={`${label}包含文字`}
-                rows={2}
-                value={value.checkText || ""}
-                disabled={disabled}
-                onChange={(event) =>
-                  onChange({ ...value, checkText: event.target.value })
-                }
-              />
-            </label>
+          {value.checkMode === "file" ? (
+            <div className="agent-file-check">
+              <label>
+                项目内文件路径
+                <input
+                  aria-label={`${label}检查文件`}
+                  placeholder="例如 reports/result.txt"
+                  value={value.checkPath || ""}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onChange({ ...value, checkPath: event.target.value })
+                  }
+                />
+              </label>
+              <label>
+                检查内容
+                <select
+                  aria-label={`${label}文件检查`}
+                  value={value.checkPredicate || "exists"}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onChange({ ...value, checkPredicate: event.target.value })
+                  }
+                >
+                  <option value="exists">文件存在</option>
+                  <option value="textContains">文件包含指定文字</option>
+                </select>
+              </label>
+              {value.checkPredicate === "textContains" && (
+                <label>
+                  需要包含的文字
+                  <textarea
+                    aria-label={`${label}包含文字`}
+                    rows={2}
+                    value={value.checkText || ""}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      onChange({ ...value, checkText: event.target.value })
+                    }
+                  />
+                </label>
+              )}
+            </div>
+          ) : (
+            <p className="agent-note">
+              {value.checkMode === "custom"
+                ? "已有验收条件会保留。选择其他方式会替换这些条件。"
+                : "本项执行结束后，由你确认完成标准已满足，再继续下一项。"}
+            </p>
           )}
-        </div>
-      ) : (
-        <p className="agent-note">
-          {value.checkMode === "custom"
-            ? "已有验收条件会保留。选择其他方式会替换这些条件。"
-            : "本项执行结束后，由你确认完成标准已满足，再继续下一项。"}
-        </p>
+          <label>
+            完成标准
+            <textarea
+              aria-label={`${label}完成标准`}
+              value={value.acceptance}
+              onChange={(event) =>
+                onChange({ ...value, acceptance: event.target.value })
+              }
+              rows={2}
+              maxLength={4000}
+              disabled={disabled}
+            />
+          </label>
+        </>
       )}
-      <label>
-        完成标准
-        <textarea
-          aria-label={`${label}完成标准`}
-          value={value.acceptance}
-          onChange={(event) =>
-            onChange({ ...value, acceptance: event.target.value })
-          }
-          rows={2}
-          maxLength={4000}
-          disabled={disabled}
-        />
-      </label>
     </>
   );
 }
@@ -358,10 +449,32 @@ function BoundChecklist({
   onOpenBatch,
   embedded,
   refreshToken,
+  onAddTodo,
+  onDeleteTodo,
+  onReopenTodo,
+  onSetTodoDone,
+  onCountsChange,
 }) {
   const [view, setView] = useState(null);
+  const dispatchHintId = useId();
   const context = { userId, roomId, pageId: page.id, binding };
   const draftScope = legacyScope(context);
+  const [executionDefaults, setExecutionDefaults, defaultsStorage] =
+    useWorkspaceDraft(
+      `${draftScope}:execution-defaults`,
+      defaultExecutionSettings,
+      true,
+      { validate: validExecutionDefaults },
+    );
+  const modelCatalog = useCodexModelCatalog(
+    userId,
+    binding,
+    requestLocal,
+    embedded,
+  );
+  const defaultsIssue = embedded
+    ? executionSettingsIssue(executionDefaults, modelCatalog)
+    : "";
   const scope = workspaceScope({
     accountId: userId,
     canvasId: roomId,
@@ -375,6 +488,12 @@ function BoundChecklist({
     true,
     { validate: validDraft },
   );
+  const [adding, setAdding] = useState(
+    () => !!(draft.text || draft.instruction || draft.acceptance),
+  );
+  const composerInput = useRef(null);
+  const addButton = useRef(null);
+  useComposerFocus(adding, addButton);
   const [editing, setEditing, editorStorage] = useWorkspaceDraft(
     `${draftScope}:edit-task`,
     null,
@@ -396,7 +515,22 @@ function BoundChecklist({
   const [migrationWarning, setMigrationWarning] = useState("");
   const [migrating, setMigrating] = useState(true);
   const [selected, setSelected] = useState(new Set());
+  const [reopened, setReopened, reopenedStorage] = useWorkspaceDraft(
+    `${draftScope}:reopened-tasks`,
+    [],
+    true,
+    {
+      validate: (value) =>
+        Array.isArray(value) && value.every((key) => typeof key === "string"),
+    },
+  );
   const [autoComplete, setAutoComplete] = useState(true);
+  const [reviewHistory, setReviewHistory, reviewStorage] = useWorkspaceDraft(
+    `${draftScope}:review-history`,
+    [],
+    true,
+    { validate: validProjectHistory },
+  );
   const [permissionProfile, setPermissionProfile] = usePermissionPreference(
     userId,
     binding,
@@ -486,14 +620,14 @@ function BoundChecklist({
     [tool, valid],
   );
   const refresh = useCallback(
-    async (version, history = false) => {
+    async (version) => {
       const latestBinding = await loadBinding();
       if (!valid(version) || bindingKey(latestBinding) !== bindingKey(binding))
         return;
       const next = await checklist("list");
       if (!valid(version)) return;
       applyView(next);
-      if (history) {
+      {
         const result = await callCloud(
           `${executionApi}/runs?bindingId=${encodeURIComponent(binding.bindingId)}`,
         );
@@ -504,7 +638,9 @@ function BoundChecklist({
             entry.runId === runId.current ||
             entry.sourceBacked === true ||
             (entry.sourceBacked === undefined &&
-              entry.batch?.items.some((item) => ids.has(item.taskId))),
+              (entry.submission?.tasks || entry.batch?.items || []).some(
+                (item) => ids.has(item.taskId),
+              )),
         );
         setRuns(related);
         if (!runId.current) runId.current = related[0]?.runId || "";
@@ -678,7 +814,7 @@ function BoundChecklist({
       if (!valid(version)) return false;
       applyView(next);
       setMessage("待办已保存。");
-      return true;
+      return next;
     }
     if (info.action === "dispatch") {
       let checkpoint = record.checkpoint;
@@ -716,8 +852,9 @@ function BoundChecklist({
       runId.current = result.runId;
       setRun(null);
       setSelected(new Set());
-      setMessage("批次已提交。执行结果会在下方更新。");
-      await refresh(version, true);
+      setMessage(
+        embedded ? "已提交到项目聊天。" : "批次已提交。执行结果会在下方更新。",
+      );
       if (valid(version))
         onOpenBatch?.({
           sectionId: page.id,
@@ -725,6 +862,7 @@ function BoundChecklist({
           bindingRevision: binding.revision,
           runId: result.runId,
         });
+      await refresh(version, true);
       return true;
     }
     const response = await wire(record.request),
@@ -784,7 +922,7 @@ function BoundChecklist({
     await requests.checkpoint(record.requestId, checkpoint);
     if (valid(version)) await sendRecord({ ...record, checkpoint }, version);
   }
-  async function mutate(action, payload, version) {
+  async function mutate(action, payload, version, captureDraft = true) {
     let record = await requests.prepare(
       operationKey(action, payload),
       (requestId) => ({
@@ -793,7 +931,7 @@ function BoundChecklist({
         body: { bindingId: binding.bindingId, action, requestId, ...payload },
       }),
     );
-    if (!record.checkpoint && action !== "reorder") {
+    if (captureDraft && !record.checkpoint && action !== "reorder") {
       const checkpoint = {
         draft:
           action === "create"
@@ -805,13 +943,124 @@ function BoundChecklist({
     }
     return sendRecord(record, version);
   }
-  const tasks = view?.tasks || [];
-  const unfinished = tasks.filter((task) => !task.done);
+  const hasCanvasTasks = embedded && Array.isArray(page.tasks);
+  const canAddTodo = !hasCanvasTasks || !!onAddTodo;
+  const projectRuns = [
+    ...new Map(
+      [...runs, ...(run ? [run] : [])].map((entry) => [entry.runId, entry]),
+    ).values(),
+  ];
+  const activeProjectRuns = projectRuns.filter(
+    (entry) =>
+      entry.executionMode === "project" &&
+      !(entry.terminal && entry.stopConfirmed),
+  );
+  const activeSources = new Set(
+    activeProjectRuns.flatMap((entry) =>
+      (entry.submission?.tasks || []).map((item) =>
+        JSON.stringify([item.source?.taskRef?.noteId, item.taskId]),
+      ),
+    ),
+  );
+  const knownHistory = projectTaskHistory(
+    [...projectRuns, ...reviewHistory],
+    roomId,
+  );
+  const historyKey = exact(knownHistory);
+  useEffect(() => {
+    if (historyKey !== exact(reviewHistory)) setReviewHistory(knownHistory);
+  }, [historyKey, reviewHistory, setReviewHistory]);
+  const reviewSources = projectReviewSources(knownHistory);
+  const tasks = (
+    hasCanvasTasks
+      ? mergeCanvasChecklistTasks(page, view?.tasks || [])
+      : view?.tasks || []
+  )
+    .filter((task) => task.text.trim())
+    .map((task) =>
+      activeSources.has(JSON.stringify([task.noteId, task.taskId]))
+        ? { ...task, locked: true }
+        : task,
+    )
+    .map((task) => {
+      const reviewRunId = reviewSources.get(taskVersion(task));
+      return reviewRunId &&
+        !task.done &&
+        !task.locked &&
+        task.specStatus !== "syncing" &&
+        !reopened.includes(JSON.stringify([reviewRunId, taskVersion(task)]))
+        ? { ...task, reviewRunId }
+        : task;
+    });
+  const allUnfinished = tasks.filter((task) => !task.done);
+  const unfinished = allUnfinished.filter((task) => !task.reviewRunId);
+  const reviewTasks = allUnfinished.filter((task) => task.reviewRunId);
+  const completed = tasks.filter((task) => task.done);
+  const reviewCount = reviewTasks.length;
+  const fullCanvasTasks =
+    view?.truncated && Array.isArray(page.tasks)
+      ? canvasChecklistTasks(page)
+      : null;
+  const totalCount = fullCanvasTasks ? fullCanvasTasks.length : tasks.length;
+  const pendingCount = fullCanvasTasks
+    ? fullCanvasTasks.filter((task) => !task.block.done).length
+    : allUnfinished.length;
+  useEffect(() => {
+    if (view)
+      onCountsChange?.(page, {
+        total: totalCount,
+        pending: Math.max(0, pendingCount),
+        review: reviewCount,
+      });
+  }, [onCountsChange, page, !!view, totalCount, pendingCount, reviewCount]);
+  const availableSelection = JSON.stringify(
+    unfinished.filter(eligible).map(taskVersion),
+  );
+  useEffect(() => {
+    const available = new Set(JSON.parse(availableSelection));
+    setSelected((previous) => {
+      const next = new Set([...previous].filter((key) => available.has(key)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [availableSelection]);
+  const selectable = unfinished.filter(eligible);
   const canReorder =
-    !view?.truncated && !unfinished.some((task) => task.locked);
+    !view?.truncated &&
+    !allUnfinished.some((task) => task.locked || task.specStatus === "syncing");
   const picked = unfinished.filter(
     (task) => eligible(task) && selected.has(taskVersion(task)),
   );
+  const allSelected =
+    selectable.length > 0 &&
+    picked.length === Math.min(selectable.length, MAX_PLAN_TASKS);
+  function toggleAll() {
+    setSelected(
+      allSelected
+        ? new Set()
+        : new Set(selectable.slice(0, MAX_PLAN_TASKS).map(taskVersion)),
+    );
+  }
+  const dispatchDisabledReason = busy
+    ? "正在处理，请稍候…"
+    : activeProjectRuns.length
+      ? "项目正在执行，可在聊天中停止或等待完成。"
+      : editing
+        ? "请先保存或取消正在编辑的待办。"
+        : defaultsIssue
+          ? defaultsIssue
+          : picked.length
+            ? ""
+            : unfinished.some(eligible)
+              ? ""
+              : unfinished.some(
+                    (task) => !task.locked && task.specStatus === "stale",
+                  )
+                ? "请先编辑待办，确认已变更的执行要求并保存。"
+                : unfinished.some((task) => task.specStatus === "syncing")
+                  ? "待办正在同步，完成后即可选择执行。"
+                  : unfinished.length
+                    ? "待办已锁定，暂时无法提交。"
+                    : "没有未完成的待办。";
   const editingTask =
     editing &&
     tasks.find(
@@ -823,8 +1072,11 @@ function BoundChecklist({
   function move(index, offset) {
     const next = index + offset;
     if (next < 0 || next >= unfinished.length || !canReorder) return;
-    const ordered = [...unfinished];
-    [ordered[index], ordered[next]] = [ordered[next], ordered[index]];
+    // The API needs every unfinished source, including collapsed review rows.
+    const ordered = [...allUnfinished];
+    const from = ordered.indexOf(unfinished[index]);
+    const to = ordered.indexOf(unfinished[next]);
+    [ordered[from], ordered[to]] = [ordered[to], ordered[from]];
     return perform((version) =>
       mutate(
         "reorder",
@@ -842,17 +1094,113 @@ function BoundChecklist({
       return next;
     });
   }
+  function remove(task) {
+    if (!onDeleteTodo || task.locked || editing) return;
+    return perform(async (version) => {
+      const removed = await onDeleteTodo(page.id, taskRef(task));
+      if (!valid(version)) return;
+      if (!removed) throw Error("未删除待办，请确认当前项目可编辑后重试。");
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(taskVersion(task));
+        return next;
+      });
+      // Keep the snapshot when canvas state is available so undo is immediate.
+      if (!Array.isArray(page.tasks))
+        setView((current) => ({
+          ...current,
+          tasks: current.tasks.filter(
+            (item) =>
+              item.noteId !== task.noteId || item.taskId !== task.taskId,
+          ),
+        }));
+    }, false);
+  }
+  function reopen(task) {
+    if (
+      busy ||
+      editing ||
+      task.locked ||
+      (!task.reviewRunId && !onSetTodoDone && !onReopenTodo)
+    )
+      return;
+    return perform(async (version) => {
+      if (task.done) {
+        const restored = onSetTodoDone
+          ? await onSetTodoDone(page.id, taskRef(task), false)
+          : await onReopenTodo(page.id, taskRef(task));
+        if (!valid(version)) return;
+        if (!restored) throw Error("未移回待办，请确认当前项目可编辑后重试。");
+        if (!hasCanvasTasks)
+          setView((current) => ({
+            ...current,
+            tasks: current.tasks.map((item) =>
+              item.noteId === task.noteId && item.taskId === task.taskId
+                ? { ...item, done: false, completedAt: null }
+                : item,
+            ),
+          }));
+      }
+      const historyRunId =
+        task.reviewRunId || reviewSources.get(taskVersion(task));
+      if (historyRunId)
+        setReopened((previous) => [
+          ...new Set([
+            ...previous,
+            JSON.stringify([historyRunId, taskVersion(task)]),
+          ]),
+        ]);
+    }, false);
+  }
+  function complete(task) {
+    if (!onSetTodoDone || task.done || task.locked || busy || editing) return;
+    return perform(async (version) => {
+      const completed = await onSetTodoDone(page.id, taskRef(task), true);
+      if (!valid(version)) return;
+      if (!completed) throw Error("未标记完成，请确认当前项目可编辑后重试。");
+      if (!hasCanvasTasks)
+        setView((current) => ({
+          ...current,
+          tasks: current.tasks.map((item) =>
+            item.noteId === task.noteId && item.taskId === task.taskId
+              ? { ...item, done: true }
+              : item,
+          ),
+        }));
+    }, false);
+  }
   async function saveNew(version) {
     const item = trimDraft(draft);
-    if (!item.text) return;
+    if (!item.text || !canAddTodo) return;
+    if (embedded && onAddTodo) {
+      const added = await onAddTodo(page.id, item.text);
+      if (!valid(version)) return;
+      if (!added)
+        throw Error("未添加待办，请确认当前项目可编辑后重试。输入内容已保留。");
+      setDraft((current) =>
+        exact(current) === exact(draft) ? emptyDraft : current,
+      );
+      return;
+    }
     await mutate("create", { tasks: [item] }, version);
   }
   async function saveExisting(version) {
-    if (!editingTask || editingTask.locked || editingTask.done || editingStale)
+    if (
+      !editingTask ||
+      editingTask.locked ||
+      editingTask.done ||
+      editingStale ||
+      editingTask.specStatus === "syncing"
+    )
       return;
     const { task, value } = editing;
-    const { text, instruction, acceptance, acceptanceChecks } =
-      trimDraft(value);
+    const { text, instruction, acceptance, acceptanceChecks } = embedded
+      ? {
+          ...value,
+          text: value.text.trim(),
+          acceptanceChecks: task.acceptanceChecks,
+        }
+      : trimDraft(value);
     if (task.editableText && !text) return;
     if (
       await mutate(
@@ -873,12 +1221,63 @@ function BoundChecklist({
     }
   }
   async function dispatch(version) {
-    if (!picked.length) return;
+    if (!picked.length || defaultsIssue) return;
+    const executionSettings = executionSettingsPayload(executionDefaults, modelCatalog);
+    const prepared = [];
+    for (const task of picked) {
+      if (task.specStatus === "ready") {
+        prepared.push(task);
+        continue;
+      }
+      // Fill only omitted fields after the explicit submit click. Use the same
+      // versioned, recoverable save flow as editing; an uncertain save never
+      // advances to dispatch, and recovering it only saves the requirements.
+      const spec = {
+        instruction: task.instruction?.trim() || task.text.trim(),
+        acceptance:
+          task.acceptance?.trim() || "根据待办内容核对执行结果，确认是否完成。",
+        // Preserve existing checks exactly, without rebuilding the editor form.
+        ...(task.acceptanceChecks
+          ? { acceptanceChecks: task.acceptanceChecks }
+          : {}),
+      };
+      const next = await mutate(
+        "save",
+        {
+          ...taskRef(task),
+          expectedGeneration: task.generation,
+          expectedSpecRevision: task.specRevision,
+          ...spec,
+        },
+        version,
+        false,
+      );
+      if (!next || !valid(version)) return;
+      const saved = next.tasks.find(
+        (item) => item.noteId === task.noteId && item.taskId === task.taskId,
+      );
+      if (
+        !saved ||
+        !eligible(saved) ||
+        saved.specStatus !== "ready" ||
+        saved.generation !== task.generation ||
+        // A replayed receipt includes the current list. Reject a later edit,
+        // even if only the requirements changed and generation is unchanged.
+        saved.specRevision !== task.specRevision + 1 ||
+        saved.instruction !== spec.instruction ||
+        saved.acceptance !== spec.acceptance ||
+        exact(saved.acceptanceChecks || []) !==
+          exact(spec.acceptanceChecks || [])
+      )
+        throw Error("待办已变化，请重新核对后提交。");
+      prepared.push(saved);
+      setSelected((current) => new Set([...current, taskVersion(saved)]));
+    }
     const target = {
       bindingId: binding.bindingId,
       bindingRevision: binding.revision,
       kind: "task",
-      sourceTasks: picked.map(
+      sourceTasks: prepared.map(
         ({ noteId, taskId, generation, specRevision }) => ({
           noteId,
           taskId,
@@ -886,7 +1285,9 @@ function BoundChecklist({
           specRevision,
         }),
       ),
-      autoComplete,
+      autoComplete: embedded ? false : autoComplete,
+      ...(embedded ? { executionMode: "project" } : {}),
+      ...(embedded && executionSettings ? { executionSettings } : {}),
       executionPermissions: { profile: permissionProfile },
     };
     const record = await requests.prepare(
@@ -954,6 +1355,7 @@ function BoundChecklist({
       )}
       <DraftFields
         label="编辑"
+        simple={embedded}
         value={editing.value}
         disabled={busy}
         editableText={editing.task.editableText}
@@ -979,32 +1381,177 @@ function BoundChecklist({
       </div>
     </div>
   );
-  const NewTaskContainer = embedded ? "details" : "section";
-
+  const renderTasks = (items) =>
+    items.map((task) => {
+      const index = unfinished.indexOf(task);
+      const checked = selected.has(taskVersion(task));
+      return (
+        <li key={task.taskId} data-completed={task.done || undefined}>
+          <div className="agent-checklist-row">
+            {task.done && embedded ? (
+              <button
+                type="button"
+                className="agent-completed-task-text"
+                aria-label={`移回待办：${task.text}`}
+                title="点击移回待办"
+                disabled={
+                  busy ||
+                  !!editing ||
+                  task.locked ||
+                  (!onSetTodoDone && !onReopenTodo)
+                }
+                onClick={() => reopen(task)}
+              >
+                <Check size={13} aria-hidden="true" />
+                <span>{task.text}</span>
+              </button>
+            ) : (
+              <label>
+                <input
+                  type="checkbox"
+                  aria-label={`${task.done ? "已完成" : task.reviewRunId ? "待核对" : "选中"}待办：${task.text}`}
+                  checked={task.done || checked}
+                  disabled={
+                    busy ||
+                    !eligible(task) ||
+                    (!checked && picked.length >= MAX_PLAN_TASKS)
+                  }
+                  onChange={() => toggle(task)}
+                />
+                <span>{task.text}</span>
+              </label>
+            )}
+            {(task.done ||
+              task.reviewRunId ||
+              task.locked ||
+              specText[task.specStatus]) &&
+              (!embedded ||
+                task.done ||
+                task.reviewRunId ||
+                task.locked ||
+                task.specStatus !== "ready") && (
+                <span className="agent-note">
+                  {task.done
+                    ? "已完成"
+                    : task.reviewRunId
+                      ? "执行已结束，待核对"
+                      : task.locked
+                        ? "已锁定"
+                        : specText[task.specStatus]}
+                </span>
+              )}
+          </div>
+          {(!task.done || onDeleteTodo) && (
+            <div className="agent-actions agent-task-actions">
+              {!task.done && onSetTodoDone && (
+                <button
+                  aria-label={`标记完成待办：${task.text}`}
+                  title="标记完成"
+                  disabled={busy || !!editing || task.locked}
+                  onClick={() => complete(task)}
+                >
+                  {embedded ? <Check size={14} /> : "标记完成"}
+                </button>
+              )}
+              {task.reviewRunId && (
+                <button
+                  aria-label={`重新准备待办：${task.text}`}
+                  disabled={busy || !!editing || task.locked}
+                  onClick={() => reopen(task)}
+                >
+                  继续处理
+                </button>
+              )}
+              {!task.done && !task.reviewRunId && (
+                <>
+                  <button
+                    aria-label={`编辑待办：${task.text}`}
+                    title="编辑待办"
+                    disabled={
+                      busy ||
+                      !!editing ||
+                      task.locked ||
+                      task.specStatus === "syncing"
+                    }
+                    onClick={() =>
+                      setEditing({
+                        task,
+                        value: draftFromTask(task),
+                      })
+                    }
+                  >
+                    {embedded ? <Pencil size={14} /> : "编辑待办"}
+                  </button>
+                  <button
+                    aria-label={`上移待办：${task.text}`}
+                    title="上移"
+                    disabled={busy || !!editing || !canReorder || index <= 0}
+                    onClick={() => move(index, -1)}
+                  >
+                    {embedded ? <ArrowUp size={14} /> : "上移"}
+                  </button>
+                  <button
+                    aria-label={`下移待办：${task.text}`}
+                    title="下移"
+                    disabled={
+                      busy ||
+                      !!editing ||
+                      !canReorder ||
+                      index >= unfinished.length - 1
+                    }
+                    onClick={() => move(index, 1)}
+                  >
+                    {embedded ? <ArrowDown size={14} /> : "下移"}
+                  </button>
+                </>
+              )}
+              {onDeleteTodo && (
+                <button
+                  className="agent-task-delete"
+                  aria-label={`删除待办：${task.text}`}
+                  title={task.locked ? "已锁定，无法删除" : "删除待办"}
+                  disabled={busy || !!editing || task.locked}
+                  onClick={() => remove(task)}
+                >
+                  {embedded ? <Trash2 size={14} /> : "删除待办"}
+                </button>
+              )}
+            </div>
+          )}
+          {editingTask === task && !task.done && !task.reviewRunId && editor}
+        </li>
+      );
+    });
   return (
     <>
+      {embedded && (
+        <ExecutionSettings
+          value={executionDefaults}
+          onSave={setExecutionDefaults}
+          catalog={modelCatalog}
+          disabled={busy}
+          warning={defaultsStorage.warning}
+        />
+      )}
       <div className="agent-card-heading">
         <p title={`执行项目：${project?.name || "已绑定项目"}`}>
           {!embedded && "执行项目 · "}
           <strong>{project?.name || "已绑定项目"}</strong>
         </p>
-        <button
-          aria-label="刷新清单"
-          title="刷新清单"
-          disabled={busy}
-          onClick={() => perform((version) => refresh(version, true), false)}
-        >
-          {embedded ? <RefreshCw size={15} /> : "刷新清单"}
-        </button>
+        <div className="agent-checklist-toolbar">
+          <button
+            aria-label="刷新清单"
+            title="刷新清单"
+            disabled={busy}
+            onClick={() => perform((version) => refresh(version, true), false)}
+          >
+            {embedded ? <RefreshCw size={15} /> : "刷新清单"}
+          </button>
+        </div>
       </div>
       {error && (
         <p className="agent-error" role="alert">
           {error}
-        </p>
-      )}
-      {message && (
-        <p className="agent-success" role="status">
-          {message}
         </p>
       )}
       {(requests.warning ||
@@ -1020,6 +1567,11 @@ function BoundChecklist({
             editorStorage.warning ||
             preservedStorage.warning ||
             quarantineStorage.warning}
+        </p>
+      )}
+      {(reopenedStorage.warning || reviewStorage.warning) && (
+        <p role="alert" className="agent-error">
+          {reopenedStorage.warning || reviewStorage.warning}
         </p>
       )}
       {preserved && (
@@ -1047,7 +1599,7 @@ function BoundChecklist({
         </details>
       )}
       <UnknownWorkspaceRequests requests={requests} />
-      {requests.ownedRecords.length > 0 && (
+      {!busy && requests.ownedRecords.length > 0 && (
         <section className="agent-checklist-editor" aria-label="待核对清单操作">
           <p>
             有 {requests.ownedRecords.length}{" "}
@@ -1115,121 +1667,111 @@ function BoundChecklist({
         <>
           {view.truncated && (
             <p className="agent-note">
-              当前显示部分待办。请在画布中调整完整顺序。
+              {hasCanvasTasks
+                ? "部分待办的执行信息尚未同步。请在画布中调整完整顺序。"
+                : "当前显示部分待办。请在画布中调整完整顺序。"}
             </p>
           )}
-          {tasks.length === 0 && (
-            <p className="agent-note">清单里还没有待办。</p>
+          {unfinished.length === 0 && (
+            <p className="agent-note">
+              {reviewCount
+                ? "执行已结束，可在下方核对结果或继续处理。"
+                : completed.length
+                  ? "当前待办已全部完成。"
+                  : "清单里还没有待办。"}
+            </p>
+          )}
+          {unfinished.length > 0 && (
+            <div className="agent-checklist-selection">
+              <label className="agent-checklist-option">
+                <input
+                  type="checkbox"
+                  aria-label="全选待办"
+                  checked={allSelected}
+                  ref={(input) => {
+                    if (input)
+                      input.indeterminate = picked.length > 0 && !allSelected;
+                  }}
+                  disabled={busy || !!editing || !selectable.length}
+                  onChange={toggleAll}
+                />
+                <span>{allSelected ? "取消全选" : "全选待办"}</span>
+              </label>
+              {selectable.length > MAX_PLAN_TASKS && (
+                <span className="agent-note">
+                  每批最多 {MAX_PLAN_TASKS} 项，全选前 {MAX_PLAN_TASKS} 项
+                </span>
+              )}
+            </div>
           )}
           <ol className="agent-checklist-tasks" aria-label="真实待办">
-            {tasks.map((task) => {
-              const index = unfinished.indexOf(task);
-              const checked = selected.has(taskVersion(task));
-              return (
-                <li key={task.taskId} data-completed={task.done || undefined}>
-                  <div className="agent-checklist-row">
-                    <label>
-                      <input
-                        type="checkbox"
-                        aria-label={`${task.done ? "已完成" : "选中"}待办：${task.text}`}
-                        checked={task.done || checked}
-                        disabled={
-                          busy ||
-                          !eligible(task) ||
-                          (!checked && picked.length >= MAX_PLAN_TASKS)
-                        }
-                        onChange={() => toggle(task)}
-                      />
-                      <span>{task.text}</span>
-                    </label>
-                    {(!embedded ||
-                      task.done ||
-                      task.locked ||
-                      task.specStatus !== "ready") && (
-                      <span className="agent-note">
-                        {task.done
-                          ? "已完成"
-                          : task.locked
-                            ? "已锁定"
-                            : specText[task.specStatus]}
-                      </span>
-                    )}
-                  </div>
-                  {!task.done && (
-                    <div className="agent-actions agent-task-actions">
-                      <button
-                        aria-label={`编辑待办：${task.text}`}
-                        title="编辑待办"
-                        disabled={busy || !!editing || task.locked}
-                        onClick={() =>
-                          setEditing({
-                            task,
-                            value: draftFromTask(task),
-                          })
-                        }
-                      >
-                        {embedded ? <Pencil size={14} /> : "编辑待办"}
-                      </button>
-                      <button
-                        aria-label={`上移待办：${task.text}`}
-                        title="上移"
-                        disabled={
-                          busy || !!editing || !canReorder || index <= 0
-                        }
-                        onClick={() => move(index, -1)}
-                      >
-                        {embedded ? <ArrowUp size={14} /> : "上移"}
-                      </button>
-                      <button
-                        aria-label={`下移待办：${task.text}`}
-                        title="下移"
-                        disabled={
-                          busy ||
-                          !!editing ||
-                          !canReorder ||
-                          index >= unfinished.length - 1
-                        }
-                        onClick={() => move(index, 1)}
-                      >
-                        {embedded ? <ArrowDown size={14} /> : "下移"}
-                      </button>
-                    </div>
-                  )}
-                  {editingTask === task && editor}
-                </li>
-              );
-            })}
+            {renderTasks(unfinished)}
           </ol>
-          {!editingTask && editor}
+          {embedded &&
+            canAddTodo &&
+            (adding ? (
+              <TaskComposer
+                inputRef={composerInput}
+                value={draft.text}
+                onChange={(text) => setDraft({ ...draft, text })}
+                onSave={() => perform(saveNew, !onAddTodo)}
+                onClose={() => setAdding(false)}
+                busy={busy}
+              />
+            ) : (
+              <AddTaskButton
+                buttonRef={addButton}
+                disabled={busy}
+                onClick={() => setAdding(true)}
+              />
+            ))}
+          {message && (
+            <p className="agent-success agent-checklist-message" role="status">
+              {message}
+            </p>
+          )}
+          {(!editingTask || editingTask.done || editingTask.reviewRunId) &&
+            editor}
           {(!embedded || unfinished.length > 0) && (
             <div className="agent-checklist-dispatch">
               <details
                 className="agent-dispatch-options"
                 open={embedded ? undefined : true}
               >
-                <summary>执行设置</summary>
+                <summary>{embedded ? "执行权限" : "执行设置"}</summary>
                 <PermissionButton
                   value={permissionProfile}
                   onChange={setPermissionProfile}
                   disabled={busy}
                 />
-                <label className="agent-checklist-option">
-                  <input
-                    type="checkbox"
-                    aria-label="自动勾选完成"
-                    checked={autoComplete}
-                    disabled={busy}
-                    onChange={(event) => setAutoComplete(event.target.checked)}
-                  />
-                  <span title="验收通过且待办内容未变化时，自动更新完成状态">
-                    验收后自动勾选完成
-                  </span>
-                </label>
+                {!embedded && (
+                  <label className="agent-checklist-option">
+                    <input
+                      type="checkbox"
+                      aria-label="自动勾选完成"
+                      checked={autoComplete}
+                      disabled={busy}
+                      onChange={(event) =>
+                        setAutoComplete(event.target.checked)
+                      }
+                    />
+                    <span title="验收通过且待办内容未变化时，自动更新完成状态">
+                      验收后自动勾选完成
+                    </span>
+                  </label>
+                )}
               </details>
               <div className="agent-actions">
                 <button
                   className="primary"
-                  disabled={busy || !!editing || picked.length === 0}
+                  disabled={!picked.length || !!dispatchDisabledReason}
+                  title={
+                    dispatchDisabledReason ||
+                    (embedded
+                      ? "将项目信息和所选待办一起交给 Codex"
+                      : "按清单顺序执行已选待办")
+                  }
+                  aria-describedby={dispatchDisabledReason ? dispatchHintId : undefined}
                   onClick={() => perform(dispatch)}
                 >
                   提交所选待办
@@ -1239,47 +1781,62 @@ function BoundChecklist({
                   {!embedded && "，按清单顺序在同一个会话执行"}
                 </span>
               </div>
-            </div>
-          )}
-          <NewTaskContainer
-            className="agent-checklist-editor"
-            aria-label="新增真实待办"
-          >
-            {embedded ? <summary>手动添加待办</summary> : <h4>新增待办</h4>}
-            <DraftFields
-              label="新待办"
-              value={draft}
-              onChange={setDraft}
-              disabled={busy}
-            />
-            <div className="agent-actions">
-              <button
-                disabled={busy || !draft.text.trim()}
-                onClick={() => perform(saveNew)}
-              >
-                保存新待办
-              </button>
-              {!embedded && (
-                <button
-                  disabled={
-                    busy ||
-                    !!(draft.text || draft.instruction || draft.acceptance)
-                  }
-                  onClick={() =>
-                    setDraft({
-                      text: "检查项目中的 README",
-                      instruction:
-                        "只读查看项目根目录，说明是否存在 README 文件。",
-                      acceptance:
-                        "报告 README 文件名，或明确说明项目根目录中没有 README。",
-                    })
-                  }
-                >
-                  添加测试待办草稿
-                </button>
+              {dispatchDisabledReason && (
+                <p id={dispatchHintId} className="agent-note" role="status">
+                  {dispatchDisabledReason}
+                </p>
               )}
             </div>
-          </NewTaskContainer>
+          )}
+          {reviewCount > 0 && (
+            <CompletedTasks count={reviewCount} review>
+              {renderTasks(reviewTasks)}
+            </CompletedTasks>
+          )}
+          <CompletedTasks count={completed.length}>
+            {renderTasks(completed)}
+          </CompletedTasks>
+          {!embedded && (
+            <section
+              className="agent-checklist-editor"
+              aria-label="新增真实待办"
+            >
+              <h4>新增待办</h4>
+              <DraftFields
+                label="新待办"
+                value={draft}
+                onChange={setDraft}
+                disabled={busy}
+              />
+              <div className="agent-actions">
+                <button
+                  disabled={busy || !draft.text.trim()}
+                  onClick={() => perform(saveNew)}
+                >
+                  保存新待办
+                </button>
+                {!embedded && (
+                  <button
+                    disabled={
+                      busy ||
+                      !!(draft.text || draft.instruction || draft.acceptance)
+                    }
+                    onClick={() =>
+                      setDraft({
+                        text: "检查项目中的 README",
+                        instruction:
+                          "只读查看项目根目录，说明是否存在 README 文件。",
+                        acceptance:
+                          "报告 README 文件名，或明确说明项目根目录中没有 README。",
+                      })
+                    }
+                  >
+                    添加测试待办草稿
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
         </>
       )}
       {!embedded && (runs.length > 0 || run) && (
@@ -1334,6 +1891,204 @@ function BoundChecklist({
   );
 }
 
+function UnboundChecklist({
+  roomId,
+  userId,
+  page,
+  onAddTodo,
+  onDeleteTodo,
+  onReopenTodo,
+  onSetTodoDone,
+  onRefresh,
+  onCountsChange,
+}) {
+  const [draft, setDraft, storage] = useWorkspaceDraft(
+    `${JSON.stringify([userId, roomId, page.id])}:unbound-task`,
+    "",
+    true,
+    { validate: (value) => typeof value === "string" && value.length <= 32000 },
+  );
+  const [adding, setAdding] = useState(() => !!draft);
+  const composerInput = useRef(null);
+  const addButton = useRef(null);
+  useComposerFocus(adding, addButton);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      const added = await onAddTodo(page.id, draft.trim());
+      if (!active.current) return;
+      if (!added)
+        throw Error("未添加待办，请确认当前项目可编辑后重试。输入内容已保留。");
+      setDraft((current) => (current === draft ? "" : current));
+    } catch (failure) {
+      if (active.current) setError(failure.message || "无法添加待办，请重试。");
+    } finally {
+      if (active.current) setBusy(false);
+    }
+  }
+
+  async function remove(task) {
+    if (busy || task.locked) return;
+    setBusy(true);
+    setError("");
+    try {
+      const removed = await onDeleteTodo(page.id, {
+        noteId: task.note.id,
+        taskId: task.key,
+      });
+      if (!removed) throw Error("未删除待办，请确认当前项目可编辑后重试。");
+    } catch (failure) {
+      if (active.current) setError(failure.message || "无法删除待办，请重试。");
+    } finally {
+      if (active.current) setBusy(false);
+    }
+  }
+
+  const tasks = canvasChecklistTasks(page);
+  async function setDone(task, done) {
+    if (busy || task.locked || (!onSetTodoDone && (done || !onReopenTodo)))
+      return;
+    setBusy(true);
+    setError("");
+    try {
+      const ref = {
+        noteId: task.note.id,
+        taskId: task.key,
+      };
+      const saved = onSetTodoDone
+        ? await onSetTodoDone(page.id, ref, done)
+        : await onReopenTodo(page.id, ref);
+      if (!saved)
+        throw Error(
+          done
+            ? "未标记完成，请确认当前项目可编辑后重试。"
+            : "未移回待办，请确认当前项目可编辑后重试。",
+        );
+    } catch (failure) {
+      if (active.current) setError(failure.message || "无法更新待办，请重试。");
+    } finally {
+      if (active.current) setBusy(false);
+    }
+  }
+  const unfinished = tasks.filter((task) => !task.block.done);
+  const completed = tasks.filter((task) => task.block.done);
+  useEffect(() => {
+    onCountsChange?.(page, {
+      total: tasks.length,
+      pending: unfinished.length,
+      review: 0,
+    });
+  }, [onCountsChange, page, tasks.length, unfinished.length]);
+  const renderTasks = (items) =>
+    items.map((task) => (
+      <li key={task.key} data-completed={task.block.done || undefined}>
+        <div className="agent-checklist-row">
+          {task.block.done ? (
+            <button
+              type="button"
+              className="agent-completed-task-text"
+              aria-label={`移回待办：${blockText(task.block)}`}
+              title="点击移回待办"
+              disabled={
+                busy || task.locked || (!onSetTodoDone && !onReopenTodo)
+              }
+              onClick={() => setDone(task, false)}
+            >
+              <Check size={13} aria-hidden="true" />
+              <span>{blockText(task.block)}</span>
+            </button>
+          ) : (
+            <span>{blockText(task.block)}</span>
+          )}
+        </div>
+        {task.block.done && <span className="agent-note">已完成</span>}
+        {(onDeleteTodo || (!task.block.done && onSetTodoDone)) && (
+          <div className="agent-actions agent-task-actions">
+            {!task.block.done && onSetTodoDone && (
+              <button
+                aria-label={`标记完成待办：${blockText(task.block)}`}
+                title="标记完成"
+                disabled={busy || task.locked}
+                onClick={() => setDone(task, true)}
+              >
+                <Check size={14} />
+              </button>
+            )}
+            {onDeleteTodo && (
+              <button
+                className="agent-task-delete"
+                aria-label={`删除待办：${blockText(task.block)}`}
+                title={task.locked ? "已锁定，无法删除" : "删除待办"}
+                disabled={busy || task.locked}
+                onClick={() => remove(task)}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
+        )}
+      </li>
+    ));
+  return (
+    <>
+      <div className="agent-card-heading">
+        <p>待办清单</p>
+        <div className="agent-checklist-toolbar">
+          <button
+            aria-label="刷新项目关联"
+            title="刷新清单"
+            disabled={busy}
+            onClick={onRefresh}
+          >
+            <RefreshCw size={15} />
+          </button>
+        </div>
+      </div>
+      {(error || storage.warning) && (
+        <p className="agent-error" role="alert">
+          {error || storage.warning}
+        </p>
+      )}
+      <ol className="agent-checklist-tasks" aria-label="真实待办">
+        {renderTasks(unfinished)}
+      </ol>
+      {onAddTodo && !adding && (
+        <AddTaskButton
+          buttonRef={addButton}
+          disabled={busy}
+          onClick={() => setAdding(true)}
+        />
+      )}
+      {onAddTodo && adding && (
+        <TaskComposer
+          inputRef={composerInput}
+          value={draft}
+          onChange={setDraft}
+          onSave={save}
+          onClose={() => {
+            setAdding(false);
+          }}
+          busy={busy}
+        />
+      )}
+      <CompletedTasks count={completed.length}>
+        {renderTasks(completed)}
+      </CompletedTasks>
+    </>
+  );
+}
+
 function ChecklistSection({
   roomId,
   userId,
@@ -1344,6 +2099,11 @@ function ChecklistSection({
   embedded,
   refreshToken,
   onOpenSettings,
+  onAddTodo,
+  onDeleteTodo,
+  onReopenTodo,
+  onSetTodoDone,
+  onCountsChange,
 }) {
   const [binding, setBinding] = useState(undefined);
   const [devices, setDevices] = useState([]);
@@ -1386,9 +2146,30 @@ function ChecklistSection({
       revision.current++;
     };
   }, [loadBinding, callCloud]);
+  function refreshBinding() {
+    setError("");
+    void loadBinding().catch((err) => {
+      if (active.current) setError(err.message);
+    });
+  }
   if (!binding) {
     return (
       <>
+        {embedded && (binding === null || !!error) && (
+          <UnboundChecklist
+            {...{
+              roomId,
+              userId,
+              page,
+              onAddTodo,
+              onDeleteTodo,
+              onReopenTodo,
+              onSetTodoDone,
+              onCountsChange,
+            }}
+            onRefresh={refreshBinding}
+          />
+        )}
         {error && (
           <p className="agent-error" role="alert">
             {error}
@@ -1399,24 +2180,15 @@ function ChecklistSection({
             {binding === undefined
               ? "正在读取项目关联…"
               : embedded
-                ? "选择 Codex 会话后，自动关联项目并开始整理待办。"
+                ? "待办保存在当前轻单项目中。选择 Codex 项目后，即可提交执行。"
                 : "此清单尚未关联执行项目。请先在第 3 步绑定电脑和项目。"}
           </p>
         )}
         {embedded && binding === null && onOpenSettings && (
-          <button onClick={onOpenSettings}>选择 Codex 会话</button>
+          <button onClick={onOpenSettings}>选择项目</button>
         )}
-        {binding !== undefined || error ? (
-          <button
-            onClick={() => {
-              setError("");
-              void loadBinding().catch((err) => {
-                if (active.current) setError(err.message);
-              });
-            }}
-          >
-            刷新项目关联
-          </button>
+        {!embedded && (binding !== undefined || error) ? (
+          <button onClick={refreshBinding}>刷新项目关联</button>
         ) : null}
       </>
     );
@@ -1441,6 +2213,11 @@ function ChecklistSection({
         onOpenBatch,
         embedded,
         refreshToken,
+        onAddTodo,
+        onDeleteTodo,
+        onReopenTodo,
+        onSetTodoDone,
+        onCountsChange,
       }}
     />
   );
@@ -1456,6 +2233,11 @@ export default function ChecklistPanel({
   embedded = false,
   refreshToken,
   onOpenSettings,
+  onAddTodo,
+  onDeleteTodo,
+  onReopenTodo,
+  onSetTodoDone,
+  onCountsChange,
 }) {
   const [sectionId, setSectionId] = useState("");
   const page = pages.find((item) => item.id === sectionId) || pages[0];
@@ -1466,7 +2248,6 @@ export default function ChecklistPanel({
       {!embedded && (
         <div className="agent-intro">
           <h3>执行真实清单</h3>
-          <p>从清单选择待办。每次提交新建一个 Codex 会话，按清单顺序执行。</p>
         </div>
       )}
       <section className="agent-device-card" aria-label="真实清单">
@@ -1500,6 +2281,11 @@ export default function ChecklistPanel({
                 embedded,
                 refreshToken,
                 onOpenSettings,
+                onAddTodo,
+                onDeleteTodo,
+                onReopenTodo,
+                onSetTodoDone,
+                onCountsChange,
               }}
             />
           </>

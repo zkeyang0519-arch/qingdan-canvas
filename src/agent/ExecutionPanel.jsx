@@ -721,11 +721,6 @@ function ExecutionSession({
     <div className="agent-trial agent-execution-panel">
       <div className="agent-intro">
         <h3>{recoveryOnly ? "核对原总结执行" : "把任务交给本机 Codex"}</h3>
-        <p>
-          {recoveryOnly
-            ? "查看已有总结的进度与输出，必要时请求停止；确认结束后返回项目摘要重新总结。"
-            : "每次提交新建一个 Codex 会话。批次里的待办在同一会话中按顺序执行，可以在这里查看进度、补充说明或请求停止。"}
-        </p>
       </div>
       {error && (
         <p className="agent-error" role="alert">

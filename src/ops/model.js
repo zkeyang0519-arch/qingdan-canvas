@@ -106,7 +106,7 @@ function serverFields(input) {
   };
 }
 
-function deploymentFields(state, input) {
+function deploymentFields(state, input, excludeId) {
   if (!isRecord(input)) fail("部署关系格式无效。");
   if (!state.products.some(product => product.id === input.productId))
     fail("部署关系引用了不存在的产品。");
@@ -116,6 +116,7 @@ function deploymentFields(state, input) {
   const role = optionalText(input.role, MAX.role, "角色") || "";
   const version = optionalText(input.version, MAX.version, "版本");
   if (state.deployments.some(item => (
+    item.id !== excludeId &&
     item.productId === input.productId &&
     item.serverId === input.serverId &&
     item.environment === environment &&
@@ -317,6 +318,24 @@ export function addDeployment(state, input) {
   };
 }
 
+export function updateDeployment(state, deploymentId, input) {
+  const existing = state.deployments.find(item => item.id === deploymentId);
+  if (!existing) fail("部署关系不存在。");
+  const fields = deploymentFields(state, mergeDefined(existing, input), deploymentId);
+  return {
+    ...state,
+    deployments: state.deployments.map(item => item.id === deploymentId ? { ...item, ...fields } : item),
+  };
+}
+
+export function deleteDeployment(state, deploymentId) {
+  return {
+    ...state,
+    deployments: state.deployments.filter(item => item.id !== deploymentId),
+    tasks: state.tasks.filter(task => task.targetType !== "deployment" || task.targetId !== deploymentId),
+  };
+}
+
 export function addOpsTask(state, input) {
   const fields = taskFields(state, input);
   return { ...state, tasks: [...state.tasks, { id: id("ops-task"), ...fields, completed: false, createdAt: now() }] };
@@ -333,6 +352,9 @@ function searchText(values, keyword) {
   return values.some(value => typeof value === "string" && value.toLocaleLowerCase().includes(needle));
 }
 
+const productSearchFields = (product) => [product.name, product.summary, product.owner, ...product.tags];
+const serverSearchFields = (server) => [server.name, server.provider, server.region, server.address, server.system];
+
 function productHasEnvironment(state, productId, environment) {
   return state.deployments.some(item => item.productId === productId && item.environment === environment);
 }
@@ -343,7 +365,7 @@ function serverHasEnvironment(state, serverId, environment) {
 
 export function filterProducts(state, query = {}) {
   return state.products.filter(product => (
-    searchText([product.name, product.summary, product.owner, ...product.tags,
+    searchText([...productSearchFields(product),
       ...productServers(state, product.id).flatMap(server => [server.name, server.provider, server.address])], query.keyword) &&
     (!query.status || product.status === query.status) &&
     (!query.tag || product.tags.includes(query.tag)) &&
@@ -353,12 +375,46 @@ export function filterProducts(state, query = {}) {
 
 export function filterServers(state, query = {}) {
   return state.servers.filter(server => (
-    searchText([server.name, server.provider, server.region, server.address, server.system,
+    searchText([...serverSearchFields(server),
       ...state.deployments.filter(item => item.serverId === server.id)
         .map(item => state.products.find(product => product.id === item.productId)?.name)], query.keyword) &&
     (!query.status || server.status === query.status) &&
     (!query.environment || server.environment === query.environment || serverHasEnvironment(state, server.id, query.environment))
   ));
+}
+
+export function filterDeploymentMap(state, { keyword, status, environment }) {
+  const productsById = new Map(state.products.map(product => [product.id, product]));
+  const serversById = new Map(state.servers.map(server => [server.id, server]));
+  const visibleProducts = new Set();
+  const visibleServers = new Set();
+  const deployments = [];
+  for (const deployment of state.deployments) {
+    const product = productsById.get(deployment.productId);
+    const server = serversById.get(deployment.serverId);
+    if (!product || !server) continue;
+    if (environment && deployment.environment !== environment) continue;
+    if (status && product.status !== status && server.status !== status) continue;
+    if (!searchText([
+      ...productSearchFields(product),
+      ...serverSearchFields(server),
+      deployment.role,
+      deployment.version,
+    ], keyword)) continue;
+    deployments.push({ deployment, product, server });
+    visibleProducts.add(product.id);
+    visibleServers.add(server.id);
+  }
+  return {
+    deployments,
+    products: state.products.filter(product => visibleProducts.has(product.id) || (
+      !environment && (!status || product.status === status) && searchText(productSearchFields(product), keyword)
+    )),
+    servers: state.servers.filter(server => visibleServers.has(server.id) || (
+      (!environment || server.environment === environment) &&
+      (!status || server.status === status) && searchText(serverSearchFields(server), keyword)
+    )),
+  };
 }
 
 export function groupDeploymentsByRole(state, productId) {

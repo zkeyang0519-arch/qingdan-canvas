@@ -327,6 +327,20 @@ export function deletePageTasks(state, boardId, pageId, keys) {
     .reduce((next, t) => deleteTodo(next, t.note.id, t.key), state);
 }
 
+export function reopenPageTask(state, boardId, pageId, { noteId, taskId }) {
+  const task = pageTask(state, boardId, pageId, noteId, taskId);
+  if (!task || task.note.noteKind === "text" || !task.block.done) return state;
+  return patchObjects(state, {
+    [noteId]: {
+      blocks: task.note.blocks.map((block) =>
+        block.id === taskId
+          ? { ...block, done: false, completedAt: null }
+          : block,
+      ),
+    },
+  });
+}
+
 export function clearCompletedPageTasks(state, boardId, pageId) {
   const page = writablePage(state, boardId, pageId);
   if (!page) return state;

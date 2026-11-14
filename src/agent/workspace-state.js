@@ -169,6 +169,10 @@ function exactRequest(request, requestId) {
   return value;
 }
 function isSafeStop(request) {
+  if (request.path === "/api/agent/chat/cancel")
+    return ["bindingId", "chatId", "jobId"].every(
+      (key) => typeof request.body[key] === "string" && !!request.body[key],
+    );
   return (
     request.path === "/api/agent/execution/tools" &&
     request.body.name === "codex_cancel_run" &&
@@ -185,23 +189,34 @@ export function workspaceRequestOwner(record) {
     const key = record.operationKey;
     const matches = (value) => canonical(JSON.parse(key)) === canonical(value);
     const chatAction = path.match(
-      /^\/api\/agent\/chat\/(send|new|save-tasks|remember|memory)$/,
+      /^\/api\/agent\/chat\/(send|new|save-tasks|remember|memory|cancel)$/,
     )?.[1];
     if (chatAction && body.requestId === record.requestId) {
       const expected =
-        chatAction === "send"
-          ? `send:${body.chatId || "new"}`
-          : chatAction === "new"
-            ? "new"
-            : chatAction === "save-tasks"
-              ? `save-tasks:${body.messageId}`
-              : chatAction === "remember"
-                ? `remember:${body.messageId}:${body.index}`
-                : `memory:${body.id || JSON.stringify([body.scope, body.key])}`;
+        chatAction === "cancel"
+          ? `cancel:${body.jobId}`
+          : chatAction === "send"
+            ? `send:${body.chatId || "new"}`
+            : chatAction === "new"
+              ? "new"
+              : chatAction === "save-tasks"
+                ? `save-tasks:${body.messageId}`
+                : chatAction === "remember"
+                  ? `remember:${body.messageId}:${body.index}`
+                  : `memory:${body.id || JSON.stringify([body.scope, body.key])}`;
       return key === expected ? "chat" : null;
     }
     if (key === "summary:stop" && isSafeStop(record.request))
       return "summary-stop";
+    if (
+      key === "composer-execution" &&
+      path === "/api/agent/execution/intents" &&
+      body.requestId === record.requestId &&
+      body.kind === "task" &&
+      typeof body.instruction === "string" &&
+      body.executionSettings &&
+      !body.sourceTasks && !body.items
+    ) return "chat";
     const summaryAction = path.match(
       /^\/api\/agent\/project\/(initialize|refresh|use-previous)$/,
     )?.[1];

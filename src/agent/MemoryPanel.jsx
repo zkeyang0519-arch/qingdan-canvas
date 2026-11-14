@@ -44,7 +44,7 @@ export default function MemoryPanel({
       aria-label="管理记忆"
     >
       {!embedded && <h4>管理记忆</h4>}
-      <div className="agent-actions" aria-label="记忆范围">
+      <div className="agent-actions agent-memory-tabs" aria-label="记忆范围">
         {Object.entries(memoryScopeName).map(([id, label]) => (
           <button
             key={id}
@@ -59,6 +59,7 @@ export default function MemoryPanel({
           </button>
         ))}
         <button
+          className="agent-memory-add"
           disabled={busy || !!editor}
           onClick={() => setEditor({ key: "", value: "" })}
         >
@@ -70,8 +71,10 @@ export default function MemoryPanel({
           ? "个人记忆可用于你的各个项目。"
           : "这里的记忆仅用于当前轻单清单。"}
       </p>
-      {rows.length === 0 && <p className="agent-note">这个范围还没有记忆。</p>}
-      <ul className="agent-memory-list">
+      {!editor && rows.length === 0 && (
+        <p className="agent-memory-empty">暂无记忆</p>
+      )}
+      <ul className="agent-memory-list" hidden={!!editor}>
         {rows.map((memory) => (
           <li key={memory.id}>
             <strong>{memory.key}</strong>
@@ -134,6 +137,7 @@ export default function MemoryPanel({
           </label>
           <div className="agent-actions">
             <button
+              className="primary"
               disabled={busy || !editor.key.trim() || !editor.value.trim()}
               onClick={submit}
             >
@@ -145,12 +149,6 @@ export default function MemoryPanel({
           </div>
         </div>
       )}
-      <p className="agent-note">
-        删除记忆会保留聊天原文。后续模型会停止自动使用已删除的来源。
-        {embedded
-          ? "已保存的待办可以在清单中单独修改。"
-          : "已保存的待办可在第 5 步单独修改。"}
-      </p>
     </section>
   );
 }

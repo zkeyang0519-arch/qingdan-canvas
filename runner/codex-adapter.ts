@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { boundedFinalOutput } from "../shared/agent/output";
 import type {
   ContinueRunInput,
   ExecutionSnapshot,
@@ -21,6 +22,7 @@ import type { ThreadItemsListResponse } from "./protocol/v2/ThreadItemsListRespo
 import type { ThreadListResponse } from "./protocol/v2/ThreadListResponse";
 import type { ReasoningEffort } from "./protocol/ReasoningEffort";
 import { CodexClient, type RpcPacket } from "./codex-client";
+import { fastServiceTier, readCodexModels } from "./codex-sessions";
 import type { ProcessOptions } from "./supervisor";
 import { RunnerStore } from "./store";
 import { RpcError, RunnerError } from "./errors";
@@ -30,10 +32,20 @@ import {
   assertGitBaseline,
   readGitBaseline,
 } from "./workspace";
+import { validateSummaryReferences } from "./summary-evidence";
 import {
-  readSummaryEvidence,
-  validateSummaryReferences,
-} from "./summary-evidence";
+  inspectProject,
+  projectInspectionToolName,
+  mergeInspectionSources,
+  validateInspectionReferences,
+  projectInspectionRoot,
+  projectInspectionTool,
+} from "./project-inspection";
+import { validateHistoryReferences } from "./project-history";
+import { readRecentHistory, recentHistoryTool, recentHistoryToolName } from "./project-recent-history";
+import { historyTool, historyToolName, historyManifest, initialHistoryRead, readHistoryPage } from "./project-history-pages";
+import { historyReadInput } from "./summary-cache";
+import { summaryReadProgress } from "./summary-progress";
 import {
   outputSchema,
   resultTool,
@@ -42,6 +54,7 @@ import {
   runInstructions,
   runPrompt,
   runTitle,
+  type SummaryMode,
 } from "./prompt";
 import { confirmThreadTerminalsStopped, stopThreadTerminals } from "./process-cleanup";
 import { currentSnapshot, finishBatchItem, initialBatch } from "./batch";
@@ -94,6 +107,9 @@ export function parseApprovalsReviewer(
 type DispatchGuard = ((
   stage: "thread" | "name" | "resume" | "turn" | "steer",
 ) => Promise<void>) & { native?: NativeOperationGuard };
+const summaryMode = (run: RunRecord): SummaryMode =>
+  run.summaryHistory ? run.summaryHistory.version === 2 ? "history" : "legacy_history" : run.summaryInspection ? run.summaryInspection.mode === "current" ? run.summaryInspection.reportFormat === "handoff" ? "current" : "legacy_current" : "inspection" : "evidence";
+
 export class CodexAdapter {
   private client: CodexClient;
   private changes = new EventEmitter();
@@ -202,6 +218,42 @@ export class CodexAdapter {
     );
     this.changes.emit("change");
   }
+  private displayOutput(
+    runId: string,
+    channel: NonNullable<RunnerEventPayloads["output.delta"]["channel"]>,
+    itemId: unknown,
+    phase: NonNullable<RunnerEventPayloads["output.delta"]["phase"]>,
+    text: string,
+    title?: string,
+    messagePhase?: RunnerEventPayloads["output.delta"]["messagePhase"] | null,
+  ) {
+    if (typeof itemId !== "string" || !/^[^\x00-\x20\x7f]{1,256}$/.test(itemId)) {
+      for (let offset = 0; offset < text.length; offset += 32000)
+        this.publish(runId, "output.delta", { text: text.slice(offset, offset + 32000) });
+      return;
+    }
+    const run = this.getRun(runId);
+    const state = run.outputItems?.turnId === run.activeTurnId
+      ? structuredClone(run.outputItems)
+      : { turnId: run.activeTurnId!, items: {} };
+    const previous = Object.hasOwn(state.items, itemId) ? state.items[itemId] : { length: 0, completed: false };
+    if (previous.completed) return;
+    // Completion carries cumulative output. Only publish the suffix that was
+    // not streamed already; keeping lengths durable prevents reconnect copies.
+    const remaining = phase === "completed" ? text.slice(previous.length) : text;
+    let length = previous.length;
+    const chunks = remaining.length ? Math.ceil(remaining.length / 32000) : 1;
+    for (let index = 0; index < chunks; index++) {
+      const chunk = remaining.slice(index * 32000, (index + 1) * 32000);
+      length += chunk.length;
+      state.items[itemId] = { length, completed: phase === "completed" && index === chunks - 1 };
+      this.publish(runId, "output.delta", {
+        text: chunk, channel, itemId, phase,
+        ...(messagePhase ? { messagePhase } : {}),
+        ...(title ? { title: title.slice(0, 2000) } : {}),
+      }, phase === "delta" ? undefined : `display:${run.activeTurnId}:${itemId}:${phase}:${index}`, { outputItems: state });
+    }
+  }
   private uncertain(runId: string, reason: string): LaunchResult {
     if (!this.getRun(runId).terminal)
       this.store.patchRun(runId, {
@@ -267,21 +319,26 @@ export class CodexAdapter {
     requestId: string,
     message?: string,
   ): TurnStartParams {
+    const permissions = this.permissions(run.snapshot);
+    const model = run.summarySettings?.model ?? run.taskModel ?? run.snapshot.executionSettings?.model ?? this.options.model;
+    const effort = run.summarySettings?.effort ?? run.snapshot.executionSettings?.reasoningEffort ?? this.options.effort;
     return {
       threadId: run.threadId!,
       clientUserMessageId: requestId,
       input: [
         {
           type: "text",
-          text: runPrompt(currentSnapshot(run), message),
+          text: runPrompt(currentSnapshot(run), message, summaryMode(run)),
           text_elements: [],
         },
       ],
       cwd: run.root,
-      approvalPolicy: "on-request",
-      approvalsReviewer: this.permissions(run.snapshot).reviewer,
+      approvalPolicy: permissions.approvalPolicy,
+      approvalsReviewer: permissions.reviewer,
       sandboxPolicy:
-        this.permissions(run.snapshot).sandbox === "read-only"
+        permissions.sandbox === "danger-full-access"
+          ? { type: "dangerFullAccess" }
+          : permissions.sandbox === "read-only"
           ? { type: "readOnly", networkAccess: false }
           : {
               type: "workspaceWrite",
@@ -290,35 +347,49 @@ export class CodexAdapter {
               excludeTmpdirEnvVar: true,
               excludeSlashTmp: true,
             },
-      ...(this.options.model ? { model: this.options.model } : {}),
-      ...(this.options.effort ? { effort: this.options.effort } : {}),
+      ...(model ? { model } : {}),
+      ...(run.taskServiceTier ? { serviceTier: run.taskServiceTier } : {}),
+      ...(run.snapshot.kind === "task" && run.snapshot.executionSettings && !run.snapshot.executionSettings.fastMode ? { serviceTierForTurn: "default" } : {}),
+      ...(effort ? { effort } : {}),
       additionalContext: {
-        ...(run.snapshot.kind === "summary" && run.summaryEvidence
+        ...(run.snapshot.kind === "summary" && (run.summaryHistory || run.summaryInspection || run.summaryEvidence)
           ? {
               qingdan_project_evidence: {
                 kind: "untrusted" as const,
                 name: "qingdan_project_evidence",
-                value: JSON.stringify(run.summaryEvidence),
+                value: JSON.stringify((run.summaryHistory?.version === 2
+                  ? { ...historyManifest(historyReadInput(run.summaryHistory, run.summaryHistoryCache), run.summaryHistoryRead ?? initialHistoryRead(historyReadInput(run.summaryHistory, run.summaryHistoryCache))),
+                    totalProjectRecords: run.summaryHistory.records.length,
+                    cachedRecords: run.summaryHistoryCache?.reusedSources.length ?? 0,
+                    ...(run.summaryHistoryCache ? { cache: { sourceRunId: run.summaryHistoryCache.sourceRunId, capturedAt: run.summaryHistoryCache.capturedAt } } : {}) }
+                  : run.summaryHistory) ?? (run.summaryInspection
+                  ? { mode: "project_inspection", cwd: run.root, ...run.summaryContext,
+                      guidance: run.summaryInspection.mode === "current"
+                        ? "按需 browse/read/search/git 检查当前项目，需要时查最近会话；信息足够即可总结，不要求读完分页或历史。"
+                        : "先调用 qingdan_inspect_project 的 list 浏览整个项目，再用 read/search/git 按模块核查。nextCursor 非空表示尚未读取完。" }
+                  : run.summaryEvidence)),
               },
             }
           : {}),
         qingdan_task: {
           kind: "untrusted",
           name: "qingdan_task",
-          value: runContext(currentSnapshot(run)),
+          value: runContext(currentSnapshot(run), summaryMode(run)),
         },
       },
       ...(run.resultChannel === "tool"
         ? {}
-        : { outputSchema: outputSchema(run.snapshot.kind) }),
+        : { outputSchema: outputSchema(run.snapshot.kind, summaryMode(run)) }),
     };
   }
   private permissions(snapshot: ExecutionSnapshot) {
     const profile = snapshot.executionPermissions?.profile;
+    const fullAccess = snapshot.kind === "task" && profile === "full_access";
     return {
       sandbox: (snapshot.kind === "summary" || profile === "read_only"
         ? "read-only"
-        : "workspace-write") as "read-only" | "workspace-write",
+        : fullAccess ? "danger-full-access" : "workspace-write") as "read-only" | "workspace-write" | "danger-full-access",
+      approvalPolicy: (fullAccess ? "never" : "on-request") as "never" | "on-request",
       reviewer: profile
         ? ((profile === "workspace_auto" && snapshot.kind !== "summary"
             ? "auto_review"
@@ -374,6 +445,10 @@ export class CodexAdapter {
     this.store.patchRun(run.runId, {
       resultChannel: "tool",
       reportedResult: null,
+      ...(snapshot.kind === "summary" ? {
+        summarySettings: { model: "gpt-6.1-terra", effort: "medium" as const },
+        summaryProgress: { ...summaryReadProgress(run), mode: "project" as const, phase: "reading" as const, filesRead: 0, historyReads: 0 },
+      } : {}),
       ...(snapshot.kind === "task" && snapshot.batch
         ? { batch: initialBatch(snapshot), batchPhase: "running" }
         : {}),
@@ -385,18 +460,35 @@ export class CodexAdapter {
       "accepted",
     );
     try {
+      const settings = snapshot.kind === "task" ? snapshot.executionSettings : undefined;
+      let model = snapshot.kind === "summary" ? "gpt-6.1-terra" : settings?.model ?? this.options.model;
+      let serviceTier = settings ? "default" : undefined;
+      if (settings?.fastMode) {
+        const models = await readCodexModels(this.client);
+        if (!model) {
+          const { config } = await this.client.request("config/read", { cwd: root, includeLayers: false });
+          model = config.model ?? models.find((entry) => entry.isDefault)?.model;
+        }
+        serviceTier = fastServiceTier(models.find((entry) => entry.model === model));
+        if (!serviceTier)
+          throw new RunnerError("VALIDATION_ERROR", "当前模型不支持快速模式。请更新执行设置。");
+      }
       await guard?.("thread");
       native?.assertDispatch();
-      this.store.patchRun(run.runId, { launchIntent: "thread_requested" });
+      this.store.patchRun(run.runId, {
+        launchIntent: "thread_requested",
+        ...(settings?.fastMode ? { taskModel: model, taskServiceTier: serviceTier } : {}),
+      });
       const result = await this.client.request("thread/start", {
         cwd: root,
         sandbox: this.permissions(snapshot).sandbox,
-        approvalPolicy: "on-request",
+        approvalPolicy: this.permissions(snapshot).approvalPolicy,
         approvalsReviewer: this.permissions(snapshot).reviewer,
         ephemeral: false,
         developerInstructions: runInstructions(snapshot.kind),
-        dynamicTools: [resultTool(snapshot.kind)],
-        ...(this.options.model ? { model: this.options.model } : {}),
+        dynamicTools: [resultTool(snapshot.kind), ...(snapshot.kind === "summary" ? [projectInspectionTool(), recentHistoryTool()] : [])],
+        ...(model ? { model } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
       });
       // A reconciliation may finish while thread/start is pending. Its late
       // reply must not revive the run or proceed to name/turn/start.
@@ -425,17 +517,21 @@ export class CodexAdapter {
               workspaceId: snapshot.workspaceId,
               gitBaseline: await readGitBaseline(root),
               capturedAt: new Date().toISOString(),
+              sourceKind: "project_current" as const,
             }
           : undefined;
-      const summaryEvidence = summaryContext
-        ? await readSummaryEvidence(root, summaryContext.gitBaseline) : undefined;
+      const summaryInspection = summaryContext
+        ? { root: await projectInspectionRoot(root), sources: [], mode: "current" as const, reportFormat: "handoff" as const, historySources: [] }
+        : undefined;
+      if (summaryInspection) await guard?.("turn");
       native?.assertDispatch();
-      const prepared = this.store.patchRun(run.runId, {
+      let prepared = this.store.patchRun(run.runId, {
         launchIntent: "turn_sent",
         pendingRequestId: requestId,
         ...(summaryContext ? { summaryContext } : {}),
-        ...(summaryEvidence ? { summaryEvidence } : {}),
+        ...(summaryInspection ? { summaryInspection } : {}),
       });
+      if (summaryInspection) prepared = this.store.patchRun(run.runId, { summaryProgress: summaryReadProgress(prepared) });
       const response = await this.client.request(
         "turn/start",
         this.turnParams(prepared, requestId),
@@ -531,6 +627,12 @@ export class CodexAdapter {
     }
     try {
       if (packet.id !== undefined) {
+        if (packet.method === "item/tool/call" && params.tool === historyToolName)
+          return this.readHistoryTool(run, packet);
+        if (packet.method === "item/tool/call" && params.tool === recentHistoryToolName)
+          return this.readRecentHistoryTool(run, packet);
+        if (packet.method === "item/tool/call" && params.tool === projectInspectionToolName)
+          return this.inspectProjectTool(run, packet);
         if (packet.method === "item/tool/call")
           return this.reportResult(run, packet);
         return this.requestUser(run, packet);
@@ -555,6 +657,21 @@ export class CodexAdapter {
           });
         if (this.itemMetadata.size > 100)
           this.itemMetadata.delete(this.itemMetadata.keys().next().value!);
+        const phase = packet.method === "item/started" ? "started" : "completed";
+        if (item.type === "commandExecution") {
+          const command = typeof item.command === "string" ? item.command : "命令执行";
+          const suffix = phase === "completed"
+            ? Number.isInteger(item.exitCode) ? ` · 退出码 ${item.exitCode}` : ` · ${item.status === "failed" ? "失败" : "已结束"}`
+            : "";
+          this.displayOutput(run.runId, "command", item.id, phase,
+            phase === "completed" && typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "", command + suffix);
+        } else if (item.type === "fileChange" && phase === "completed") {
+          const files = Array.isArray(item.changes) ? item.changes.flatMap((change: any) => typeof change.path === "string" ? [change.path] : []) : [];
+          this.displayOutput(run.runId, "file_change", item.id, "completed", files.join("\n"), item.status === "failed" ? "文件修改失败" : "文件修改");
+        } else if (item.type === "agentMessage") {
+          this.displayOutput(run.runId, "assistant", item.id, phase,
+            phase === "completed" && typeof item.text === "string" ? item.text : "", undefined, item.phase);
+        }
       }
       if (
         packet.method === "item/agentMessage/delta" &&
@@ -562,15 +679,14 @@ export class CodexAdapter {
         params.delta.length
       ) {
         // Deltas are display-only. Persisted receipts supply task results.
-        for (let offset = 0; offset < params.delta.length; offset += 32000)
-          this.publish(run.runId, "output.delta", {
-            text: params.delta.slice(offset, offset + 32000),
-          });
+        this.displayOutput(run.runId, "assistant", params.itemId, "delta", params.delta);
       }
+      if (packet.method === "item/commandExecution/outputDelta" && typeof params.delta === "string" && params.delta.length)
+        this.displayOutput(run.runId, "command", params.itemId, "delta", params.delta);
       if (
         packet.method === "item/completed" &&
         params.item?.type === "agentMessage" &&
-        params.item.phase !== "commentary"
+        (params.item.phase === "final_answer" || params.item.phase == null)
       )
         this.store.patchRun(run.runId, { output: params.item.text });
       if (packet.method === "turn/completed")
@@ -582,13 +698,159 @@ export class CodexAdapter {
       );
     }
   }
+  private readHistoryTool(run: RunRecord, packet: RpcPacket) {
+    try {
+      if (run.snapshot.kind !== "summary" || run.summaryHistory?.version !== 2 || !run.summaryHistoryRead || packet.params.namespace != null || typeof packet.params.callId !== "string" || !packet.params.callId)
+        throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "当前运行没有历史分页工具。");
+      const native = this.options.captureGuard?.(run.runId);
+      native?.assertDispatch();
+      if (!this.available || run.terminal || run.cancelRequested)
+        throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "总结已结束或正在停止，不再交付历史。");
+      const result = readHistoryPage(historyReadInput(run.summaryHistory, run.summaryHistoryCache), run.summaryHistoryRead, packet.params.arguments);
+      const summaryProgress = result.state === run.summaryHistoryRead ? run.summaryProgress : summaryReadProgress({ ...run, summaryHistoryRead: result.state });
+      this.store.patchRun(run.runId, { summaryHistoryRead: result.state, ...(run.summarySettings ? { summaryProgress } : {}) });
+      try {
+        this.client.respond(packet.id!, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result.output) }] });
+      } catch (error) {
+        this.store.patchRun(run.runId, { summaryHistoryRead: run.summaryHistoryRead, summaryProgress: run.summaryProgress });
+        throw error;
+      }
+    } catch (error) {
+      if (this.available) this.client.respond(packet.id!, { success: false, contentItems: [{ type: "inputText", text: error instanceof RunnerError ? error.message : "历史分页参数无效，请使用当前 nextCursor。" }] });
+    }
+  }
+  private async inspectProjectTool(run: RunRecord, packet: RpcPacket) {
+    try {
+      if (run.snapshot.kind !== "summary" || !run.summaryInspection || packet.params.namespace != null || typeof packet.params.callId !== "string")
+        throw new RunnerError("PROJECT_INSPECTION_DENIED", "当前运行没有项目检查工具。");
+      const native = this.options.captureGuard?.(run.runId);
+      native?.assertDispatch();
+      if (!this.available || run.terminal || run.cancelRequested)
+        throw new RunnerError("PROJECT_INSPECTION_DENIED", "总结已停止，不再读取项目。");
+      if (run.summaryInspection.mode === "current")
+        this.publish(run.runId, "output.delta", { text: "\n正在查看项目内容…\n" });
+      const result = await inspectProject(run.root, packet.params.arguments, run.summaryInspection.root);
+      const current = this.getRun(run.runId);
+      if (!this.available || current.terminal || current.cancelRequested || current.activeTurnId !== run.activeTurnId || !current.summaryInspection)
+        throw new RunnerError("PROJECT_INSPECTION_DENIED", "原总结已结束或正在停止，不再返回项目内容。");
+      native?.assertDispatch();
+      // Another inspection may finish while this file is read; merge into the latest journal.
+      const inspected = this.store.patchRun(run.runId, {
+        summaryInspection: {
+          ...current.summaryInspection,
+          sources: mergeInspectionSources(current.summaryInspection.sources, result.sources),
+        },
+      });
+      try {
+        this.client.respond(packet.id!, {
+          success: true,
+          contentItems: [{ type: "inputText", text: JSON.stringify(result.output) }],
+        });
+        if (current.summaryInspection.mode === "current") {
+          this.store.patchRun(run.runId, { summaryProgress: { ...summaryReadProgress(inspected), pagesRead: (current.summaryProgress?.pagesRead ?? 0) + 1 } });
+          const paths = [...new Set(result.sources.map(s => s.path))];
+          const label = paths.includes("native:git") ? "已查看当前 Git 变更和近期提交"
+            : paths.includes("native:inventory") ? `已浏览目录 ${packet.params.arguments.path ?? "."}`
+              : `已读取 ${paths.slice(0, 5).join("、") || "项目内容"}`;
+          this.publish(run.runId, "output.delta", { text: `${label}${result.output.nextCursor ? "（还有内容，可按需继续）" : ""}。\n` });
+        }
+      } catch (error) {
+        this.store.patchRun(run.runId, { summaryInspection: current.summaryInspection });
+        throw error;
+      }
+    } catch (error) {
+      if (this.available) {
+        try {
+          this.client.respond(packet.id!, {
+            success: false,
+            contentItems: [{ type: "inputText", text: error instanceof RunnerError ? error.message : "无法读取该项目内容，请检查相对路径和继续游标；无法检查的范围应列入待核实。" }],
+          });
+        } catch {
+          // The disconnect listener retains the run for reconciliation.
+        }
+      }
+    }
+  }
+  private async readRecentHistoryTool(run: RunRecord, packet: RpcPacket) {
+    try {
+      if (run.snapshot.kind !== "summary" || run.summaryInspection?.mode !== "current" ||
+        packet.params.namespace != null || typeof packet.params.callId !== "string" || !packet.params.callId)
+        throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "当前运行没有最近历史读取工具。");
+      const native = this.options.captureGuard?.(run.runId);
+      const assertCurrent = () => {
+        native?.assertDispatch();
+        const current = this.getRun(run.runId);
+        if (!this.available || current.terminal || current.cancelRequested || current.activeTurnId !== run.activeTurnId)
+          throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "总结已停止，不再返回历史内容。");
+      };
+      assertCurrent();
+      this.publish(run.runId, "output.delta", { text: "\n正在查看当前项目最近的相关会话…\n" });
+      const result = await readRecentHistory(this.client, run.root, packet.params.arguments, {
+        excludeThreadIds: this.store.allRuns().flatMap(r => r.snapshot.kind === "summary" && r.threadId ? [r.threadId] : []),
+        assertCurrent,
+      });
+      assertCurrent();
+      const current = this.getRun(run.runId);
+      const updated = this.store.patchRun(run.runId, { summaryInspection: {
+        ...current.summaryInspection!, historySources: [...new Set([...(current.summaryInspection?.historySources ?? []), ...result.sources])],
+      } });
+      try {
+        this.client.respond(packet.id!, { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result.output) }] });
+      } catch (error) {
+        this.store.patchRun(run.runId, { summaryInspection: current.summaryInspection });
+        throw error;
+      }
+      this.store.patchRun(run.runId, { summaryProgress: { ...summaryReadProgress(updated), pagesRead: (current.summaryProgress?.pagesRead ?? 0) + 1 } });
+      this.publish(run.runId, "output.delta", { text: result.output.threads
+        ? `找到 ${result.output.threads.length} 个相关会话，Codex 将按需选择。\n`
+        : `已读取 ${result.sources.length} 条最近记录，正在结合项目现状整理。\n` });
+    } catch (error) {
+      if (this.available) try {
+        this.client.respond(packet.id!, { success: false, contentItems: [{ type: "inputText", text: error instanceof RunnerError ? error.message : "最近会话暂时不可读取，可先检查项目文件并说明背景缺口。" }] });
+      } catch { /* Disconnect is reconciled by the transport. */ }
+    }
+  }
   private parseResult(
     run: RunRecord,
     value: unknown,
   ): NonNullable<RunRecord["result"]> {
     const snapshot = currentSnapshot(run);
     if (snapshot.kind === "summary") {
-      const summary = projectSummarySchema.parse(value);
+      let report = value;
+      let historyReceipt: unknown;
+      if (run.summaryHistory?.version === 2 && value && typeof value === "object") {
+        const { historyReceipt: receipt, ...content } = value as Record<string, unknown>;
+        historyReceipt = receipt;
+        report = content;
+      }
+      const summary = projectSummarySchema.parse(report);
+      if (run.summaryHistory) {
+        if (run.summaryHistory.version === 2) {
+          if (!run.summaryHistoryRead || run.summaryHistoryRead.nextCursor !== null)
+            throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "历史尚未读完，请继续调用 qingdan_read_project_history，nextCursor=" + run.summaryHistoryRead?.nextCursor);
+          if (historyReceipt !== (run.summaryHistory.records.length ? run.summaryHistoryRead.previous?.output.receipt : "empty"))
+            throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "缺少正确的末页回执 historyReceipt，请使用 replayCursor=" + run.summaryHistoryRead.previous?.cursor + " 重读末页，并原样提交该页 receipt。");
+          if (!summary.background || !summary.modules)
+            throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "请补充 background 项目背景和 modules 模块当前进度、剩余工作、下一步。");
+          const c = run.summaryHistory.coverage;
+          const progress = summaryReadProgress(run);
+          summary.coverage = { totalRecords: run.summaryHistory.records.length, deliveredRecords: progress.readRecords + progress.cachedRecords,
+            ...(run.summaryHistoryCache ? { cachedRecords: progress.cachedRecords } : {}),
+            threadCount: c.threadCount, failedThreadCount: c.failedThreadCount, excludedForkCount: c.excludedForkCount,
+            missingFinalCount: c.missingFinalCount, incompleteTurnCount: c.incompleteTurnCount,
+            partial: !!(c.failedThreadCount || c.excludedForkCount || c.missingFinalCount || c.omittedCount || c.truncatedCount) };
+          if (JSON.stringify(summary).length > 24000)
+            throw new RunnerError("PROJECT_HISTORY_UNAVAILABLE", "项目进度报告过长（含数据覆盖超过 24000 字符），请精简重复内容至 23000 字符以内后重新提交。");
+        }
+        return projectSummarySchema.parse(validateHistoryReferences(summary, run.summaryHistory));
+      }
+      if (run.summaryInspection) {
+        if (run.summaryInspection.reportFormat === "handoff" && !summary.handoff)
+          throw new RunnerError("INVALID_SUMMARY_EVIDENCE", "请补充 handoff 交接字段：技术概况、最近改动、当前停点、修改入口、接手顺序与验收、接手约束。没有依据的列表留空并说明待核实范围。");
+        if (run.summaryInspection.mode === "current" && (!summary.background || !summary.modules))
+          throw new RunnerError("INVALID_SUMMARY_EVIDENCE", "请提供 background 项目背景和 modules 当前进度、剩余工作及下一步。");
+        return validateInspectionReferences(summary, run.summaryInspection.sources, run.summaryInspection.historySources);
+      }
       return run.summaryEvidence
         ? validateSummaryReferences(summary, run.summaryEvidence)
         : summary;
@@ -635,7 +897,7 @@ export class CodexAdapter {
       )
         throw Error("Invalid report");
       result = this.parseResult(run, value);
-    } catch {
+    } catch (error) {
       this.store.patchRun(run.runId, { reportedResult: null });
       this.client.respond(packet.id!, {
         success: false,
@@ -643,22 +905,26 @@ export class CodexAdapter {
           {
             type: "inputText",
             text:
-              run.snapshot.kind === "task"
+              error instanceof RunnerError ? error.message : run.snapshot.kind === "task"
                 ? "回执格式无效，请按工具字段重交，不要提供 runId/taskId。changedFiles 必须是项目相对路径，不能使用盘符、绝对路径或 ../；outcome 为 done 时 remainingIssues 必须为空数组，未运行额外测试等验证局限写在 nextTaskNotes；summary 必须非空。不要编造未执行的验证。"
-                : "项目总结回执格式无效，请按工具字段重交。各列表使用包含 text 和可选 evidenceRef 的对象，evidenceRef 只能引用原生资料包提供的文件或 native:git/native:inventory；不要提供 runId/taskId。",
+                : run.summaryHistory
+                  ? "项目总结回执格式无效。各列表使用包含 text 和可选 evidenceRef 的对象，evidenceRef 只能使用本轮 records 原样的 source 或 native:history。不要引用文件路径或提供 runId/taskId。"
+                  : "项目总结回执格式无效，请按工具字段重交。各列表使用包含 text 和可选 evidenceRef 的对象，evidenceRef 只能引用本轮实际读取的文件或 native:git/native:inventory；未读文件请先调用项目检查工具。不要提供 runId/taskId。",
           },
         ],
       });
       return;
     }
     // Save before acknowledging. A receipt cannot finish a still-running turn.
-    this.store.patchRun(run.runId, {
+    const reported = this.store.patchRun(run.runId, {
       reportedResult: {
         turnId: run.activeTurnId!,
         callId: params.callId,
         result,
       },
     });
+    if (run.summaryInspection?.mode === "current")
+      this.store.patchRun(run.runId, { summaryProgress: summaryReadProgress(reported) });
     this.client.respond(packet.id!, {
       success: true,
       contentItems: [
@@ -700,11 +966,16 @@ export class CodexAdapter {
       }
       return;
     }
-    const messages = (turn.items ?? []).filter(
-      (item): item is Extract<ThreadItem, { type: "agentMessage" }> =>
-        item.type === "agentMessage" && item.phase !== "commentary",
+    const items = turn.items ?? [];
+    const currentItems = items.slice(items.findLastIndex(item => item.type === "userMessage") + 1);
+    const lastActivity = currentItems.findLastIndex(item => item.type !== "agentMessage");
+    const messages = currentItems.filter(
+      (item, index): item is Extract<ThreadItem, { type: "agentMessage" }> =>
+        item.type === "agentMessage" && (item.phase === "final_answer" || (item.phase == null && index > lastActivity)),
     );
-    const output = messages.at(-1)?.text ?? run.output;
+    const output = messages.findLast(item => item.phase === "final_answer")?.text
+      ?? messages.at(-1)?.text
+      ?? (run.resultChannel === "tool" ? "" : run.output);
     let result: RunRecord["result"] = null,
       resultError: string | null = null;
     if (turn.status === "completed")
@@ -782,6 +1053,7 @@ export class CodexAdapter {
         summary: run.snapshot.kind === "summary" ? (result as any) : null,
         error:
           turn.status === "completed" ? null : (turn.error?.message ?? null),
+        ...(run.resultChannel === "tool" ? { output: boundedFinalOutput(output) } : {}),
       },
       `completed:${turn.id}`,
       {
@@ -1130,7 +1402,7 @@ export class CodexAdapter {
       await this.client.request("thread/resume", {
         threadId: run.threadId,
         cwd: run.root,
-        approvalPolicy: "on-request",
+        approvalPolicy: this.permissions(run.snapshot).approvalPolicy,
         approvalsReviewer: this.permissions(run.snapshot).reviewer,
         sandbox: this.permissions(run.snapshot).sandbox,
         excludeTurns: true,
@@ -1311,12 +1583,12 @@ export class CodexAdapter {
         await this.client.request("thread/resume", {
           threadId: run.threadId!,
           cwd: run.root,
-          approvalPolicy: "on-request",
+          approvalPolicy: this.permissions(run.snapshot).approvalPolicy,
           approvalsReviewer: this.permissions(run.snapshot).reviewer,
           sandbox: this.permissions(run.snapshot).sandbox,
           excludeTurns: true,
           ...(run.resultChannel === "tool"
-            ? { developerInstructions: runInstructions(run.snapshot.kind) }
+            ? { developerInstructions: runInstructions(run.snapshot.kind, summaryMode(run)) }
             : {}),
         });
         await guard?.("turn");
@@ -1590,12 +1862,12 @@ export class CodexAdapter {
         await this.client.request("thread/resume", {
           threadId: run.threadId,
           cwd: run.root,
-          approvalPolicy: "on-request",
+          approvalPolicy: this.permissions(run.snapshot).approvalPolicy,
           approvalsReviewer: this.permissions(run.snapshot).reviewer,
           sandbox: this.permissions(run.snapshot).sandbox,
           excludeTurns: true,
           ...(run.resultChannel === "tool"
-            ? { developerInstructions: runInstructions(run.snapshot.kind) }
+            ? { developerInstructions: runInstructions(run.snapshot.kind, summaryMode(run)) }
             : {}),
         });
         native?.assertCurrent();
@@ -1701,11 +1973,11 @@ export class CodexAdapter {
     // This attaches the mapped thread only; it never starts a model turn.
     if (!this.attachedThreads.has(run.threadId!)) {
       await this.client.request("thread/resume", {
-        threadId: run.threadId!, cwd: run.root, approvalPolicy: "on-request",
+        threadId: run.threadId!, cwd: run.root, approvalPolicy: this.permissions(run.snapshot).approvalPolicy,
         approvalsReviewer: this.permissions(run.snapshot).reviewer,
         sandbox: this.permissions(run.snapshot).sandbox, excludeTurns: true,
         ...(run.resultChannel === "tool"
-          ? { developerInstructions: runInstructions(run.snapshot.kind) }
+          ? { developerInstructions: runInstructions(run.snapshot.kind, summaryMode(run)) }
           : {}),
       });
       await checkHistory();
@@ -1739,10 +2011,10 @@ export class CodexAdapter {
     // Attach the already completed thread to this new app-server before
     // inspecting its background terminals. This never sends turn/start.
     await this.client.request("thread/resume",{
-      threadId:run.threadId!,cwd:run.root,approvalPolicy:"on-request",
+      threadId:run.threadId!,cwd:run.root,approvalPolicy:this.permissions(run.snapshot).approvalPolicy,
       approvalsReviewer:this.permissions(run.snapshot).reviewer,
       sandbox:this.permissions(run.snapshot).sandbox,excludeTurns:true,
-      developerInstructions:runInstructions(run.snapshot.kind),
+      developerInstructions:runInstructions(run.snapshot.kind, summaryMode(run)),
     });
     await checkHistory();
     await stopThreadTerminals(this.client,run.threadId!,()=>this.assertStopAllowed(native));

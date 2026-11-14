@@ -94,6 +94,7 @@ export function createExperienceServer({
   service,
   upstream,
   runnerApi,
+  desktopApi,
   handshakeTimeoutMs = 10000,
 }) {
   if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1)
@@ -105,7 +106,7 @@ export function createExperienceServer({
   if (target.protocol !== "http:" || target.hostname !== "127.0.0.1")
     throw Error("上游必须是本机轻单开发服务。");
   // Only these local app pages may cross ports. Cookies are still verified
-  // against the upstream session by runnerApi on every actual request.
+  // against the upstream session by each local API on every actual request.
   const runnerOrigins = new Set([target.origin, "http://127.0.0.1:5178"]);
   const server = createServer(async (req, res) => {
     try {
@@ -113,11 +114,18 @@ export function createExperienceServer({
       const url = new URL(req.url, originFor(req));
       const localCodex = url.pathname.startsWith("/api/local-codex/");
       const localRunner = url.pathname.startsWith("/api/local-runner/");
+      const localDesktop = url.pathname.startsWith("/api/local-desktop/");
+      const localBridge = localRunner || localDesktop;
       guard(
         req,
-        localCodex || (localRunner && req.method !== "OPTIONS"),
-        localRunner ? runnerOrigins : undefined,
+        localCodex || (localBridge && req.method !== "OPTIONS"),
+        localBridge ? runnerOrigins : undefined,
       );
+      if (localDesktop) {
+        if (runnerCors(req, res)) return;
+        if (!desktopApi) throw reject(503, "桌面启动尚未就绪，请重启本机轻单服务。");
+        return json(res, await desktopApi(req, url));
+      }
       if (localRunner) {
         if (runnerCors(req, res)) return;
         if (!runnerApi) throw reject(503, "本机 Runner 尚未启动。");

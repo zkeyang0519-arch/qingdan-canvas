@@ -83,9 +83,36 @@ const baseTask = {
 };
 function fixture() {
   const calls = [];
-  let tasks = [],
+  const canvasAdds = [],
+    listeners = new Set(),
+    taskLists = Object.fromEntries(pages.map((page) => [page.id, []]));
+  let canvasPages = structuredClone(pages),
     saved = false,
-    run = null;
+    run = null,
+    submittedIntent = null;
+  // The real workspace receives these task changes through the shared canvas.
+  // Keep that input distinct from the checklist endpoint's execution metadata.
+  const publishTasks = (pageId) => {
+    canvasPages = canvasPages.map((page) =>
+      page.id === pageId
+        ? {
+            ...page,
+            tasks: taskLists[pageId].map((task) => ({
+              note: { id: task.noteId, noteKind: "checklist" },
+              key: task.taskId,
+              block: {
+                id: task.taskId,
+                runs: [{ type: "text", text: task.text }],
+                done: task.done,
+                completedAt: task.completedAt ?? null,
+              },
+              locked: false,
+            })),
+          }
+        : page,
+    );
+    for (const listener of listeners) listener();
+  };
   const binding = (id) => ({
     bindingId: "binding-" + id,
     revision: 1,
@@ -159,7 +186,8 @@ function fixture() {
     if (route.endsWith("/chat/save-tasks")) {
       assert.equal(body.bindingId, "binding-a");
       saved = true;
-      tasks = [structuredClone(baseTask)];
+      taskLists.a = [structuredClone(baseTask)];
+      publishTasks("a");
       return {
         saved: true,
         messageId: "proposal-a",
@@ -172,12 +200,13 @@ function fixture() {
         canvasId: "canvas",
         sectionId: id,
         sequence: 1,
-        tasks: id === "a" ? structuredClone(tasks) : [],
+        tasks: structuredClone(taskLists[id]),
         truncated: false,
       };
     if (route.includes("/execution/runs?"))
       return { runs: id === "a" && run ? [structuredClone(run)] : [] };
-    if (route.endsWith("/execution/intents"))
+    if (route.endsWith("/execution/intents")) {
+      submittedIntent = structuredClone(body);
       return {
         input: {
           requestId: body.requestId,
@@ -189,31 +218,24 @@ function fixture() {
           payloadHash: "a".repeat(64),
         },
       };
+    }
     if (route.endsWith("/execution/tools")) {
       if (body.name === "codex_create_run") {
         run = {
           runId: "run-a",
           bindingId: "binding-a",
           kind: "task",
+          executionMode: "project",
           status: "running",
           terminal: false,
           threadId: "codex-a",
           turnId: "turn-a",
           sourceBacked: true,
-          executionPermissions: { profile: "workspace_manual", network: false },
-          queue: {
-            managed: true,
-            revision: 1,
-            phase: "running",
-            currentIndex: 0,
-            turnId: "turn-a",
-            pauseRequested: false,
-          },
-          batch: {
-            currentIndex: 0,
-            items: [
-              { taskId: "task-a", text: baseTask.text, status: "running" },
-            ],
+          executionPermissions: submittedIntent.executionPermissions,
+          submission: {
+            text: `请结合项目信息完成以下待办：\n\n1. ${baseTask.text}`,
+            tasks: submittedIntent.sourceTasks,
+            projectSummary: { overview: "正式界面文档项目" },
           },
           pendingRequests: [],
         };
@@ -229,32 +251,35 @@ function fixture() {
   return {
     requestCloud,
     calls,
+    canvasAdds,
+    getPages: () => canvasPages,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onAddTodo(pageId, text) {
+      canvasAdds.push({ pageId, text });
+      const suffix = `${pageId}-${canvasAdds.length}`;
+      taskLists[pageId].push({
+        ...structuredClone(baseTask),
+        noteId: `manual-note-${suffix}`,
+        taskId: `manual-task-${suffix}`,
+        text,
+      });
+      publishTasks(pageId);
+      return true;
+    },
     requestLocal: async () => ({
       runnerId: "runner",
       connectionStatus: "online",
     }),
     complete() {
-      tasks = tasks.map((t) => ({
-        ...t,
-        done: true,
-        completedAt: "2026-11-05T01:00:00Z",
-      }));
       run = {
         ...run,
         status: "verifying",
         terminal: true,
         stopConfirmed: true,
-        queue: { ...run.queue, phase: "completed", revision: 2 },
-        batch: {
-          currentIndex: 0,
-          items: [
-            {
-              ...run.batch.items[0],
-              status: "done",
-              writeback: { status: "applied" },
-            },
-          ],
-        },
+        output: "已整理正式界面说明，请检查文档内容。",
       };
     },
   };
@@ -263,23 +288,25 @@ async function mount(f, userId = "owner") {
   sessionStorage.clear();
   localStorage.clear();
   const root = createRoot(document.getElementById("root"));
-  await act(async () =>
-    root.render(
-      React.createElement(AgentWorkspace, {
-        roomId: "canvas",
-        userId,
-        pages,
-        requestCloud: f.requestCloud,
-        requestLocal: f.requestLocal,
-      }),
-    ),
-  );
+  function SharedWorkspace() {
+    const sharedPages = React.useSyncExternalStore(f.subscribe, f.getPages);
+    return React.createElement(AgentWorkspace, {
+      roomId: "canvas",
+      userId,
+      pages: sharedPages,
+      onAddTodo: f.onAddTodo,
+      requestCloud: f.requestCloud,
+      requestLocal: f.requestLocal,
+    });
+  }
+  await act(async () => root.render(React.createElement(SharedWorkspace)));
   return root;
 }
-test("formal workspace saves chat proposal into adjacent checklist, submits once, then reflects verified writeback", async () => {
+test("formal workspace submits saved todos together and shows the execution result in project chat", async () => {
   const f = fixture(),
     root = await mount(f);
   try {
+    await click(button("添加待办"));
     await edit("新待办", "尚未保存的本地草稿");
     await click(button("保存到真实清单"));
     assert.match(
@@ -287,6 +314,7 @@ test("formal workspace saves chat proposal into adjacent checklist, submits once
       /整理正式界面说明/,
     );
     assert.equal(field("新待办").value, "尚未保存的本地草稿");
+    assert.deepEqual(f.canvasAdds, []);
     assert.equal(f.calls.filter((c) => c.route.endsWith("/intents")).length, 0);
     await click(field("选中待办：整理正式界面说明"));
     await click(button("提交所选待办"));
@@ -295,16 +323,29 @@ test("formal workspace saves chat proposal into adjacent checklist, submits once
       1,
     );
     const intent = f.calls.find((c) => c.route.endsWith("/intents")).body;
-    assert.equal(intent.executionPermissions.profile, "workspace_manual");
+    assert.equal(intent.executionMode, "project");
+    assert.equal(intent.autoComplete, false);
+    assert.equal(intent.executionPermissions.profile, "full_access");
     assert.deepEqual(
       intent.sourceTasks.map((t) => t.taskId),
       ["task-a"],
     );
-    assert.match(document.body.textContent, /按顺序执行|执行中/);
+    assert.match(
+      document.querySelector(".agent-chat-submission").textContent,
+      /整理正式界面说明.*已附带项目信息/s,
+    );
+    assert.ok(button("停止"));
     f.complete();
-    await click(button("刷新批次"));
-    assert.match(document.body.textContent, /本批次已全部完成/);
-    assert.equal(field("选中待办：整理正式界面说明"), null);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 800)));
+    const output = document.querySelector(".agent-chat-execution").textContent;
+    assert.match(output, /已整理正式界面说明，请检查文档内容/);
+    assert.doesNotMatch(output, /本次执行已结束/);
+    assert.equal(
+      document.querySelector(".agent-chat-execution .agent-execution-steps"),
+      null,
+    );
+    assert.ok(button("开始"));
+    assert.ok(field("选中待办：整理正式界面说明"));
     assert.equal(field("新待办").value, "尚未保存的本地草稿");
   } finally {
     await act(async () => root.unmount());
@@ -315,6 +356,7 @@ test("switching project restores its own unsent chat and task drafts without sub
     root = await mount(f);
   try {
     await edit("聊天消息", "文档项目未发送草稿");
+    await click(button("添加待办"));
     await edit("新待办", "文档项目待办草稿");
     const selectProject = async (title) => {
       const candidates = [...document.querySelectorAll("button")];
@@ -328,6 +370,8 @@ test("switching project restores its own unsent chat and task drafts without sub
     };
     await selectProject("演示项目");
     assert.equal(field("聊天消息").value, "");
+    assert.equal(field("新待办"), null);
+    await click(button("添加待办"));
     assert.equal(field("新待办").value, "");
     await edit("聊天消息", "演示项目未发送草稿");
     await selectProject("文档项目");
@@ -335,10 +379,14 @@ test("switching project restores its own unsent chat and task drafts without sub
     assert.equal(field("新待办").value, "文档项目待办草稿");
     assert.equal(
       f.calls.filter(
-        (c) => c.route.endsWith("/send") || c.route.endsWith("/intents"),
+        (c) =>
+          c.route.endsWith("/send") ||
+          c.route.endsWith("/intents") ||
+          c.body?.action === "create",
       ).length,
       0,
     );
+    assert.deepEqual(f.canvasAdds, []);
   } finally {
     await act(async () => root.unmount());
   }

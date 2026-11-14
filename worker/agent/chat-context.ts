@@ -50,6 +50,7 @@ const dataBlock = (
             summaryRevision: project.summaryRevision,
             sourceRunId: project.sourceRunId,
             capturedAt: project.capturedAt,
+            sourceKind: project.sourceKind,
             cwd: project.cwd,
             stale: project.stale,
           },
@@ -102,6 +103,9 @@ export function buildChatContext(
     current.sequence,
     CHAT_HISTORY_LIMIT - 1,
   )) {
+    // The current summary is already provided once in project. Its visible
+    // chat copy is a publication, not an additional historical source.
+    if (message.provenance.kind === "project_summary") continue;
     if (
       project &&
       message.role === "assistant" &&

@@ -4,6 +4,8 @@
 
 已有 D1、R2 和 Worker，无需重复创建。以下第 1–5 节是首次建站参考；本次账号版本请先按下面的升级步骤操作。实际进度见 [部署记录](deployment-status.md)。
 
+当前 main 保留正在开发的 Agent 代码供本地使用，但 production/preview 的 Agent 入口只显示「正在开发中」。服务端会拒绝 Agent/Runner/执行请求，旧 Agent DO 也不会处理任务、定时器或连接。请保持生产 `APP_ENV=production` 和现有 Agent 功能开关关闭；仅修改旧功能开关不会开放线上 Agent。轻岛、画布及排列继续可用。
+
 ## 轻单 MCP 升级与发布
 
 本地实现、自动验收和四端接入说明见 [MCP 接入](mcp-setup.md)、[MCP 配置](mcp-configuration.md)、[验收记录](mcp-acceptance.md)。本次没有创建云端 namespace、迁移远程 D1、部署 preview/production 或登录四个真实客户端。以下均为维护者后续手动执行步骤。

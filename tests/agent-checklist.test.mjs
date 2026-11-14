@@ -97,6 +97,43 @@ const create = {
     { text: "第二项", instruction: "完成第二项", acceptance: "核对第二项" },
   ],
 };
+
+test("empty editing blocks stay on canvas but are omitted from checklist and reorder", async (t) => {
+  const f = await fixture(t);
+  const saved = f.call(create);
+  const noteId = saved.tasks[0].noteId;
+  f.noteChange(noteId, (note) => ({
+    ...note,
+    blocks: [
+      ...note.blocks,
+      {
+        ...note.blocks[0],
+        id: "empty-editor",
+        runs: [{ type: "text", text: " \n " }],
+        arrangedOrder: 0,
+      },
+    ],
+  }));
+  const listed = f.call({ action: "list" });
+  assert.equal(listed.tasks.length, 2);
+  const result = f.call({
+    action: "reorder",
+    requestId: "without-empty",
+    expectedSequence: listed.sequence,
+    order: listed.tasks
+      .toReversed()
+      .map(({ noteId, taskId }) => ({ noteId, taskId })),
+  });
+  assert.deepEqual(
+    result.tasks.map(({ text }) => text),
+    ["第二项", "第一项"],
+  );
+  assert.equal(
+    f.rows.get(noteId).data.blocks.find((block) => block.id === "empty-editor")
+      .arrangedOrder,
+    0,
+  );
+});
 test("recovery receipts normalize the exact request without writes; absence permits a later commit", async (t) => {
   const f = await fixture(t);
   const before = f.writes();
@@ -509,6 +546,24 @@ test("edits and ABA invalidate old snapshots; replay cannot re-check a reopened 
     f.call({ action: "list" }).tasks.find((x) => x.taskId === b.taskId).done,
     false,
   );
+});
+
+test("partial requirements become stale when the source changes and cannot be silently prepared", async (t) => {
+  const f = await fixture(t);
+  const [task] = f.call({
+    ...create,
+    tasks: [{ text: "原待办", instruction: "原执行要求", acceptance: "" }],
+  }).tasks;
+  assert.equal(task.specStatus, "missing");
+  f.noteChange(task.noteId, (note) => ({
+    ...note,
+    blocks: [
+      { ...note.blocks[0], runs: [{ type: "text", text: "已变更的待办" }] },
+    ],
+  }));
+  const [changed] = f.call({ action: "list" }).tasks;
+  assert.equal(changed.specStatus, "stale");
+  assert.throws(() => snapshot(f, [changed]), { status: 409 });
 });
 
 test("blank specs and reference text require explicit preparation; removed and restored tasks stay stale", async (t) => {

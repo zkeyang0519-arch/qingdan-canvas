@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { boundedFinalOutput } from "../shared/agent/output";
 import type {
   CommandEnvelope,
   ExecutionSnapshot,
@@ -133,6 +134,7 @@ function wireEvent(event: RunnerEvent): RunnerEvent {
       return {
         ...event,
         payload: {
+          ...event.payload,
           text: shorten(event.payload.text, 16_000) + "\n[output truncated]",
         },
       };
@@ -148,9 +150,16 @@ function wireEvent(event: RunnerEvent): RunnerEvent {
         },
       };
     case "turn.completed":
+      // Prefer the separately persisted report for long final answers. Adding
+      // display text must not discard a previously deliverable task receipt.
+      if (event.payload.output !== undefined) {
+        const { output: _, ...payload } = event.payload;
+        const withoutOutput = { ...event, payload };
+        if (bytes(withoutOutput) <= 110_000) return withoutOutput;
+      }
       return {
         ...event,
-        payload: { ...event.payload, summary: null, outcome: null },
+        payload: { status: event.payload.status, error: event.payload.error, summary: null, outcome: null },
       };
     default:
       return event;
@@ -469,7 +478,7 @@ export class RunnerExecutor {
           ) &&
           this.now() >=
             entry.startedAt +
-              (entry.snapshot.kind === "summary" ? 5 : 30) * 60_000
+              30 * 60_000
         )
           stopReason = "运行超过时间上限。";
         try {
@@ -1280,10 +1289,16 @@ export class RunnerExecutor {
       turnId: run?.activeTurnId ?? null,
       terminal: stopped,
       stopConfirmed: stopped,
+      ...(stopped && run?.activeTurnId && run.resultChannel === "tool"
+        ? { output: boundedFinalOutput(run.output) }
+        : {}),
       ...(error ? { error: shorten(error, 2000) } : {}),
       ...(run?.batch ? { batch: run.batch } : {}),
       ...(run?.snapshot.kind === "summary" && run.summaryContext
         ? { summaryContext: run.summaryContext }
+        : {}),
+      ...(run?.snapshot.kind === "summary" && run.summaryProgress
+        ? { summaryProgress: run.summaryProgress }
         : {}),
     };
   }

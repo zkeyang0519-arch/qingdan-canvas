@@ -34,6 +34,20 @@ const stringField = (body, key, max = 4096) => {
     throw reject(400, `${key} 无效。`);
   return body[key].trim();
 };
+function workspaceQuery(url) {
+  const keys = [...url.searchParams.keys()];
+  if (
+    keys.length !== 2 ||
+    !keys.includes("runnerId") ||
+    !keys.includes("workspaceId")
+  )
+    throw reject(400, "需要已关联电脑和项目编号。");
+  const query = Object.fromEntries(url.searchParams);
+  return {
+    runnerId: stringField(query, "runnerId", 128),
+    workspaceId: stringField(query, "workspaceId", 128),
+  };
+}
 
 // The loopback server applies Host/Origin and local-header guards first. The
 // upstream session is the only authority for the actor; bodies cannot pick one.
@@ -185,6 +199,15 @@ export function createLocalRunnerApi({
             ? { searchTerm: stringField(query, "searchTerm", 200) }
             : {}),
         });
+      }
+      if (req.method === "GET" && route === "/codex/models") {
+        return await controller.listCodexModels(
+          ownerId,
+          url.search ? workspaceQuery(url) : undefined,
+        );
+      }
+      if (req.method === "GET" && route === "/workspaces/verify") {
+        return await controller.verifyWorkspace(ownerId, workspaceQuery(url));
       }
       if (req.method !== "POST") throw reject(404, "找不到本机 Runner 操作。");
       if (route === "/codex/select") {

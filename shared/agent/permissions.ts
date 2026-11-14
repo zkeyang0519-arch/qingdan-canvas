@@ -1,11 +1,20 @@
 import { z } from "zod";
 const id = z.string().min(1).max(256).regex(/^[^\x00-\x20\x7f]+$/);
 const revision = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
-export const permissionProfileSchema = z.enum(["read_only", "workspace_manual", "workspace_auto"]);
+export const permissionProfileSchema = z.enum(["read_only", "workspace_manual", "workspace_auto", "full_access"]);
 export const permissionSelectionSchema = z.strictObject({profile:permissionProfileSchema});
-export const executionPermissionsSchema = permissionSelectionSchema.extend({network:z.literal(false)});
+export const executionPermissionsSchema = z.discriminatedUnion("profile", [
+  z.strictObject({profile:z.enum(["read_only", "workspace_manual", "workspace_auto"]),network:z.literal(false)}),
+  z.strictObject({profile:z.literal("full_access"),network:z.literal(true)}),
+]);
 export type PermissionProfile = z.infer<typeof permissionProfileSchema>;
 export type ExecutionPermissions = z.infer<typeof executionPermissionsSchema>;
+export const DEFAULT_EXECUTION_PERMISSION: PermissionProfile = "full_access";
+// Only new submissions receive the default. Persisted snapshots keep their permissions.
+export function resolveExecutionPermissions(kind: "summary" | "task", profile: PermissionProfile = DEFAULT_EXECUTION_PERMISSION): ExecutionPermissions {
+  if (kind === "summary") return {profile:"read_only",network:false};
+  return profile === "full_access" ? {profile,network:true} : {profile,network:false};
+}
 export const approvalDetailsSchema = z.strictObject({
   method:z.enum(["item/commandExecution/requestApproval","item/fileChange/requestApproval"]),
   command:z.string().max(8000).optional(),cwd:z.string().max(2000).optional(),

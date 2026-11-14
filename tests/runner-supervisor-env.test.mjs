@@ -20,7 +20,7 @@ for (const explicit of [false, true]) test(`supervisor isolates desktop Core rou
     import { appendFileSync } from 'node:fs';
     const observed = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(CODEX_WINDOWS_REGISTERED_CORE|CODEX_HOME|CODEX_APP_RUNTIME_CLI_PATH|QINGDAN_ENV_PROBE)$/i.test(key)));
     appendFileSync(process.env.ENV_PROBE_PATH, JSON.stringify({ phase: process.argv.includes('--version') ? 'version' : 'server', env: observed }) + '\\n');
-    if (process.argv.includes('--version')) console.log('codex-cli 0.167.0-alpha.3.2');
+    if (process.argv.includes('--version')) console.log('codex-cli 0.167.0-alpha.4.1');
     else { console.log('ready'); process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); }
   `);
   await writeFile(path.join(dir, "parent.mjs"), `

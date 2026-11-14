@@ -19,9 +19,13 @@ import { readAvatar, updateAvatar } from "./avatars";
 import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 import { registrationRequest } from "./registration";
 import { quickTasksEndpoint } from "./quick-tasks";
+import {
+  agentDevelopmentEnabled,
+  agentUnavailable,
+  isAgentRoute,
+} from "./agent-availability";
 export { CanvasRoom } from "./room";
-export { RunnerHub } from "./execution/hub";
-export { AgentChatRouter } from "./agent/chat-router";
+export { RunnerHub, AgentChatRouter } from "./agent-runtime";
 
 export default {
   async fetch(
@@ -30,6 +34,11 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      if (
+        !agentDevelopmentEnabled(env) &&
+        isAgentRoute(new URL(request.url).pathname)
+      )
+        return agentUnavailable();
       const project = await projectSummaryRoute(request, env);
       if (project) return project;
       const chat = await chatRoute(request, env);

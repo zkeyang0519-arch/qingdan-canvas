@@ -1,16 +1,29 @@
 import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
-import React, {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  ArrowUpRight,
+  Bot,
+  Compass,
+  FileText,
+  Folder,
+  History,
+  ListTodo,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Square,
+} from "lucide-react";
 import { api } from "../api.js";
 import MemoryPanel, { memoryScopeName } from "./MemoryPanel.jsx";
 import { ProjectSummary } from "./ProjectSummaryPanel.jsx";
 import WorkspaceDrawer from "./WorkspaceDrawer.jsx";
+import ChatMarkdown from "./ChatMarkdown.jsx";
+import AnswerActions, { appendQuotedReply } from "./AnswerActions.jsx";
+import ElapsedTime from "./ElapsedTime.jsx";
+import ProjectConversation, {
+  ConversationMessages,
+} from "./ProjectConversation.jsx";
 import {
   useWorkspaceDraft,
   useWorkspaceRequests,
@@ -18,6 +31,7 @@ import {
 } from "./workspace-state.js";
 
 const chatApi = "/api/agent/chat";
+const intentApi = "/api/agent/execution/intents";
 const queued = (job) => job?.status === "queued" || job?.status === "running";
 const bindingKey = (binding) =>
   binding &&
@@ -30,6 +44,7 @@ const bindingKey = (binding) =>
 const operationKey = (action, payload) => {
   if (action === "send") return `send:${payload.chatId || "new"}`;
   if (action === "new") return "new";
+  if (action === "cancel") return `cancel:${payload.jobId}`;
   if (action === "save-tasks") return `save-tasks:${payload.messageId}`;
   if (action === "remember")
     return `remember:${payload.messageId}:${payload.index}`;
@@ -160,11 +175,37 @@ function ChatMessage({
   remember,
   openChecklist,
   embedded,
+  onQuote,
+  startedAt,
 }) {
   return (
     <li className={`agent-chat-message agent-chat-${message.role}`}>
-      <strong>{message.role === "user" ? "你" : "助手"}</strong>
-      <p className="agent-chat-copy">{message.text}</p>
+      <strong className="agent-message-author">
+        {embedded && message.role !== "user" && (
+          <Bot size={15} aria-hidden="true" />
+        )}
+        {message.role === "user"
+          ? "你"
+          : message.provenance?.kind === "project_summary"
+            ? "助手 · 项目摘要"
+            : message.provenance?.kind === "cancelled_reply"
+              ? "助手 · 已停止"
+              : "助手"}
+      </strong>
+      <ChatMarkdown
+        text={message.text}
+        timeline={message.role === "assistant"}
+      />
+      {message.role === "assistant" && (
+        <AnswerActions text={message.text} onQuote={onQuote} disabled={busy} />
+      )}
+      {message.role === "assistant" && (
+        <ElapsedTime
+          startedAt={startedAt}
+          endedAt={message.createdAt}
+          active={false}
+        />
+      )}
       {message.tasks?.length > 0 && (
         <TaskProposal
           {...{ message, openChecklist, embedded }}
@@ -234,6 +275,7 @@ function ChatWorkspace({
   onOpenSummary,
   onTasksSaved,
   onOpenSettings,
+  execution,
 }) {
   const bindingId = binding?.bindingId;
   const requestScope = workspaceScope({
@@ -279,6 +321,8 @@ function ChatWorkspace({
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
   const [notice, setNotice] = useState("");
+  const [executionState, setExecutionState] = useState(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [needFreshCandidates, setNeedFreshCandidates] = useState(false);
   const mounted = useRef(false);
   const epoch = useRef(0);
@@ -286,10 +330,8 @@ function ChatWorkspace({
   const chatId = useRef(null);
   const snapshot = useRef(null);
   const handledJob = useRef(null);
-  const messageList = useRef(null);
-  const lastVisible = useRef(null);
-  const followingMessages = useRef(true);
   const draftControl = useRef(null);
+  const composerInput = useRef(null);
   draftControl.current = {
     chatId: state?.thread?.id || null,
     draft,
@@ -299,6 +341,15 @@ function ChatWorkspace({
     setNewDraft,
   };
   const settling = useRef(new Set());
+  function quoteReply(text) {
+    const next = appendQuotedReply(draft, text);
+    if (next === null) {
+      setNotice("引用后会超过消息长度限制，请选择较短的一段文字再引用。");
+      return;
+    }
+    setDraft(next);
+    composerInput.current?.focus();
+  }
   const memoryRead = useRef(0);
   const valid = useCallback(
     (version) => mounted.current && epoch.current === version,
@@ -433,6 +484,21 @@ function ChatWorkspace({
         next = await read(next.threads[0].id);
         if (!valid(version)) return;
       }
+      const control = draftControl.current;
+      if (
+        !control.chatId &&
+        control.newDraft &&
+        next.thread &&
+        next.messages?.some(
+          (message) => message.provenance?.kind === "project_summary",
+        )
+      )
+        setDraftHandoff({
+          requestId: `summary:${next.thread.id}`,
+          chatId: next.thread.id,
+          text: control.newDraft,
+          sourceText: control.newDraft,
+        });
       chatId.current = next.thread?.id ?? null;
       apply(next);
       setReadError("");
@@ -488,10 +554,11 @@ function ChatWorkspace({
   const pendingJob = queued(job);
   const pendingSend = requests.ownedRecords.some(
     (record) =>
-      record.request.path === `${chatApi}/send` &&
-      (!(record.request.body.chatId || record.checkpoint?.chatId) ||
-        record.request.body.chatId === state?.thread?.id ||
-        record.checkpoint?.chatId === state?.thread?.id),
+      record.request.path === intentApi ||
+      (record.request.path === `${chatApi}/send` &&
+        (!(record.request.body.chatId || record.checkpoint?.chatId) ||
+          record.request.body.chatId === state?.thread?.id ||
+          record.checkpoint?.chatId === state?.thread?.id)),
   );
   useEffect(() => {
     for (const record of requests.ownedRecords) {
@@ -530,22 +597,31 @@ function ChatWorkspace({
     newDraftStorage.durable,
   ]);
   useEffect(() => {
-    if (!pendingJob) return;
+    if (
+      !pendingJob &&
+      !["queued", "running", "finalizing", "reconciliation_required"].includes(
+        state?.project?.status,
+      )
+    )
+      return;
     let reading = false;
-    const timer = setInterval(async () => {
-      if (reading || busyRef.current) return;
-      const version = epoch.current;
-      reading = true;
-      try {
-        await refresh(version);
-      } catch (err) {
-        if (valid(version)) setReadError(err.message);
-      } finally {
-        reading = false;
-      }
-    }, 2000);
+    const timer = setInterval(
+      async () => {
+        if (reading || busyRef.current) return;
+        const version = epoch.current;
+        reading = true;
+        try {
+          await refresh(version);
+        } catch (err) {
+          if (valid(version)) setReadError(err.message);
+        } finally {
+          reading = false;
+        }
+      },
+      pendingJob ? 700 : 2000,
+    );
     return () => clearInterval(timer);
-  }, [pendingJob, refresh, valid]);
+  }, [pendingJob, state?.project?.status, refresh, valid]);
   useEffect(() => {
     if (!job || queued(job) || handledJob.current === job.id || pendingSend)
       return;
@@ -601,12 +677,65 @@ function ChatWorkspace({
           ...(payload.bindingId ? { bindingRevision: binding.revision } : {}),
         },
       }),
+      { safeStop: action === "cancel" },
     );
     if (!valid(version)) return;
     return dispatch(record, store, version);
   }
   async function dispatch(record, store, version) {
     store.assertOwned(record);
+    if (record.request.path === intentApi) {
+      const intent =
+        record.checkpoint?.intent ||
+        (await call(intentApi, {
+          method: "POST",
+          body: record.request.body,
+        }));
+      if (!valid(version)) return;
+      const input = intent?.input;
+      if (
+        !input ||
+        input.requestId !== record.requestId ||
+        input.bindingId !== bindingId ||
+        input.bindingRevision !== binding.revision ||
+        input.kind !== "task" ||
+        !input.runId ||
+        !input.snapshotId ||
+        !/^[a-f0-9]{64}$/.test(input.payloadHash)
+      )
+        throw Error("执行请求回执不符，原操作仍保留。");
+      await store.checkpoint(record.requestId, {
+        ...record.checkpoint,
+        intent,
+      });
+      if (!valid(version)) return;
+      const result = await call("/api/agent/execution/tools", {
+        method: "POST",
+        body: { bindingId, name: "codex_create_run", arguments: intent.input },
+      });
+      if (!valid(version)) return;
+      if (
+        result?.result?.runId !== input.runId ||
+        result.result.status !== "accepted"
+      )
+        throw Error("派单回执不符，原操作仍保留。");
+      const original = record.checkpoint?.composerDraft;
+      const control = draftControl.current;
+      if (
+        original &&
+        control.chatId === original.chatId &&
+        control.draft.trim() === original.text
+      )
+        control.setDraft("");
+      execution?.onSelectBatch?.({
+        sectionId: accountScope[2],
+        bindingId,
+        bindingRevision: binding.revision,
+        runId: intent.input.runId,
+      });
+      await store.resolve(record.requestId, "acknowledged");
+      return result;
+    }
     const result = await call(record.request.path, {
       method: record.request.method,
       body: record.request.body,
@@ -680,7 +809,8 @@ function ChatWorkspace({
       !bindingId ||
       pendingSend ||
       pendingJob ||
-      !state?.provider?.configured ||
+      executionState?.active ||
+      !modelReady ||
       (state?.project && !state.project.ready)
     )
       return;
@@ -714,6 +844,20 @@ function ChatWorkspace({
         });
       } else switchThread(result.thread, added, result.job);
       if (result.job && !queued(result.job)) await refresh(version);
+    });
+  }
+  function stopReply() {
+    if (executionState?.active) return executionState.stop();
+    if (!pendingJob || !state?.thread?.id) return;
+    return perform(async (version) => {
+      const result = await write(
+        "cancel",
+        { bindingId, chatId: state.thread.id, jobId: job.id },
+        version,
+      );
+      if (!result || !valid(version)) return;
+      apply({ ...snapshot.current, job: result.job });
+      await refresh(version);
     });
   }
   function newThread() {
@@ -891,18 +1035,8 @@ function ChatWorkspace({
     ).values(),
   ];
   const modelReady = !!state?.provider?.configured;
-  const lastMessage = messages.at(-1);
-  useLayoutEffect(() => {
-    const list = messageList.current;
-    if (!embedded || !list) return;
-    if (
-      !lastVisible.current ||
-      followingMessages.current ||
-      lastMessage?.role === "user"
-    )
-      list.scrollTop = list.scrollHeight;
-    lastVisible.current = lastMessage?.id;
-  }, [embedded, lastMessage?.id, pendingJob]);
+  const processActive = pendingJob || !!executionState?.active;
+  const stopping = !!executionState?.stopping;
   const summary =
     bindingId && state?.project ? (
       <ProjectSummary
@@ -947,12 +1081,10 @@ function ChatWorkspace({
       {embedded && (!bindingId || (state?.project && !state.project.ready)) && (
         <div className="agent-chat-context-bar">
           <span>
-            {bindingId
-              ? "准备项目摘要后开始聊天"
-              : "选择 Codex 会话，自动关联项目"}
+            {bindingId ? "准备项目摘要后开始聊天" : "先选择要开发的项目"}
           </span>
           <button onClick={bindingId ? onOpenSummary : onOpenSettings}>
-            {bindingId ? "查看摘要" : "选择 Codex 会话"}
+            {bindingId ? "查看摘要" : "选择项目"}
           </button>
         </div>
       )}
@@ -961,17 +1093,26 @@ function ChatWorkspace({
         aria-label="项目聊天"
       >
         <div className={embedded ? "agent-chat-toolbar" : "agent-card-heading"}>
-          {!embedded && <h4>项目聊天</h4>}
           {bindingId && (
             <>
-              {!!state?.threads?.length && (
+              {embedded && !!state?.threads?.length && (
+                <button
+                  aria-label="查看聊天历史"
+                  title="聊天历史"
+                  aria-expanded={historyOpen}
+                  onClick={() => setHistoryOpen((value) => !value)}
+                >
+                  <History size={16} />
+                </button>
+              )}
+              {!!state?.threads?.length && (!embedded || historyOpen) && (
                 <label>
                   {!embedded && "聊天历史"}
                   <select
                     aria-label="聊天历史"
                     title="聊天历史"
                     value={state.thread?.id || ""}
-                    disabled={busy}
+                    disabled={busy || processActive}
                     onChange={(event) => chooseThread(event.target.value)}
                   >
                     {state.threads.map((thread) => (
@@ -985,7 +1126,7 @@ function ChatWorkspace({
               <button
                 aria-label="新聊天"
                 title="新聊天"
-                disabled={busy || !state}
+                disabled={busy || !state || processActive}
                 onClick={newThread}
               >
                 {embedded ? <Plus size={16} /> : "新聊天"}
@@ -1107,11 +1248,7 @@ function ChatWorkspace({
           </p>
         )}
         {!bindingId && !embedded && (
-          <p className="agent-note">
-            {embedded
-              ? "请先关联电脑和执行项目。你仍然可以查看和管理个人记忆。"
-              : "请选择已关联的项目，或在第 3 步关联电脑和项目。"}
-          </p>
+          <p className="agent-note">请先绑定执行项目。</p>
         )}
         {state &&
           (!embedded || !modelReady) &&
@@ -1129,40 +1266,66 @@ function ChatWorkspace({
             加载更早的消息
           </button>
         )}
-        {bindingId && messages.length > 0 && (
-          <ol
-            className="agent-chat-messages"
-            aria-label="聊天消息记录"
-            ref={messageList}
-            onScroll={(event) => {
-              const list = event.currentTarget;
-              followingMessages.current =
-                list.scrollHeight - list.clientHeight - list.scrollTop < 120;
-            }}
-          >
-            {messages.map((message) => (
-              <ChatMessage
-                key={message.id}
-                {...{
-                  message,
-                  busy,
-                  needFreshCandidates,
-                  saveTasks,
-                  remember,
-                  openChecklist,
-                  embedded,
-                }}
-              />
-            ))}
-          </ol>
-        )}
+        {bindingId &&
+          (execution && embedded ? (
+            <ProjectConversation
+              {...{
+                execution,
+                accountScope,
+                binding,
+                call,
+                loadBinding,
+                messages,
+                job,
+              }}
+              onExecutionChange={setExecutionState}
+              onQuote={quoteReply}
+              renderMessage={(message) => (
+                <ChatMessage
+                  key={message.id}
+                  onQuote={quoteReply}
+                  startedAt={
+                    messages.find((entry) => entry.id === message.replyTo)
+                      ?.createdAt
+                  }
+                  {...{
+                    message,
+                    busy,
+                    needFreshCandidates,
+                    saveTasks,
+                    remember,
+                    openChecklist,
+                    embedded,
+                  }}
+                />
+              )}
+            />
+          ) : (
+            <ConversationMessages
+              {...{ messages, job }}
+              renderMessage={(message) => (
+                <ChatMessage
+                  key={message.id}
+                  onQuote={quoteReply}
+                  startedAt={
+                    messages.find((entry) => entry.id === message.replyTo)
+                      ?.createdAt
+                  }
+                  {...{
+                    message,
+                    busy,
+                    needFreshCandidates,
+                    saveTasks,
+                    remember,
+                    openChecklist,
+                    embedded,
+                  }}
+                />
+              )}
+            />
+          ))}
         {needFreshCandidates && (
           <p className="agent-note">刷新聊天后可核对哪些建议仍可采纳。</p>
-        )}
-        {pendingJob && (
-          <p className="agent-note" role="status">
-            等待模型回复…
-          </p>
         )}
         {job?.status === "failed" && (
           <p className="agent-error" role="status">
@@ -1174,61 +1337,136 @@ function ChatWorkspace({
             记忆已更改，请重新发送。
           </p>
         )}
-        {embedded && bindingId && state && !messages.length && (
-          <div className="agent-chat-welcome">
-            <h3>今天想做什么？</h3>
-            <div>
-              <button
-                disabled={!modelReady || busy}
-                onClick={() => setDraft("帮我整理今天的待办，并按优先级排序。")}
-              >
-                整理今天的待办
+        {embedded &&
+          bindingId &&
+          state &&
+          !messages.length &&
+          !executionState?.runId &&
+          !pendingJob && (
+            <div className="agent-chat-welcome">
+              <span className="agent-chat-welcome-icon" aria-hidden="true">
+                <Sparkles size={24} />
+              </span>
+              <h3>今天想做什么？</h3>
+              <div>
+                <button
+                  disabled={!modelReady || busy}
+                  onClick={() =>
+                    setDraft("帮我整理今天的待办，并按优先级排序。")
+                  }
+                >
+                  <ListTodo size={17} aria-hidden="true" />
+                  <span>整理今天的待办</span>
+                  <ArrowUpRight size={14} aria-hidden="true" />
+                </button>
+                <button
+                  disabled={!modelReady || busy}
+                  onClick={() =>
+                    setDraft("帮我梳理这个项目的下一步，先给出建议，不要执行。")
+                  }
+                >
+                  <Compass size={17} aria-hidden="true" />
+                  <span>梳理项目下一步</span>
+                  <ArrowUpRight size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          )}
+        <div className={embedded ? "agent-chat-composer" : undefined}>
+          {embedded && bindingId && (
+            <div className="agent-composer-context" aria-label="本次聊天上下文">
+              <button type="button" onClick={onOpenSettings}>
+                <Folder size={13} />
+                当前项目
               </button>
-              <button
-                disabled={!modelReady || busy}
-                onClick={() =>
-                  setDraft("帮我梳理这个项目的下一步，先给出建议，不要执行。")
-                }
-              >
-                梳理项目下一步
+              <button type="button" onClick={onOpenSummary}>
+                <FileText size={13} />
+                {state?.project?.summaryRevision
+                  ? `项目摘要 · 第 ${state.project.summaryRevision} 版`
+                  : "项目摘要"}
               </button>
             </div>
-          </div>
-        )}
-        <div className={embedded ? "agent-chat-composer" : undefined}>
+          )}
           <label>
             发消息
             <textarea
               aria-label="聊天消息"
+              ref={composerInput}
               value={draft}
-              disabled={busy || !bindingId || !modelReady || pendingJob}
+              disabled={busy || !bindingId || (!modelReady && !processActive)}
               maxLength={12000}
               rows={embedded ? 2 : 3}
               placeholder={
-                embedded ? "说说你的想法，或补充项目要求…" : undefined
+                embedded
+                  ? processActive
+                    ? "执行中，可先写下下一条消息…"
+                    : "说说你的想法，或补充项目要求…"
+                  : undefined
               }
               onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing &&
+                  !processActive &&
+                  !busy
+                ) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
             />
           </label>
+          {embedded && (
+            <span className="agent-composer-assistant">
+              <Sparkles size={13} aria-hidden="true" />
+              轻单助手
+            </span>
+          )}
           <button
             className="primary"
             disabled={
-              busy ||
-              !bindingId ||
-              !modelReady ||
-              pendingJob ||
-              pendingSend ||
-              !draft.trim() ||
-              (state?.project && !state.project.ready)
+              processActive
+                ? busy || executionState?.busy || stopping
+                : busy ||
+                  !bindingId ||
+                  !modelReady ||
+                  pendingJob ||
+                  pendingSend ||
+                  !draft.trim() ||
+                  (state?.project && !state.project.ready)
             }
-            onClick={send}
+            onClick={processActive ? stopReply : send}
+            aria-label={
+              processActive
+                ? stopping
+                  ? "正在停止"
+                  : "停止"
+                : embedded
+                  ? "开始"
+                  : "发送"
+            }
+            data-state={processActive ? "stop" : "start"}
           >
-            发送
+            <span>
+              {processActive
+                ? stopping
+                  ? "正在停止"
+                  : "停止"
+                : embedded
+                  ? "开始"
+                  : "发送"}
+            </span>
+            {embedded &&
+              (processActive ? (
+                <Square size={13} fill="currentColor" aria-hidden="true" />
+              ) : (
+                <ArrowUp size={15} aria-hidden="true" />
+              ))}
           </button>
-          {embedded && (
-            <small title="提交待办才会开始执行">
-              {state?.provider?.model || "项目聊天"}
-            </small>
+          {embedded && executionState?.active && (
+            <small>Codex 执行中 · 可随时停止</small>
           )}
         </div>
       </section>
@@ -1247,7 +1485,7 @@ function ChatWorkspace({
         </WorkspaceDrawer>
       )}
       {embedded && summaryOpen && (
-        <WorkspaceDrawer title="项目摘要" onClose={onSummaryClose}>
+        <WorkspaceDrawer title="项目摘要" size="wide" onClose={onSummaryClose}>
           {summary}
         </WorkspaceDrawer>
       )}
@@ -1268,6 +1506,7 @@ function ChatScope({
   const [error, setError] = useState("");
   const active = useRef(false);
   const revision = useRef(0);
+  const bindingRead = useRef(null);
   const call = useCallback(
     (path, options) =>
       requestCloud(path, {
@@ -1277,27 +1516,34 @@ function ChatScope({
       }),
     [requestCloud, userId],
   );
-  const loadBinding = useCallback(async () => {
-    const version = ++revision.current;
-    let result;
-    if (pageId) {
-      try {
-        result = await call(
-          `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(pageId)}`,
-        );
-      } catch (err) {
-        // Personal memory remains available to signed-in users without access
-        // to this project's execution binding.
-        if (![403, 404].includes(err.status)) throw err;
+  const loadBinding = useCallback(() => {
+    if (bindingRead.current) return bindingRead.current;
+    const pending = (async () => {
+      const version = ++revision.current;
+      let result;
+      if (pageId) {
+        try {
+          result = await call(
+            `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(pageId)}`,
+          );
+        } catch (err) {
+          // Personal memory remains available to signed-in users without access
+          // to this project's execution binding.
+          if (![403, 404].includes(err.status)) throw err;
+        }
       }
-    }
-    if (!active.current || version !== revision.current) return;
-    const next = result?.binding?.enabled ? result.binding : null;
-    setBinding((prior) =>
-      bindingKey(prior) === bindingKey(next) ? prior : next,
-    );
-    setError("");
-    return next;
+      if (!active.current || version !== revision.current) return;
+      const next = result?.binding?.enabled ? result.binding : null;
+      setBinding((prior) =>
+        bindingKey(prior) === bindingKey(next) ? prior : next,
+      );
+      setError("");
+      return next;
+    })().finally(() => {
+      if (bindingRead.current === pending) bindingRead.current = null;
+    });
+    bindingRead.current = pending;
+    return pending;
   }, [call, roomId, pageId]);
   useEffect(() => {
     active.current = true;
@@ -1356,10 +1602,6 @@ export default function ChatPanel({
       {!embedded && (
         <div className="agent-intro">
           <h3>聊天与记忆</h3>
-          <p>
-            讨论项目并整理待办。确认保存的待办会出现在第 5
-            步真实清单。聊天与项目记忆跟随轻单清单，变更执行目录后仍会保留。
-          </p>
         </div>
       )}
       {!embedded && page && (

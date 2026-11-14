@@ -1,7 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { DEFAULT_EXECUTION_PERMISSION } from "../../shared/agent/permissions";
 
 export const permissionProfiles = [
+  {
+    value: "full_access",
+    label: "完全访问",
+    description: "可读写本机文件、访问网络，执行操作无需逐次审批。",
+  },
   {
     value: "read_only",
     label: "只读",
@@ -27,18 +33,33 @@ function readPreference(key) {
     const value = localStorage.getItem(key);
     return permissionProfiles.some((p) => p.value === value)
       ? value
-      : "workspace_manual";
+      : DEFAULT_EXECUTION_PERMISSION;
   } catch {
-    return "workspace_manual";
+    return DEFAULT_EXECUTION_PERMISSION;
   }
 }
 export function usePermissionPreference(userId, binding) {
-  const key = `qingdan.execution-permissions:${JSON.stringify([userId, binding.bindingId, binding.revision])}`;
+  const key = `qingdan.execution-permissions:v2:${JSON.stringify([userId, binding.bindingId, binding.revision])}`;
   const [state, setState] = useState(() => ({
     key,
     value: readPreference(key),
   }));
   useEffect(() => setState({ key, value: readPreference(key) }), [key]);
+  useEffect(() => {
+    function sync(event) {
+      const changedKey = event.detail?.key ?? event.key;
+      if (changedKey !== key && changedKey !== null) return;
+      const next = event.detail?.value ?? readPreference(key);
+      if (permissionProfiles.some((profile) => profile.value === next))
+        setState({ key, value: next });
+    }
+    window.addEventListener("qingdan:execution-permission", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("qingdan:execution-permission", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, [key]);
   const value = state.key === key ? state.value : readPreference(key);
   return [
     value,
@@ -50,6 +71,7 @@ export function usePermissionPreference(userId, binding) {
       } catch {
         /* Selection still applies to this submission. */
       }
+      window.dispatchEvent(new window.CustomEvent("qingdan:execution-permission", { detail: { key, value: next } }));
     },
   ];
 }
@@ -87,7 +109,7 @@ export function PermissionButton({ value, onChange, disabled }) {
             </label>
           ))}
           <p className="agent-note">
-            默认沙箱关闭网络。需要额外执行权限时，按所选模式交由你或自动安全审查逐次决定。所选权限用于下一次提交；已经开始的批次保留提交时的权限。
+            默认完全访问，允许读写文件和联网，无需逐次审批；其他档位默认关闭网络。所选权限用于下一次提交，已提交的批次保留原权限。项目摘要保持只读。
           </p>
           <button disabled={disabled} onClick={() => setOpen(false)}>
             完成权限设置

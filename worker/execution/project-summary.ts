@@ -345,22 +345,36 @@ export class ProjectSummaries {
     const completion = await this.storage.get<RunnerEvent>(
       "project:result:" + s.activeRunId,
     );
+    s.summaryProgress = run.view.summaryProgress;
     if (run.view.terminal && run.view.stopConfirmed) {
-      const valid =
+      const matchingCompletion =
         completion?.type === "turn.completed" &&
         completion.runId === run.view.runId &&
+        completion.threadId === run.view.threadId &&
+        completion.turnId === run.view.turnId;
+      const valid =
+        matchingCompletion &&
         !!run.summaryContext &&
         completion.payload.status === "completed" &&
-        completion.threadId === run.view.threadId &&
-        completion.turnId === run.view.turnId &&
         run.view.status === "verifying" &&
         projectSummarySchema.safeParse(completion.payload.summary);
-      if (
+      // The terminal report and result event travel through separate durable
+      // outboxes. A completed run can be observed before its summary arrives.
+      if (!matchingCompletion && run.view.status === "verifying") {
+        s.status = "finalizing";
+        s.ready = false;
+        s.stale = !!s.summary;
+        s.error = null;
+      } else if (
         valid &&
         valid.success &&
         JSON.stringify(valid.data).length <= 24000
       ) {
-        if (s.sourceRunId !== run.view.runId) {
+        if (
+          s.sourceRunId !== run.view.runId ||
+          s.threadId !== run.view.threadId ||
+          s.turnId !== run.view.turnId
+        ) {
           s.summary = valid.data;
           s.summaryRevision++;
           s.sourceRunId = run.view.runId;
@@ -369,6 +383,7 @@ export class ProjectSummaries {
           s.capturedAt = completion!.occurredAt;
           s.cwd = record.cwd;
           s.gitBaseline = run.summaryContext!.gitBaseline;
+          s.sourceKind = run.summaryContext!.sourceKind;
         }
         s.status = "ready";
         s.ready = true;
@@ -511,6 +526,7 @@ export class ProjectSummaries {
       current.activeRunId &&
       (await this.storage.get<Run>("exec:run:" + current.activeRunId));
     const blocked =
+      current.status === "finalizing" ||
       !!current.pendingLaunch ||
       (!!current.activeRunId &&
         !current.sealedLaunch &&
@@ -529,7 +545,13 @@ export class ProjectSummaries {
           "项目摘要已变化，请刷新后重新操作。",
           409,
         );
-      check(!blocked, "尚未确认本次总结停止，请先核对运行状态。", 409);
+      check(
+        !blocked,
+        current.status === "finalizing"
+          ? "摘要已完成，正在接收结果，请稍候。"
+          : "尚未确认本次总结停止，请先核对运行状态。",
+        409,
+      );
     }
     if (
       action === "initialize" &&
@@ -563,7 +585,7 @@ export class ProjectSummaries {
       bindingRevision: p.bindingRevision,
       kind: "summary",
       instruction:
-        "只读检查项目说明、AGENTS.md、关键目录、Git 分支及变更状态。区分已验证事实、历史描述和推测；列出证据与未确定事项。不要修改文件、安装依赖、推送或执行待办。",
+        "按需读取当前项目的最新文件、变更及相关会话，生成供其他开发者接手的完整项目交接报告：项目目标与状态、已完成与未完成、最近改动、当前停点、具体修改入口、接手顺序与验证。信息足够即可总结，不要求读完全部历史，不限短简报字数。读取时简短说明进展，未核实内容如实标注；只读，不修改文件或执行待办。完整结果直接显示在轻单摘要页和聊天中。",
     });
     const state: ProjectContext = {
       ...current,
@@ -581,6 +603,7 @@ export class ProjectSummaries {
     delete state.sealedLaunch;
     delete state.recoveryRuns;
     delete state.canRefresh;
+    delete state.summaryProgress;
     const launch: PreparedLaunch = {
       principal: p,
       projectKey: key,
