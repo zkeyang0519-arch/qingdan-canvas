@@ -19,6 +19,7 @@ import { readAvatar, updateAvatar } from "./avatars";
 import { emailProfileEndpoint, passwordResetEndpoint } from "./email-recovery";
 import { registrationRequest } from "./registration";
 import { quickTasksEndpoint } from "./quick-tasks";
+import { desktopHandoffRoute } from "./desktop-handoff";
 import {
   agentDevelopmentEnabled,
   agentUnavailable,
@@ -34,6 +35,8 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const desktop = await desktopHandoffRoute(request, env);
+      if (desktop) return desktop;
       if (
         !agentDevelopmentEnabled(env) &&
         isAgentRoute(new URL(request.url).pathname)

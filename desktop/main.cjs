@@ -13,6 +13,7 @@ const {
 const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
+const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
 const {
   alwaysOnTopLevel,
   parseAppUrl,
@@ -42,7 +43,8 @@ const {
 } = require("./session-handoff.cjs");
 
 const root = path.resolve(__dirname, "..");
-const application = parseAppUrl(process.env.QINGDAN_DESKTOP_URL).href;
+const localApplication = parseAppUrl(process.env.QINGDAN_DESKTOP_URL).href;
+let application = localApplication;
 const profile = path.resolve(
   process.env.QINGDAN_DESKTOP_PROFILE ||
     path.join(root, ".tmp", "desktop-profile"),
@@ -409,15 +411,16 @@ async function handoffStatus(message = "正在接入当前画布…") {
   );
   show();
 }
-function sessionCookie(value) {
+function sessionCookie(value, target = application, expiresAt) {
   return {
-    url: new URL(application).origin,
+    url: new URL(target).origin,
     name: "qd_session",
     value,
     httpOnly: true,
-    secure: false,
+    secure: new URL(target).protocol === "https:",
     sameSite: "lax",
     path: "/",
+    ...(expiresAt ? { expirationDate: Math.floor(expiresAt / 1000) } : {}),
   };
 }
 async function activateHandoff(
@@ -425,19 +428,60 @@ async function activateHandoff(
   { reuse, ensureActive: checkActive = async () => {} },
 ) {
   const storage = window.webContents.session;
+  const targetApplication = session.origin
+    ? parseAppUrl(session.origin + "/app").href
+    : localApplication;
   await checkActive();
-  if (reuse) {
-    await storage.cookies.set(sessionCookie(session.sessionToken));
-    show();
-    await waitForContext(session);
+  if (
+    reuse &&
+    new URL(targetApplication).origin === new URL(application).origin
+  ) {
+    const previousCookie = (
+      await storage.cookies.get({
+        url: new URL(targetApplication).origin,
+        name: "qd_session",
+      })
+    ).find((cookie) => cookie.path === "/");
+    let changed = false;
+    try {
+      await checkActive();
+      await storage.cookies.set(
+        sessionCookie(
+          session.sessionToken,
+          targetApplication,
+          session.expiresAt,
+        ),
+      );
+      changed = true;
+      await waitForContext(session);
+      await checkActive();
+      show();
+    } catch {
+      if (changed) {
+        if (previousCookie)
+          await storage.cookies.set({
+            ...sessionCookie(previousCookie.value, targetApplication),
+            ...(previousCookie.expirationDate
+              ? { expirationDate: previousCookie.expirationDate }
+              : {}),
+          });
+        else
+          await storage.cookies.remove(
+            new URL(targetApplication).origin,
+            "qd_session",
+          );
+      }
+      throw new Error(failedMessage);
+    }
     return;
   }
   const oldUrl = window.webContents.getURL();
+  const previousApplication = application;
   const previousUrl = isTrustedPage(oldUrl, application) ? oldUrl : null;
   const previousLayout = { ...layout };
   const oldCookie = (
     await storage.cookies.get({
-      url: new URL(application).origin,
+      url: new URL(targetApplication).origin,
       name: "qd_session",
     })
   ).find((cookie) => cookie.path === "/");
@@ -450,10 +494,15 @@ async function activateHandoff(
     // cannot run under the new cookie or erase its original local state on 401.
     await handoffStatus();
     await checkActive();
-    await storage.cookies.set(sessionCookie(session.sessionToken));
+    application = targetApplication;
+    await storage.cookies.set(
+      sessionCookie(session.sessionToken, targetApplication, session.expiresAt),
+    );
     cookieChanged = true;
     await window.loadURL(workspaceUrl(application, session.roomId));
+    await checkActive();
     await waitForContext(session);
+    await checkActive();
     show();
   } catch {
     try {
@@ -461,22 +510,24 @@ async function activateHandoff(
       if (cookieChanged) {
         if (oldCookie)
           await storage.cookies.set({
-            ...sessionCookie(oldCookie.value),
+            ...sessionCookie(oldCookie.value, targetApplication),
             ...(oldCookie.expirationDate
               ? { expirationDate: oldCookie.expirationDate }
               : {}),
           });
         else
           await storage.cookies.remove(
-            new URL(application).origin,
+            new URL(targetApplication).origin,
             "qd_session",
           );
       }
+      application = previousApplication;
       if (previousUrl) {
         resize(previousLayout);
         await window.loadURL(previousUrl);
       } else await handoffStatus("连接未完成，请回到网页重试");
     } catch {
+      application = previousApplication;
       /* The fixed warning below remains safe even if recovery fails. */
     }
     throw new Error(failedMessage);
@@ -494,8 +545,13 @@ function requestHandoff(input) {
   }
   // Claim immediately even while another save/confirmation is in progress.
   // The ephemeral broker has a short claim deadline, then a longer apply limit.
-  const claimed = claimSession(descriptor, application).then(
-    (session) => ({ session }),
+  const claimed = claimSession(descriptor, localApplication).then(
+    (session) => ({
+      session: {
+        ...session,
+        origin: session.origin || new URL(localApplication).origin,
+      },
+    }),
     () => ({ error: true }),
   );
   const previous = actionPromise;
@@ -508,7 +564,10 @@ function requestHandoff(input) {
         throw new Error(failedMessage);
       result = await applySessionHandoff({
         session: credential.session,
-        prepare: saveBeforeQuit,
+        prepare: async () => ({
+          ...(await saveBeforeQuit()),
+          origin: new URL(application).origin,
+        }),
         confirm: async (saved) => {
           show();
           const answer = await dialog.showMessageBox(window, {
@@ -644,7 +703,12 @@ async function createWindow({ handoff = false } = {}) {
       webSecurity: true,
       partition: "persist:qingdan-desktop",
       spellcheck: false,
-      additionalArguments: [`--qingdan-origin=${new URL(application).origin}`],
+      additionalArguments: [
+        `--qingdan-origin=${new URL(localApplication).origin}`,
+        ...[...desktopOnlineOrigins()].map(
+          (origin) => `--qingdan-allow-origin=${origin}`,
+        ),
+      ],
     },
   });
   window.on("page-title-updated", (event) => event.preventDefault());

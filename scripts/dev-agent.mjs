@@ -24,6 +24,7 @@ import {
 } from "./lib/execution-trial.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const desktopLauncher = createDesktopLauncher({ projectRoot: root });
 if (Number(process.versions.node.split(".")[0]) < 24)
   throw Error("本机 Codex 体验需要 Node.js 24 或以上版本。");
 let child,
@@ -48,8 +49,9 @@ const server = createExperienceServer({
   upstream: "http://127.0.0.1:8788",
   desktopApi: createLocalDesktopApi({
     upstream: "http://127.0.0.1:8788",
-    launch: createDesktopLauncher({ projectRoot: root }).launch,
+    launch: desktopLauncher.launch,
   }),
+  onlineDesktop: { launch: desktopLauncher.launch },
   runnerApi: createLocalRunnerApi({
     getController: () => deviceController,
     upstream: "http://127.0.0.1:8788",

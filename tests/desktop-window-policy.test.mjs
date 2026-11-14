@@ -11,15 +11,27 @@ try {
   if (error.code !== "MODULE_NOT_FOUND") throw error;
 }
 
-test("desktop origin accepts explicit loopback app URLs only", () => {
+test("desktop origin accepts loopback and the configured HTTPS app only", () => {
   assert.equal(typeof policy.parseAppUrl, "function");
   assert.equal(policy.parseAppUrl().href, "http://127.0.0.1:8790/app");
+  assert.equal(
+    policy.parseAppUrl("https://todo.zky.lol/app").origin,
+    "https://todo.zky.lol",
+  );
+  assert.equal(
+    policy.parseAppUrl("https://qingdan-canvas.zkeyang0519.workers.dev/app")
+      .protocol,
+    "https:",
+  );
   assert.equal(
     policy.parseAppUrl("http://localhost:61234/app?room=test").port,
     "61234",
   );
   for (const url of [
     "https://evil.example/app",
+    "https://todo.zky.lol.evil.example/app",
+    "https://other.zky.lol/app",
+    "http://todo.zky.lol/app",
     "file:///app",
     "http://127.0.0.1.evil/app",
     "http://127.0.0.1:8790/",
@@ -27,6 +39,28 @@ test("desktop origin accepts explicit loopback app URLs only", () => {
     "javascript:alert(1)",
   ]) {
     assert.throws(() => policy.parseAppUrl(url));
+  }
+});
+
+test("extra desktop origins require exact HTTPS origins without wildcard domains", () => {
+  const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
+  const configured = desktopOnlineOrigins({
+    QINGDAN_DESKTOP_ORIGINS:
+      "https://preview.example, https://custom.example:8443",
+  });
+  assert.equal(configured.has("https://todo.zky.lol"), true);
+  assert.equal(configured.has("https://preview.example"), true);
+  assert.equal(configured.has("https://custom.example:8443"), true);
+  for (const origin of [
+    "http://example.com",
+    "https://*.example.com",
+    "https://example.com/app",
+    "https://user:pass@example.com",
+    "https://example.com/",
+  ]) {
+    assert.throws(() =>
+      desktopOnlineOrigins({ QINGDAN_DESKTOP_ORIGINS: origin }),
+    );
   }
 });
 
@@ -145,6 +179,7 @@ test("open in browser only constructs a safe same-origin room link", () => {
 });
 
 async function preloadFixture({
+  allowed = [],
   origin = "http://127.0.0.1:8790",
   pathname = "/app",
   mainFrame = true,
@@ -180,7 +215,10 @@ async function preloadFixture({
       },
       process: {
         isMainFrame: mainFrame,
-        argv: ["--qingdan-origin=http://127.0.0.1:8790"],
+        argv: [
+          "--qingdan-origin=http://127.0.0.1:8790",
+          ...allowed.map((origin) => `--qingdan-allow-origin=${origin}`),
+        ],
       },
       location: { origin, pathname },
     },
@@ -210,6 +248,21 @@ test("preload grants the narrow bridge only to the app main frame", async () => 
   ]);
   assert.equal(bridge.version, 1);
   assert.equal(Object.isFrozen(bridge), true);
+});
+
+test("preload permits the configured online main frame while excluding other frames and origins", async () => {
+  const origin = "https://qingdan-canvas.zkeyang0519.workers.dev";
+  assert.ok((await preloadFixture({ origin, allowed: [origin] })).bridge);
+  assert.equal(
+    (await preloadFixture({ origin, allowed: [origin], mainFrame: false }))
+      .bridge,
+    undefined,
+  );
+  assert.equal(
+    (await preloadFixture({ origin: "https://other.test", allowed: [origin] }))
+      .bridge,
+    undefined,
+  );
 });
 
 test("preload waits for the current save callback and stale cleanup cannot erase it", async () => {

@@ -72,7 +72,8 @@ export function createDesktopLauncher({
       : null;
   }
 
-  async function launchOnce(context) {
+  async function launchOnce(context, signal) {
+    signal?.throwIfAborted();
     let directory;
     try {
       directory = electronDirectory
@@ -130,9 +131,17 @@ export function createDesktopLauncher({
         cause: error,
       });
     }
-    let broker;
+    let broker, abort;
     try {
+      signal?.throwIfAborted();
       if (context) broker = await createHandoffImpl(context);
+      if (broker && signal) {
+        abort = () => {
+          void broker.close();
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        signal.throwIfAborted();
+      }
       const child = spawnImpl(
         executable,
         [
@@ -175,12 +184,13 @@ export function createDesktopLauncher({
         { cause: error },
       );
     } finally {
+      if (abort) signal.removeEventListener("abort", abort);
       fsImpl.closeSync(output);
       if (broker) await broker.close();
     }
   }
 
-  function launch(input) {
+  function launch(input, { signal } = {}) {
     if (input !== undefined) {
       let context;
       try {
@@ -192,7 +202,7 @@ export function createDesktopLauncher({
         .update(JSON.stringify(context))
         .digest("hex");
       if (lastHandoff?.key === key) return lastHandoff.request;
-      const request = handoffTail.then(() => launchOnce(context));
+      const request = handoffTail.then(() => launchOnce(context, signal));
       lastHandoff = { key, request };
       handoffTail = request
         .catch(() => {})

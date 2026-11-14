@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { validRequestId } from "./agent-experience-service.mjs";
+import { createDesktopOnlineApi } from "./desktop-online-api.mjs";
 
 const reject = (status, message) => Object.assign(Error(message), { status });
 function originFor(req) {
@@ -10,6 +11,14 @@ function guard(req, local = false, extraOrigins) {
   const origin = originFor(req);
   const originAllowed =
     req.headers.origin === origin || extraOrigins?.has(req.headers.origin);
+  // The published page links here via a user-initiated top-level navigation.
+  // Keep this exception limited to the app document, without action parameters.
+  const entryNavigation =
+    req.method === "GET" &&
+    req.url === "/app" &&
+    req.headers["sec-fetch-mode"] === "navigate" &&
+    req.headers["sec-fetch-dest"] === "document" &&
+    req.headers["sec-fetch-user"] === "?1";
   if (
     !req.url.startsWith("/") ||
     req.url.startsWith("//") ||
@@ -19,7 +28,7 @@ function guard(req, local = false, extraOrigins) {
   if (
     req.headers.host !== new URL(origin).host ||
     (req.headers.origin && !originAllowed) ||
-    req.headers["sec-fetch-site"] === "cross-site"
+    (req.headers["sec-fetch-site"] === "cross-site" && !entryNavigation)
   )
     throw reject(403, "仅允许从本机轻单入口访问。");
   if (local && req.headers["x-qingdan-local"] !== "1")
@@ -95,11 +104,15 @@ export function createExperienceServer({
   upstream,
   runnerApi,
   desktopApi,
+  onlineDesktop,
   handshakeTimeoutMs = 10000,
 }) {
   if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1)
     throw Error("WebSocket handshake timeout must be a positive integer.");
   let closing = false;
+  const onlineDesktopApi = onlineDesktop
+    ? createDesktopOnlineApi(onlineDesktop)
+    : null;
   const connections = new Set(),
     remotes = new Set();
   const target = new URL(upstream);
@@ -112,6 +125,11 @@ export function createExperienceServer({
     try {
       if (closing) throw reject(503, "本机服务正在关闭。");
       const url = new URL(req.url, originFor(req));
+      if (
+        onlineDesktopApi &&
+        url.pathname.startsWith("/api/local-desktop/online/")
+      )
+        return await onlineDesktopApi(req, res, url);
       const localCodex = url.pathname.startsWith("/api/local-codex/");
       const localRunner = url.pathname.startsWith("/api/local-runner/");
       const localDesktop = url.pathname.startsWith("/api/local-desktop/");
@@ -123,7 +141,8 @@ export function createExperienceServer({
       );
       if (localDesktop) {
         if (runnerCors(req, res)) return;
-        if (!desktopApi) throw reject(503, "桌面启动尚未就绪，请重启本机轻单服务。");
+        if (!desktopApi)
+          throw reject(503, "桌面启动尚未就绪，请重启本机轻单服务。");
         return json(res, await desktopApi(req, url));
       }
       if (localRunner) {
@@ -252,6 +271,7 @@ export function createExperienceServer({
   });
   server.closeConnections = () => {
     closing = true;
+    onlineDesktopApi?.close();
     // CONNECTING peers are not yet WebSocketServer clients. Destroy both ends,
     // including raw sockets whose upstream handshake never completed.
     for (const remote of remotes) remote.terminate();

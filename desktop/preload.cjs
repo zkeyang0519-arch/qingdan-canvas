@@ -5,9 +5,15 @@ const originArgument = process.argv.find((value) =>
   value.startsWith("--qingdan-origin="),
 );
 const expectedOrigin = originArgument?.slice("--qingdan-origin=".length);
+const allowedOrigins = new Set([
+  expectedOrigin,
+  ...process.argv
+    .filter((value) => value.startsWith("--qingdan-allow-origin="))
+    .map((value) => value.slice("--qingdan-allow-origin=".length)),
+]);
 if (
   process.isMainFrame &&
-  location.origin === expectedOrigin &&
+  allowedOrigins.has(location.origin) &&
   location.pathname === "/app"
 ) {
   let beforeQuit = null;
