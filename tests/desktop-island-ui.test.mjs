@@ -782,10 +782,7 @@ test("更新保存前同步冻结交互，保存失败后立即恢复输入且�
   });
   await click(button(host, "展开轻岛"));
   await type(host.querySelector("textarea"), "更新过程中必须保留");
-  assert.match(
-    host.querySelector(".desktop-update-status").textContent,
-    /轻岛 0.3.0/,
-  );
+  assert.equal(host.querySelector(".desktop-update-status"), null);
   const main = host.querySelector("main");
   await act(async () => {
     for (const handler of calls.updateHandlers)

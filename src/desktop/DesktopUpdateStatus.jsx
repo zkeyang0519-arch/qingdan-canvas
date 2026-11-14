@@ -25,7 +25,10 @@ export default function DesktopUpdateStatus({ bridge }) {
       unsubscribe?.();
     };
   }, [bridge]);
-  if (!update || update.status === "unsupported") return null;
+  // Checks and downloads stay in the background; only an actionable update
+  // or an ongoing restart needs space in the task panel.
+  if (!update || !["downloaded", "installing"].includes(update.status))
+    return null;
   const run = async (action) => {
     setError("");
     setBusy(true);
@@ -38,15 +41,7 @@ export default function DesktopUpdateStatus({ bridge }) {
     }
   };
   const ready = update.status === "downloaded";
-  const installing = update.status === "installing";
-  const waiting = [
-    "checking",
-    "available",
-    "downloading",
-    "installing",
-  ].includes(update.status);
   const version = update.version || "";
-  const currentVersion = update.currentVersion || version;
   if (ready && dismissedVersion === version && !error && !update.error)
     return (
       <div className="desktop-update-status desktop-update-status-compact">
@@ -57,21 +52,11 @@ export default function DesktopUpdateStatus({ bridge }) {
     );
   const message = ready
     ? `新版${version ? ` ${version}` : ""}已就绪`
-    : installing
-      ? "正在保存并重启更新…"
-      : update.status === "downloading"
-        ? `正在下载更新${Number.isFinite(update.progress) ? ` ${Math.round(update.progress)}%` : ""}`
-        : update.status === "checking"
-          ? "正在检查更新…"
-          : update.status === "available"
-            ? "发现新版，正在准备下载…"
-            : update.status === "error"
-              ? "更新暂未完成，可以重试"
-              : `轻岛${currentVersion ? ` ${currentVersion}` : ""}`;
+    : "正在保存并重启更新…";
   return (
     <div className="desktop-update-status" role="status">
       <span>{message}</span>
-      {ready ? (
+      {ready && (
         <>
           <button
             type="button"
@@ -86,14 +71,6 @@ export default function DesktopUpdateStatus({ bridge }) {
             </button>
           )}
         </>
-      ) : (
-        <button
-          type="button"
-          disabled={busy || waiting}
-          onClick={() => run(() => bridge.checkForUpdates())}
-        >
-          {installing ? "更新中…" : "检查更新"}
-        </button>
       )}
       {(error || update.error) && <p role="alert">{error || update.error}</p>}
     </div>
