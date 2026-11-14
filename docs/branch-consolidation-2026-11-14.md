@@ -1,6 +1,6 @@
 # 分支整理记录
 
-2026-11-14 按用户要求，仅保留 `agent` 和 `main`。日常开发目录仍为 `D:/TODO/qingdan-canvas`，原 `feat/qingdan-mcp` 改名为 `agent`。
+2026-11-14 按用户最终确认，仅保留 `feat/qingdan-mcp` 和 `main`。日常开发目录仍为 `D:/TODO/qingdan-canvas`，Agent 开发分支保留现有名称 `feat/qingdan-mcp`。
 
 ## 改动核对
 
@@ -28,4 +28,4 @@
 
 ## 后续流程
 
-在 `agent` 完成开发与验证，再按用户授权合并到 `main`。发布桌面版本仍需提高版本号并创建对应版本标签；本次分支整理不创建新桌面版本。
+在 `feat/qingdan-mcp` 完成开发与验证，再按用户授权合并到 `main`。发布桌面版本仍需提高版本号并创建对应版本标签；本次分支整理不创建新桌面版本。
