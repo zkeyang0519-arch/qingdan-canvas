@@ -53,7 +53,13 @@ function validateLayout(input) {
       typeof input.expanded !== "boolean")
   )
     throw new Error("Invalid desktop dock");
-  const minimumWidth = ["left", "right"].includes(input.dock) ? 64 : 240;
+  if (input.appearance !== undefined && input.appearance !== "jade")
+    throw new Error("Invalid desktop appearance");
+  const minimumWidth = ["left", "right"].includes(input.dock)
+    ? 64
+    : input.appearance === "jade"
+      ? 214
+      : 240;
   if (
     input.mode !== "island" ||
     !Number.isFinite(input.width) ||
@@ -69,6 +75,7 @@ function validateLayout(input) {
     width: Math.round(input.width),
     height: Math.max(64, Math.round(input.height)),
     ...(hasDock ? { dock: input.dock, expanded: input.expanded } : {}),
+    ...(input.appearance === "jade" ? { appearance: "jade" } : {}),
   };
 }
 

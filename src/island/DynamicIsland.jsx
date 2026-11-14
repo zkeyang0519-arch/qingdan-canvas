@@ -7,11 +7,15 @@ import React, {
 } from "react";
 import {
   CheckCheck,
+  Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CornerDownLeft,
   LockKeyhole,
   Pin,
   Plus,
+  Settings2,
   X,
 } from "lucide-react";
 import { blockText, createObject, makeBlock } from "../canvas/model.js";
@@ -27,6 +31,7 @@ import {
   IslandSideTab,
 } from "../desktop/IslandDesktopHeader.jsx";
 import "./dynamic-island.css";
+import { useAnimalRunner } from "./animal-runners.js";
 
 const syncLabels = {
   loading: "连接中",
@@ -46,6 +51,7 @@ export default function DynamicIsland({
   top,
   hidden = false,
   panelToolbar,
+  panelNotice,
   closeLabel = "隐藏轻岛",
   closeText = "隐藏到托盘",
   closeOnWindowBlur = false,
@@ -59,9 +65,12 @@ export default function DynamicIsland({
   const [expanded, setExpanded] = useState(pinned);
   const shown = expanded && !desktop?.dragging;
   const side = desktop?.dock === "left" || desktop?.dock === "right";
+  const jade = desktop?.supportsJade === true;
   const Surface = dragHandleTitle ? "div" : React.Fragment;
   const [drafts, setDrafts] = useState({});
   const [feedback, setFeedback] = useState("");
+  const [focusedTask, setFocusedTask] = useState(null);
+  const [showCompleted, setShowCompleted] = useState(false);
   const [offset, setOffset] = useState(top ?? 76);
   const dock = useRef(null),
     island = useRef(null),
@@ -81,6 +90,14 @@ export default function DynamicIsland({
   const tasks = page?.tasks || [];
   const completed = tasks.filter((task) => task.block.done).length;
   const nextTask = tasks.find((task) => !task.block.done);
+  const pendingTasks = tasks.filter((task) => !task.block.done);
+  const taskId = (task) => `${task.note.id}/${task.key}`;
+  const currentTask =
+    pendingTasks.find((task) => taskId(task) === focusedTask) || nextTask;
+  const animal = useAnimalRunner(
+    jade && !hidden && !desktop.dragging && pendingTasks.length > 0,
+    island,
+  );
   const draft = drafts[page?.id] || "";
   const writable =
     !readOnly && !!page && !!writablePage(state, boardId, page.id);
@@ -224,8 +241,10 @@ export default function DynamicIsland({
       { record: false, navigation: true },
     );
     setFeedback("");
+    setFocusedTask(null);
+    setShowCompleted(false);
   };
-  const toggleTask = (task) => {
+  const toggleTask = (task, done = !task.block.done) => {
     if (workspace.readOnly) return;
     beforeAction?.();
     const current = workspace.current.current;
@@ -239,6 +258,7 @@ export default function DynamicIsland({
       setFeedback("这条待办已被锁定、收纳或删除。");
       return;
     }
+    if (!!latest.block.done === done) return;
     workspace.toggleBlock(latest.note.id, latest.key);
     setFeedback("");
   };
@@ -270,6 +290,7 @@ export default function DynamicIsland({
       return;
     }
     setDrafts((saved) => ({ ...saved, [pageId]: "" }));
+    setShowCompleted(false);
     setFeedback("");
     input.current?.focus();
   };
@@ -288,6 +309,48 @@ export default function DynamicIsland({
       : tasks.length
         ? "都完成了，休息一下"
         : "顺手记一件事";
+  const moveTask = (step) => {
+    const index = pendingTasks.indexOf(currentTask);
+    const target =
+      pendingTasks[(index + step + pendingTasks.length) % pendingTasks.length];
+    if (target) setFocusedTask(taskId(target));
+  };
+  const projectControls = (
+    <div className="island-panel-heading">
+      <select
+        className="island-project-select"
+        aria-label="轻岛项目"
+        value={page?.id || ""}
+        onChange={changePage}
+      >
+        {pages.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.title}
+          </option>
+        ))}
+      </select>
+      <button
+        className="island-pin"
+        type="button"
+        aria-label={pinned ? "取消钉住轻岛" : "钉住轻岛"}
+        aria-pressed={pinned}
+        onClick={() => {
+          savePin(!pinned);
+          clickHeld.current = false;
+          if (!pinned) open();
+          else scheduleClose();
+        }}
+      >
+        <Pin size={14} />
+        <span>{pinned ? "已钉住" : "钉住"}</span>
+      </button>
+    </div>
+  );
+  const visibleTasks = jade
+    ? showCompleted
+      ? tasks.filter((task) => task.block.done)
+      : pendingTasks.filter((task) => task !== currentTask)
+    : tasks;
   return (
     <div
       ref={dock}
@@ -304,6 +367,7 @@ export default function DynamicIsland({
         ref={island}
         className="dynamic-island"
         data-open={shown}
+        data-appearance={jade ? "jade" : undefined}
         data-dock={desktop?.dragging ? "free" : desktop?.dock}
         data-dragging={desktop?.dragging || undefined}
         style={
@@ -352,6 +416,7 @@ export default function DynamicIsland({
             remaining={tasks.length - completed}
             toggle={toggle}
             panelId={panelId}
+            animal={jade ? animal : undefined}
           />
         )}
         <Surface
@@ -369,6 +434,7 @@ export default function DynamicIsland({
               toggle={toggle}
               panelId={panelId}
               trigger={trigger}
+              animal={jade ? animal : undefined}
             />
           ) : (
             <button
@@ -430,39 +496,53 @@ export default function DynamicIsland({
             aria-hidden={!shown}
             inert={!shown}
           >
-            {panelToolbar}
-            <div className="island-panel-heading">
-              <select
-                className="island-project-select"
-                aria-label="轻岛项目"
-                value={page?.id || ""}
-                onChange={changePage}
-              >
-                {pages.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="island-pin"
-                type="button"
-                aria-label={pinned ? "取消钉住轻岛" : "钉住轻岛"}
-                aria-pressed={pinned}
-                onClick={() => {
-                  savePin(!pinned);
-                  clickHeld.current = false;
-                  if (!pinned) open();
-                  else scheduleClose();
-                }}
-              >
-                <Pin size={14} />
-                <span>{pinned ? "已钉住" : "钉住"}</span>
-              </button>
-            </div>
+            {jade ? (
+              <>
+                <details className="island-options">
+                  <summary aria-label="轻岛设置" title="项目、钉住与画布操作">
+                    <Settings2 size={15} />
+                  </summary>
+                  <div className="island-options-content">
+                    {panelToolbar}
+                    {projectControls}
+                  </div>
+                </details>
+                <header className="island-current">
+                  <div className="island-current-meta">
+                    <span>{showCompleted ? "完成记录" : "当前任务"}</span>
+                    <span>
+                      {showCompleted
+                        ? `${completed} 件已完成`
+                        : `${pendingTasks.length} 件待办`}
+                    </span>
+                  </div>
+                  <h3>
+                    {showCompleted
+                      ? "已完成"
+                      : currentTask
+                        ? blockText(currentTask.block) || "未命名待办"
+                        : tasks.length
+                          ? "都完成了，休息一下。"
+                          : "记下第一件小事。"}
+                  </h3>
+                  {currentTask?.locked && !showCompleted && (
+                    <span className="island-current-lock">
+                      <LockKeyhole size={12} />
+                      已锁定
+                    </span>
+                  )}
+                </header>
+              </>
+            ) : (
+              <>
+                {panelToolbar}
+                {projectControls}
+              </>
+            )}
+            {panelNotice}
             <div className="island-task-list">
-              {tasks.length ? (
-                tasks.map((task) => {
+              {visibleTasks.length ? (
+                visibleTasks.map((task) => {
                   const text = blockText(task.block) || "未命名待办";
                   return (
                     <label
@@ -491,9 +571,13 @@ export default function DynamicIsland({
                     </label>
                   );
                 })
-              ) : (
-                <div className="island-empty">还没有待办，记下第一件小事。</div>
-              )}
+              ) : !jade || showCompleted ? (
+                <div className="island-empty">
+                  {jade && showCompleted
+                    ? "还没有已完成事项。"
+                    : "还没有待办，记下第一件小事。"}
+                </div>
+              ) : null}
             </div>
             <form
               className="island-compose"
@@ -513,7 +597,7 @@ export default function DynamicIsland({
                 rows={1}
                 value={draft}
                 disabled={!writable}
-                placeholder="顺手记一件事…"
+                placeholder={jade ? "记下一件事，回车添加…" : "顺手记一件事…"}
                 maxLength={20000}
                 onFocus={() => {
                   clearTimeout(leaveTimer.current);
@@ -556,6 +640,17 @@ export default function DynamicIsland({
                 {feedback}
               </div>
             )}
+            {jade && (
+              <button
+                className="island-completed-toggle"
+                type="button"
+                aria-pressed={showCompleted}
+                onClick={() => setShowCompleted((value) => !value)}
+              >
+                <CheckCheck size={13} />
+                {showCompleted ? "返回待办" : `已完成 ${completed}`}
+              </button>
+            )}
             <div className="island-footer">
               <span className="island-sync" role="status">
                 {readOnly
@@ -572,6 +667,53 @@ export default function DynamicIsland({
                 {closeText}
               </button>
             </div>
+            {desktop && !jade && (
+              <p className="island-sync">
+                更新本机代码并重启轻岛，即可使用雾玉双舱和动物奔跑。
+              </p>
+            )}
+            {jade && (
+              <footer
+                className="island-task-controls"
+                aria-label="当前任务操作"
+              >
+                <button
+                  type="button"
+                  aria-label="上一项任务"
+                  disabled={showCompleted || pendingTasks.length < 2}
+                  onClick={() => moveTask(-1)}
+                >
+                  <ChevronLeft size={17} />
+                </button>
+                <button
+                  type="button"
+                  className="island-finish"
+                  aria-label={
+                    currentTask
+                      ? `完成当前任务：${blockText(currentTask.block) || "未命名待办"}`
+                      : "完成这件"
+                  }
+                  disabled={
+                    showCompleted ||
+                    !currentTask ||
+                    !writable ||
+                    currentTask.locked
+                  }
+                  onClick={() => toggleTask(currentTask, true)}
+                >
+                  <Check size={15} />
+                  <span>完成这件</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="下一项任务"
+                  disabled={showCompleted || pendingTasks.length < 2}
+                  onClick={() => moveTask(1)}
+                >
+                  <ChevronRight size={17} />
+                </button>
+              </footer>
+            )}
           </div>
         </Surface>
       </section>

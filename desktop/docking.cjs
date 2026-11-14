@@ -12,7 +12,7 @@ function dockAtPoint(point, work) {
   return x < 0 ? "left" : "right";
 }
 
-function restorePlacement(saved, work) {
+function restorePlacement(saved, work, appearance) {
   const center = saved
     ? { x: saved.x + saved.width / 2, y: saved.y + saved.height / 2 }
     : { x: work.x + work.width / 2, y: work.y };
@@ -21,7 +21,12 @@ function restorePlacement(saved, work) {
     : dockAtPoint(center, work);
   const layout = side(dock)
     ? { dock, width: 64, height: 160 }
-    : { dock, width: 354, height: 76 };
+    : {
+        dock,
+        width: appearance === "jade" ? 214 : 354,
+        height: appearance === "jade" ? 64 : 76,
+      };
+  if (appearance === "jade") layout.appearance = appearance;
   const anchor = {
     x: center.x - layout.width / 2,
     y: center.y - layout.height / 2,
@@ -30,18 +35,21 @@ function restorePlacement(saved, work) {
   return { ...fitDockBounds(anchor, layout, work), dock };
 }
 
-function placementAtPoint(point, offset, work) {
+function placementAtPoint(point, offset, work, appearance) {
   const dock = dockAtPoint(point, work);
+  const width = appearance === "jade" ? 214 : 354,
+    height = appearance === "jade" ? 64 : 76;
   const requested = side(dock)
     ? { width: 64, height: 160, dock }
-    : { width: 354, height: 76, dock };
+    : { width, height, dock };
+  if (appearance === "jade") requested.appearance = appearance;
   const anchor = side(dock)
     ? { x: point.x - 32, y: point.y - 80, width: 64, height: 160, dock }
     : {
         x: point.x - offset.x,
         y: point.y - offset.y,
-        width: 354,
-        height: 76,
+        width,
+        height,
         dock,
       };
   return { ...fitDockBounds(anchor, requested, work), dock };
@@ -68,7 +76,7 @@ function fitDockBounds(anchor, layout, work) {
     ),
     y: Math.round(
       dock === "top"
-        ? work.y
+        ? work.y - (layout.appearance === "jade" ? 12 : 0)
         : clamp(
             side(dock) ? centerY - height / 2 : (anchor?.y ?? work.y + 12),
             work.y,
@@ -108,9 +116,12 @@ function roundedRect(x, y, width, height, radius, squareSide) {
         : row >= height - r
           ? row - (height - r) + 0.5
           : 0;
-    const edge = distance
-      ? Math.max(0, Math.ceil(r - Math.sqrt(r * r - distance * distance)))
-      : 0;
+    const edge =
+      squareSide === "top" && row < r
+        ? 0
+        : distance
+          ? Math.max(0, Math.ceil(r - Math.sqrt(r * r - distance * distance)))
+          : 0;
     const left = squareSide === "left" ? 0 : edge,
       right = squareSide === "right" ? 0 : edge;
     if (width - left - right > 0)
@@ -125,6 +136,27 @@ function roundedRect(x, y, width, height, radius, squareSide) {
 }
 
 function dockShape(bounds, layout, anchor, work) {
+  if (layout.appearance === "jade" && !side(layout.dock)) {
+    const width = Math.min(190, bounds.width - 24);
+    const capsule = roundedRect(
+      Math.round((bounds.width - width) / 2),
+      12,
+      width,
+      40,
+      24,
+      layout.dock === "top" ? "top" : undefined,
+    );
+    if (!layout.expanded) return capsule;
+    return capsule.concat(
+      roundedRect(
+        12,
+        69,
+        Math.max(1, bounds.width - 24),
+        Math.max(1, bounds.height - 81),
+        23,
+      ),
+    );
+  }
   if (!side(layout.dock)) return islandShape(bounds.width, bounds.height);
   const left = layout.dock === "left",
     railX = left ? 12 : bounds.width - 52;

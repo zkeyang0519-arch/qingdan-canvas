@@ -12,6 +12,7 @@ import { downloadBlob, exportArchive } from "../canvas/backup.js";
 import { getDesktopBridge, requestDesktopLayout } from "./bridge.js";
 import { DesktopOpeningState } from "./DesktopFrame.jsx";
 import { useDesktopPlacement } from "./useDesktopPlacement.js";
+import "./jade-island.css";
 
 export default function DesktopIslandWorkspace(props) {
   const [attempt, setAttempt] = useState(0);
@@ -128,6 +129,9 @@ function ConnectedWorkspace({
           width,
           height,
           ...(island ? { dock, expanded } : {}),
+          ...(island?.dataset.appearance === "jade"
+            ? { appearance: "jade" }
+            : {}),
         });
       });
     };
@@ -256,6 +260,7 @@ function ConnectedWorkspace({
           closeLabel="隐藏轻岛"
           closeText="隐藏到托盘"
           onDisable={() => bridge.hide()}
+          panelNotice={recovery}
           panelToolbar={
             <>
               <div className="desktop-island-toolbar">
@@ -267,10 +272,6 @@ function ConnectedWorkspace({
                 >
                   <ArrowLeft size={15} />
                 </button>
-                <span title={`${room.name} · ${user.name}`}>
-                  {room.name}
-                  <small>{user.name}</small>
-                </span>
                 <button
                   type="button"
                   aria-label="在浏览器打开画布"
@@ -280,7 +281,6 @@ function ConnectedWorkspace({
                   <ExternalLink size={15} />
                 </button>
               </div>
-              {recovery}
             </>
           }
         />

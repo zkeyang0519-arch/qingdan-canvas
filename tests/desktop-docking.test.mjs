@@ -12,6 +12,66 @@ try {
 }
 const work = { x: -1920, y: 32, width: 1920, height: 1048 };
 
+test("jade capsule uses separate native hit regions and its transparent gap passes through", () => {
+  const layout = {
+    dock: "top",
+    expanded: true,
+    appearance: "jade",
+    width: 370,
+    height: 520,
+  };
+  const bounds = dock.fitDockBounds(null, layout, work);
+  assert.equal(bounds.y + 12, work.y);
+  const shape = dock.dockShape(bounds, layout, null, work);
+  const hit = (x, y) =>
+    shape.some(
+      (r) => x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height,
+    );
+  assert.equal(hit(185, 30), true);
+  assert.equal(hit(30, 30), false);
+  assert.equal(hit(185, 60), false);
+  assert.equal(hit(185, 80), true);
+  assert.equal(hit(185, 505), true);
+  const restored = dock.restorePlacement(null, work, "jade");
+  assert.equal(restored.width, 214);
+  assert.equal(restored.height, 64);
+});
+
+test("jade desktop keeps its compact dimensions and appearance through native drag and dock changes", async (t) => {
+  const f = await fixture(t),
+    layout = f.handlers.get("qingdan-desktop:layout"),
+    drag = f.handlers.get("qingdan-desktop:drag");
+  layout(f.event, {
+    mode: "island",
+    dock: "top",
+    expanded: false,
+    appearance: "jade",
+    width: 214,
+    height: 64,
+  });
+  assert.equal(f.bounds().width, 214);
+  assert.equal(f.bounds().y, -12);
+  drag(f.event, "start", { x: 80, y: 30 });
+  assert.equal(f.bounds().width, 214);
+  f.cursor({ x: 960, y: 300 });
+  drag(f.event, "end");
+  assert.equal(f.bounds().width, 214);
+  assert.equal(f.bounds().height, 64);
+  drag(f.event, "start");
+  f.cursor({ x: 1500, y: 600 });
+  drag(f.event, "end");
+  assert.equal(f.bounds().width, 64);
+  layout(f.event, {
+    mode: "island",
+    dock: "right",
+    expanded: true,
+    appearance: "jade",
+    width: 418,
+    height: 520,
+  });
+  assert.equal(f.bounds().x + f.bounds().width - 12, 1920);
+});
+
 test("drag release chooses top or sides from the display center, including drops far from every edge", () => {
   assert.equal(typeof dock.dockAtPoint, "function");
   const point = (x, y) => ({

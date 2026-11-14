@@ -121,6 +121,7 @@ function bridgeFixture() {
       railOffset: 12,
       maxHeight: 1080,
       maxWidth: 1920,
+      supportsJade: true,
     },
   };
   const bridge = {
@@ -157,14 +158,22 @@ function bridgeFixture() {
 }
 async function mount(
   t,
-  { desktop = false, wrapper = false, overrides = {} } = {},
+  {
+    desktop = false,
+    wrapper = false,
+    overrides = {},
+    count = 1,
+    supportsJade = true,
+  } = {},
 ) {
   const initial = createWorkspace();
   const room = { ...initial.boards[0], role: "owner" };
   const note = {
     ...createObject(room.id, "note"),
     noteKind: "checklist",
-    blocks: [makeBlock("桌面真实待办")],
+    blocks: Array.from({ length: count }, (_, i) =>
+      makeBlock(i ? `桌面待办 ${i + 1}` : "桌面真实待办"),
+    ),
   };
   initial.objects = [note];
   const controls = {
@@ -176,6 +185,7 @@ async function mount(
     hookCalls: 0,
   };
   const { bridge, calls } = bridgeFixture();
+  calls.placement.supportsJade = supportsJade;
   window.qingdanDesktop = bridge;
   t.after(() => {
     delete window.qingdanDesktop;
@@ -289,6 +299,99 @@ async function type(element, value) {
   });
 }
 
+test("旧桌面组件保留可操作的原布局，升级提示不会发送不兼容的双舱尺寸", async (t) => {
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsJade: false,
+  });
+  assert.equal(
+    host.querySelector(".dynamic-island").dataset.appearance,
+    undefined,
+  );
+  assert.equal(host.querySelector(".island-animal"), null);
+  await click(button(host, "展开轻岛"));
+  await click(host.querySelector('input[type="checkbox"]'));
+  assert.equal(controls.state().objects[0].blocks[0].done, true);
+  assert.match(host.textContent, /更新本机代码并重启轻岛/);
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 15)));
+  assert.ok(calls.layout.length > 0);
+  assert.ok(
+    calls.layout.every((layout) => !layout.appearance && layout.width >= 240),
+  );
+});
+
+test("雾玉双舱显示所有待办，底部切换和完成作用于当前任务，已完成可恢复", async (t) => {
+  const { host, controls } = await mount(t, { desktop: true, count: 36 });
+  await click(button(host, "展开轻岛"));
+  assert.equal(
+    host.querySelector(".island-current h3").textContent,
+    "桌面真实待办",
+  );
+  assert.equal(host.querySelectorAll(".island-task-row").length, 35);
+  assert.match(
+    host.querySelector(".island-task-list").textContent,
+    /桌面待办 36/,
+  );
+  await click(button(host, "下一项任务"));
+  assert.equal(
+    host.querySelector(".island-current h3").textContent,
+    "桌面待办 2",
+  );
+  await click(button(host, "完成这件"));
+  assert.equal(controls.state().objects[0].blocks[1].done, true);
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  await click(button(host, "已完成 1"));
+  assert.equal(host.querySelectorAll(".island-task-row").length, 1);
+  await click(host.querySelector('input[type="checkbox"]'));
+  assert.equal(controls.state().objects[0].blocks[1].done, false);
+  await click(button(host, "返回待办"));
+  await type(host.querySelector("textarea"), "动物小跑团新增");
+  await act(async () =>
+    host
+      .querySelector("textarea")
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+  );
+  assert.equal(controls.state().objects.length, 2);
+  assert.equal(host.querySelectorAll(".island-task-row").length, 36);
+  assert.equal(
+    host.querySelector(".island-panel").lastElementChild.className,
+    "island-task-controls",
+  );
+});
+
+test("动物每十秒切换，隐藏及全部完成后暂停", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { host } = await mount(t, { desktop: true });
+  const animal = () => host.querySelector(".island-animal");
+  const first = animal().dataset.animal;
+  await act(async () => t.mock.timers.tick(9999));
+  assert.equal(animal().dataset.animal, first);
+  await act(async () => t.mock.timers.tick(1));
+  assert.notEqual(animal().dataset.animal, first);
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    value: true,
+  });
+  t.after(() => {
+    delete document.hidden;
+  });
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  const paused = animal().dataset.animal;
+  await act(async () => t.mock.timers.tick(30000));
+  assert.equal(animal().dataset.animal, paused);
+  assert.equal(animal().dataset.playing, "false");
+  delete document.hidden;
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await click(button(host, "展开轻岛"));
+  await click(button(host, "完成这件"));
+  assert.equal(animal().dataset.playing, "false");
+  const finished = animal().dataset.animal;
+  await act(async () => t.mock.timers.tick(30000));
+  assert.equal(animal().dataset.animal, finished);
+});
+
 test("桌面胶囊失焦时收起但保留输入，钉住后失焦保持展开", async (t) => {
   const { host, controls } = await mount(t);
   await click(button(host, "展开轻岛"));
@@ -326,7 +429,7 @@ test("桌面拖动手柄独立于点击按钮，任务控件仍可操作", async
   );
   assert.equal(handle.closest("section").getAttribute("aria-label"), "轻岛");
   await click(button(host, "展开轻岛"));
-  await click(host.querySelector('input[type="checkbox"]'));
+  await click(button(host, "完成这件"));
   assert.equal(controls.state().objects[0].blocks[0].done, true);
 });
 
@@ -395,7 +498,7 @@ test("待办、展开按钮与输入框不能拖动窗口，钉住状态跨拖�
   await click(button(host, "展开轻岛"));
   for (const target of [
     host.querySelector("textarea"),
-    host.querySelector('input[type="checkbox"]'),
+    button(host, "完成这件"),
     button(host, "收起轻岛"),
   ]) {
     await pointer(target, "pointerdown", 50, 50);
@@ -515,7 +618,7 @@ test("桌面工作区复用真实待办与固定身份，退出等待保存且�
     "setup quit handler must not shadow workspace handler",
   );
   await click(button(host, "展开轻岛"));
-  await click(host.querySelector('input[type="checkbox"]'));
+  await click(button(host, "完成这件"));
   assert.equal(controls.state().objects[0].blocks[0].done, true);
   await type(host.querySelector("textarea"), "本地输入");
   const result = await [...calls.handlers][0]();
@@ -552,7 +655,7 @@ test("桌面冲突与连接错误有恢复操作，锁定任务不被写入", as
   });
   await click(button(host, "展开轻岛"));
   assert.match(host.textContent, /版本冲突/);
-  assert.equal(host.querySelector('input[type="checkbox"]').disabled, true);
+  assert.equal(button(host, "完成这件").disabled, true);
   await click(button(host, "保留我的冲突内容"));
   await click(button(host, "使用共享冲突内容"));
   assert.deepEqual(controls.choices, ["local", "remote"]);

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   GripVertical,
 } from "lucide-react";
+import AnimalRunner from "../island/AnimalRunner.jsx";
 
 export function IslandDesktopHeader({
   title,
@@ -16,6 +17,7 @@ export function IslandDesktopHeader({
   toggle,
   panelId,
   trigger,
+  animal,
 }) {
   return (
     <header
@@ -23,20 +25,35 @@ export function IslandDesktopHeader({
       data-desktop-drag="true"
       title={title}
     >
-      <GripVertical
-        size={14}
-        className="island-desktop-grip"
-        aria-hidden="true"
-      />
-      <span className="island-logo" aria-hidden="true">
-        <CheckCheck size={17} />
-      </span>
+      {animal ? (
+        <AnimalRunner {...animal} />
+      ) : (
+        <>
+          <GripVertical
+            size={14}
+            className="island-desktop-grip"
+            aria-hidden="true"
+          />
+          <span className="island-logo" aria-hidden="true">
+            <CheckCheck size={17} />
+          </span>
+        </>
+      )}
       <span className="island-summary" title={summary}>
-        <span>轻岛</span>
-        {summary}
+        {animal ? (
+          "轻岛"
+        ) : (
+          <>
+            <span>轻岛</span>
+            {summary}
+          </>
+        )}
       </span>
-      <span className="island-progress" aria-label="待办进度">
-        {completed} / {total}
+      <span
+        className="island-progress"
+        aria-label={`还有 ${total - completed} 项待办`}
+      >
+        {total - completed} 件
       </span>
       <button
         ref={trigger}
@@ -53,7 +70,14 @@ export function IslandDesktopHeader({
   );
 }
 
-export function IslandSideTab({ dock, expanded, remaining, toggle, panelId }) {
+export function IslandSideTab({
+  dock,
+  expanded,
+  remaining,
+  toggle,
+  panelId,
+  animal,
+}) {
   const Arrow = dock === "left" ? ChevronRight : ChevronLeft;
   return (
     <aside
@@ -66,7 +90,11 @@ export function IslandSideTab({ dock, expanded, remaining, toggle, panelId }) {
       }}
     >
       <GripVertical size={14} className="island-side-grip" aria-hidden="true" />
-      <CheckCheck size={18} aria-hidden="true" />
+      {animal ? (
+        <AnimalRunner {...animal} />
+      ) : (
+        <CheckCheck size={18} aria-hidden="true" />
+      )}
       <span className="island-side-word">轻岛</span>
       <span
         className="island-side-count"

@@ -103,12 +103,15 @@ function shape() {
   );
 }
 function getPlacement() {
-  return placementState(
-    islandPosition,
-    window.getBounds(),
-    currentWorkArea(),
-    !!dragSession,
-  );
+  return {
+    ...placementState(
+      islandPosition,
+      window.getBounds(),
+      currentWorkArea(),
+      !!dragSession,
+    ),
+    supportsJade: true,
+  };
 }
 function publishPlacement() {
   const state = getPlacement(),
@@ -125,7 +128,16 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
     (reset ? screen.getPrimaryDisplay().workArea : currentWorkArea());
   const previous = reset ? null : window.getBounds();
   layout = dragSession
-    ? { mode: "island", dock: "free", expanded: false, width: 354, height: 76 }
+    ? {
+        mode: "island",
+        dock: "free",
+        expanded: false,
+        width: dragSession.layout.appearance === "jade" ? 214 : 354,
+        height: dragSession.layout.appearance === "jade" ? 64 : 76,
+        ...(dragSession.layout.appearance
+          ? { appearance: dragSession.layout.appearance }
+          : {}),
+      }
     : next;
   if (!dragSession && layout.mode === "island") {
     if (
@@ -133,7 +145,13 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
       relocate ||
       !["top", "left", "right"].includes(islandPosition?.dock)
     )
-      rememberPosition(restorePlacement(reset ? null : islandPosition, work));
+      rememberPosition(
+        restorePlacement(
+          reset ? null : islandPosition,
+          work,
+          layout.appearance,
+        ),
+      );
     if (layout.dock) {
       const changed = reset || layout.dock !== islandPosition.dock;
       layout = {
@@ -157,8 +175,8 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
     ? {
         x: Math.round(cursor.x - dragSession.offset.x),
         y: Math.round(cursor.y - dragSession.offset.y),
-        width: 354,
-        height: 76,
+        width: layout.width,
+        height: layout.height,
       }
     : layout.mode === "island" && !layout.dock
       ? fitDockBounds(
@@ -220,8 +238,17 @@ function dragWindow(action, origin) {
       position: islandPosition && { ...islandPosition },
       layout: { ...layout },
       offset: {
-        x: Math.max(24, Math.min(330, origin?.x ?? point.x - bounds.x)),
-        y: Math.max(12, Math.min(64, origin?.y ?? 38)),
+        x: Math.max(
+          24,
+          Math.min(
+            layout.appearance === "jade" ? 202 : 330,
+            origin?.x ?? point.x - bounds.x,
+          ),
+        ),
+        y: Math.max(
+          12,
+          Math.min(layout.appearance === "jade" ? 52 : 64, origin?.y ?? 38),
+        ),
       },
     };
     resize(layout);
@@ -239,7 +266,12 @@ function dragWindow(action, origin) {
     } else {
       const point = screen.getCursorScreenPoint();
       const work = screen.getDisplayNearestPoint(point).workArea;
-      const placement = placementAtPoint(point, previous.offset, work);
+      const placement = placementAtPoint(
+        point,
+        previous.offset,
+        work,
+        previous.layout.appearance,
+      );
       rememberPosition(placement);
       resize(
         {
@@ -248,6 +280,9 @@ function dragWindow(action, origin) {
           expanded: false,
           width: placement.width,
           height: placement.height,
+          ...(previous.layout.appearance
+            ? { appearance: previous.layout.appearance }
+            : {}),
         },
         { workArea: work },
       );

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
-const initial = { dock: "top", dragging: false, railOffset: 12 };
+const initial = {
+  dock: "top",
+  dragging: false,
+  railOffset: 12,
+  supportsJade: false,
+};
 
 export function useDesktopPlacement(bridge) {
   const [placement, setPlacement] = useState(initial);
@@ -99,7 +104,9 @@ export function useDesktopPlacement(bridge) {
         x: event.screenX,
         y: event.screenY,
         origin: {
-          x: event.clientX,
+          x: handle.closest('[data-appearance="jade"]')
+            ? event.clientX - handle.getBoundingClientRect().left + 12
+            : event.clientX,
           y: handle.classList.contains("island-side-tab") ? 38 : event.clientY,
         },
         element: event.currentTarget,
