@@ -50,3 +50,10 @@
 - Deployment instructions updated in `docs/cloudflare-setup.md` and `docs/desktop-island.md`. Remote migration 0009 and production publication remain manual, as required by AGENTS.md; Agent remains disabled online.
 - The source service is ready after safe restart (no active tasks or unknown records), with the same Runner connected and polling successfully. Only local migration 0009 was applied by normal startup. Live companion preflight returned 204 for `https://todo.zky.lol` and 403 for an unrelated origin.
 - An anonymous native HTTPS request to the actual `https://todo.zky.lol/api/session` returned 200 with the expected session response shape, confirming connectivity and normal certificate validation without using the user's credentials or modifying remote data.
+
+## Main integration verification
+
+- Feature commit `e65d2f3` was merged without conflicts into main as `3ff2f59`. Product code matches the accepted Agent checkout; the existing main release record is retained.
+- Fresh checks from the main worktree passed: `npm run check`, `npm run runner:check`, and `npm run deploy:check` (dry run).
+- Fresh full main suite: 1588/1589 passed. The single failure was an existing experience-service fixture's Windows `EPERM` while renaming `sessions.json.tmp` to `sessions.json`, in unchanged `ExperienceService.save`. Its entire test file passed 5/5 independently; the earlier installation/shutdown intermittencies passed in this main run. This is not recorded as a clean full-suite pass.
+- No remote database migration or Worker deployment was performed as part of the Git merge/push task.
