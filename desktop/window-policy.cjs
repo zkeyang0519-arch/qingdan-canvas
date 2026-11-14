@@ -1,4 +1,5 @@
 "use strict";
+const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
 
 function alwaysOnTopLevel(platform) {
   // Electron 45.3.2's Windows "floating" path calls SetWindowPos behind the
@@ -11,14 +12,17 @@ function alwaysOnTopLevel(platform) {
 function parseAppUrl(value = "http://127.0.0.1:8790/app") {
   const url = new URL(value);
   if (
-    url.protocol !== "http:" ||
-    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    !(
+      (url.protocol === "http:" &&
+        ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) ||
+      desktopOnlineOrigins().has(url.origin)
+    ) ||
     url.username ||
     url.password ||
     url.pathname !== "/app" ||
     url.hash
   )
-    throw new Error("桌面入口必须是本机 HTTP /app 地址。");
+    throw new Error("桌面入口必须是本机或已配置的线上 /app 地址。");
   return url;
 }
 

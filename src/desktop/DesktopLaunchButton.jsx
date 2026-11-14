@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LoaderCircle, Monitor, X } from "lucide-react";
 import "./desktop-launch.css";
+import { requestOnlineLaunch } from "./online-launch.js";
 
 const localEntry = "http://127.0.0.1:8790/app";
 const localOrigins = new Set([
@@ -89,7 +90,8 @@ export default function DesktopLaunchButton({ user, room }) {
   const launch = async () => {
     if (!accountId || !roomId || busyRef.current) return;
     const origin = window.location.origin;
-    if (!localOrigins.has(origin)) {
+    const online = window.location.protocol === "https:";
+    if (!localOrigins.has(origin) && !online) {
       setNotice({
         kind: "info",
         text: "轻岛需要从这台电脑的本机入口启动。请打开本机入口，并登录同一账号。",
@@ -109,7 +111,9 @@ export default function DesktopLaunchButton({ user, room }) {
     setBusy(true);
     setNotice(null);
     try {
-      await requestLaunch(origin, accountId, roomId, controller.signal);
+      if (online)
+        await requestOnlineLaunch(accountId, roomId, controller.signal);
+      else await requestLaunch(origin, accountId, roomId, controller.signal);
       if (current())
         setNotice({
           kind: "success",
@@ -117,7 +121,7 @@ export default function DesktopLaunchButton({ user, room }) {
         });
     } catch (error) {
       if (current())
-        setNotice({ kind: "error", text: error.message, localLink: true });
+        setNotice({ kind: "error", text: error.message, localLink: !online });
     } finally {
       if (current()) {
         request.current = null;

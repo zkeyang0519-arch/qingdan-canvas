@@ -154,7 +154,7 @@ for (const port of [8788, 5178]) {
   });
 }
 
-for (const origin of ["https://qingdan.example", "http://localhost:8790"]) {
+for (const origin of ["http://localhost:8790"]) {
   test(`${origin}不主动请求本机端口，只给出本机入口`, async (t) => {
     const calls = [];
     t.mock.method(globalThis, "fetch", async (...args) => {
@@ -168,6 +168,84 @@ for (const origin of ["https://qingdan.example", "http://localhost:8790"]) {
     assert.equal(status().querySelector("a").href, "http://127.0.0.1:8790/app");
   });
 }
+
+test("线上按钮通过一次性交接直接打开当前账号画布，等待桌面确认且不打开新页面", async (t) => {
+  const calls = [],
+    applied = deferred();
+  t.mock.method(window, "open", () => {
+    throw Error("must not open another page");
+  });
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    calls.push(args);
+    if (calls.length === 1)
+      return Response.json({
+        requestId: "a".repeat(32),
+        challenge: "b".repeat(64),
+      });
+    if (calls.length === 2)
+      return Response.json({ ticket: "c".repeat(64) }, { status: 201 });
+    return applied.promise;
+  });
+  const f = await mount(t, "https://qingdan-canvas.zkeyang0519.workers.dev");
+  await click(f.button());
+  assert.equal(calls.length, 3);
+  assert.equal(
+    calls[0][0],
+    "http://127.0.0.1:8790/api/local-desktop/online/prepare",
+  );
+  assert.equal(calls[0][1].credentials, "omit");
+  assert.equal(calls[0][1].targetAddressSpace, "loopback");
+  assert.deepEqual(JSON.parse(calls[0][1].body), {
+    accountId: "account-a",
+    roomId: "test-room",
+  });
+  assert.equal(calls[1][0], "/api/desktop/handoff");
+  assert.equal(calls[1][1].credentials, "same-origin");
+  assert.equal(calls[1][1].headers["X-QD-Account"], "account-a");
+  assert.equal(f.button().disabled, true);
+  assert.equal(status().querySelector("a"), null);
+  await act(async () =>
+    applied.resolve(Response.json({ started: true, applied: true })),
+  );
+  assert.match(status().textContent, /已打开/);
+});
+
+test("线上交接等待期间换账号或画布，旧授权不得继续交给本机", async (t) => {
+  const calls = [],
+    ticket = deferred();
+  t.mock.method(globalThis, "fetch", (...args) => {
+    calls.push(args);
+    return calls.length === 1
+      ? Promise.resolve(
+          Response.json({
+            requestId: "a".repeat(32),
+            challenge: "b".repeat(64),
+          }),
+        )
+      : ticket.promise;
+  });
+  const f = await mount(t, "https://qingdan-canvas.zkeyang0519.workers.dev");
+  await click(f.button());
+  assert.equal(calls.length, 2);
+  await f.render("account-b", "other-room");
+  assert.equal(calls[1][1].signal.aborted, true);
+  await act(async () =>
+    ticket.resolve(Response.json({ ticket: "c".repeat(64) })),
+  );
+  assert.equal(calls.length, 2);
+  assert.equal(status(), null);
+});
+
+test("线上本机连接失败解释服务和浏览器权限，不引导到另一个登录网页", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  const f = await mount(t, "https://qingdan-canvas.zkeyang0519.workers.dev");
+  await click(f.button());
+  assert.match(status().textContent, /本机服务|本机轻单/);
+  assert.match(status().textContent, /浏览器|权限/);
+  assert.equal(status().querySelector("a"), null);
+});
 
 test("服务不可达、认证失败和未确认启动都提供准确失败提示", async (t) => {
   const outcomes = [

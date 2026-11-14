@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import origins from "../../shared/desktop-origins.cjs";
 
 const errors = {
   cancelled: "已取消切换，原桌面窗口和输入已保留。",
@@ -15,7 +16,21 @@ export function validateDesktopContext(value) {
     /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value);
   if (
     !value ||
-    Object.keys(value).length !== 3 ||
+    Object.keys(value).some(
+      (key) =>
+        ![
+          "accountId",
+          "roomId",
+          "sessionToken",
+          "origin",
+          "expiresAt",
+        ].includes(key),
+    ) ||
+    (value.origin !== undefined &&
+      !origins.desktopOnlineOrigins().has(value.origin)) ||
+    (value.expiresAt !== undefined &&
+      (!Number.isSafeInteger(value.expiresAt) ||
+        value.expiresAt <= Date.now())) ||
     !id(value.accountId) ||
     !id(value.roomId) ||
     typeof value.sessionToken !== "string" ||
@@ -26,6 +41,8 @@ export function validateDesktopContext(value) {
     accountId: value.accountId,
     roomId: value.roomId,
     sessionToken: value.sessionToken,
+    ...(value.origin ? { origin: value.origin } : {}),
+    ...(value.expiresAt ? { expiresAt: value.expiresAt } : {}),
   };
 }
 

@@ -6,6 +6,17 @@
 
 当前 main 保留正在开发的 Agent 代码供本地使用，但 production/preview 的 Agent 入口只显示「正在开发中」。服务端会拒绝 Agent/Runner/执行请求，旧 Agent DO 也不会处理任务、定时器或连接。请保持生产 `APP_ENV=production` 和现有 Agent 功能开关关闭；仅修改旧功能开关不会开放线上 Agent。轻岛、画布及排列继续可用。
 
+## 线上画布直接打开轻岛
+
+本次新增线上账号与画布的一次性交接，点击线上「轻岛」即可接入桌面，无需在本机网页再登录。发布仍由维护者手动操作：
+
+1. 在目标环境先应用 D1 追加迁移 `0009_desktop_handoffs.sql` 及其他未执行迁移：生产用 `npm run db:remote`，独立预览用 `npm run db:preview`。核对目标数据库后执行；新表存放短期授权摘要，不复制或删除画布。
+2. 迁移成功后再构建、发布对应代码；生产使用 `npm run deploy` 并保持 `APP_ENV=production`，预览按本项目的 `wrangler preview` 流程发布。轻岛接口独立于 Agent，线上 Agent 继续不可操作。
+3. 使用桌面的电脑也须更新本机服务代码、安全重启服务，并从托盘退出一次旧轻岛。具体步骤见 [轻岛说明](desktop-island.md)。默认信任 `https://todo.zky.lol` 和正式 workers.dev 来源，其他自定义域名或预览域名需配置本机 `QINGDAN_DESKTOP_ORIGINS`。
+4. 在已登录的线上画布点击「轻岛」，按浏览器提示允许本机连接；确认直接出现当前画布胶囊，新增、勾选待办能与网页双向同步，重复点击保留原窗口输入。
+
+自动化测试使用隔离 Worker/D1 和桌面配置；部署预检不代表已经完成远程迁移、真实 HTTPS 浏览器权限或线上发布验收。
+
 ## 轻单 MCP 升级与发布
 
 本地实现、自动验收和四端接入说明见 [MCP 接入](mcp-setup.md)、[MCP 配置](mcp-configuration.md)、[验收记录](mcp-acceptance.md)。本次没有创建云端 namespace、迁移远程 D1、部署 preview/production 或登录四个真实客户端。以下均为维护者后续手动执行步骤。
