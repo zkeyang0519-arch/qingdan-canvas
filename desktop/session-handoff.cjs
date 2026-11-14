@@ -135,11 +135,22 @@ async function claimSession(descriptor, application, fetchImpl = fetch) {
       ...options(),
       headers,
     });
-    if (
-      !authenticated.ok ||
-      (await authenticated.json())?.user?.id !== session.accountId
-    )
-      throw new Error();
+    if (!authenticated.ok) throw new Error();
+    const authentication = await authenticated.json();
+    if (authentication?.user?.id !== session.accountId) throw new Error();
+    const verifiedExpiry = authentication.sessionExpiresAt;
+    if (verifiedExpiry !== undefined) {
+      if (!Number.isSafeInteger(verifiedExpiry) || verifiedExpiry <= Date.now())
+        throw new Error();
+      session.expiresAt = Math.min(
+        session.expiresAt || verifiedExpiry,
+        verifiedExpiry,
+      );
+    }
+    // Legacy online redemption already supplies a server-issued expiry. Older
+    // local brokers can be upgraded by the authenticated owning endpoint, but
+    // must never fall back to a volatile session-only desktop cookie.
+    if (!session.expiresAt) throw new Error();
     const room = await fetchImpl(
       origin + "/api/rooms/" + encodeURIComponent(session.roomId),
       { ...options(), headers },

@@ -3,10 +3,18 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import profileLocation from "../../desktop/profile-location.cjs";
+import { createDesktopInstallation } from "./desktop-installation.mjs";
 import {
   createDesktopHandoff,
   validateDesktopContext,
 } from "./desktop-handoff-broker.mjs";
+
+const {
+  installedDesktopExecutable,
+  registerDesktopProfile,
+  resolveDesktopProfile,
+} = profileLocation;
 
 function childOutcome(child, event) {
   return new Promise((resolve, reject) => {
@@ -34,6 +42,7 @@ export function createDesktopLauncher({
   now = Date.now,
   cooldownMs = 1000,
   createHandoffImpl = createDesktopHandoff,
+  installationManager,
 } = {}) {
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot))
     throw new Error("桌面启动器需要项目的绝对路径。");
@@ -41,6 +50,14 @@ export function createDesktopLauncher({
   const environment = { ...env };
   // Editors built on Electron can export this. The companion needs GUI mode.
   delete environment.ELECTRON_RUN_AS_NODE;
+  const desktopInstallation =
+    installationManager ||
+    (process.platform === "win32" &&
+    environment.LOCALAPPDATA &&
+    !environment.QINGDAN_DESKTOP_PROFILE &&
+    environment.QINGDAN_DESKTOP_SOURCE !== "1"
+      ? createDesktopInstallation({ projectRoot: root, env: environment })
+      : null);
   const profile = path.resolve(
     environment.QINGDAN_DESKTOP_PROFILE ||
       path.join(root, ".tmp/desktop-profile"),
@@ -72,23 +89,71 @@ export function createDesktopLauncher({
       : null;
   }
 
-  async function launchOnce(context, signal) {
+  async function launchOnce(context, signal, report) {
+    const status = (message) => {
+      onStatus(message);
+      report?.(message);
+    };
     signal?.throwIfAborted();
-    let directory;
-    try {
-      directory = electronDirectory
-        ? path.resolve(electronDirectory)
-        : path.dirname(
-            createRequire(path.join(root, "package.json")).resolve("electron"),
-          );
-    } catch (error) {
-      throw new Error("桌面依赖未安装，请先在轻单项目运行 npm ci。", {
-        cause: error,
-      });
+    let installedExecutable = installedDesktopExecutable({
+      env: environment,
+      fsImpl,
+    });
+    const selectedProfile =
+      installedExecutable &&
+      !environment.QINGDAN_DESKTOP_PROFILE &&
+      environment.APPDATA
+        ? registerDesktopProfile({
+            appData: environment.APPDATA,
+            profile,
+            fsImpl,
+          })
+        : resolveDesktopProfile({
+            projectRoot: root,
+            appData: environment.APPDATA,
+            env: environment,
+            fsImpl,
+          });
+    const provisioned = desktopInstallation
+      ? await desktopInstallation.ensure({
+          profile: selectedProfile,
+          signal,
+          onStatus: status,
+        })
+      : null;
+    if (provisioned) installedExecutable = provisioned.executable;
+    if (signal?.aborted && provisioned?.changed) {
+      // Installation has already committed. Restore the last saved canvas even
+      // if the browser disappeared; never reuse a cancelled login handoff.
+      context = undefined;
+      signal = undefined;
     }
-    let executable = runtimePath(directory);
+    signal?.throwIfAborted();
+    const launchEnvironment = {
+      ...environment,
+      QINGDAN_DESKTOP_PROFILE: selectedProfile,
+      ...(installedExecutable && !environment.QINGDAN_DESKTOP_PROFILE
+        ? { QINGDAN_DESKTOP_WEB_LAUNCH_PORT: "8791" }
+        : {}),
+    };
+    let directory;
+    if (!installedExecutable)
+      try {
+        directory = electronDirectory
+          ? path.resolve(electronDirectory)
+          : path.dirname(
+              createRequire(path.join(root, "package.json")).resolve(
+                "electron",
+              ),
+            );
+      } catch (error) {
+        throw new Error("桌面依赖未安装，请先在轻单项目运行 npm ci。", {
+          cause: error,
+        });
+      }
+    let executable = installedExecutable || runtimePath(directory);
     if (!executable) {
-      onStatus("首次使用正在下载桌面运行时，请稍候（仅首次需要）…");
+      status("首次使用正在下载桌面运行时，请稍候（仅首次需要）…");
       if (!installation)
         installation = (async () => {
           try {
@@ -124,8 +189,8 @@ export function createDesktopLauncher({
 
     let output;
     try {
-      fsImpl.mkdirSync(profile, { recursive: true });
-      output = fsImpl.openSync(path.join(profile, "desktop.log"), "a");
+      fsImpl.mkdirSync(selectedProfile, { recursive: true });
+      output = fsImpl.openSync(path.join(selectedProfile, "desktop.log"), "a");
     } catch (error) {
       throw new Error("无法准备桌面日志目录，请检查项目目录权限后重试。", {
         cause: error,
@@ -145,12 +210,14 @@ export function createDesktopLauncher({
       const child = spawnImpl(
         executable,
         [
-          path.join(root, "desktop/main.cjs"),
+          ...(!installedExecutable
+            ? [path.join(root, "desktop/main.cjs")]
+            : []),
           ...(broker ? ["--qingdan-desktop-handoff"] : []),
         ],
         {
           cwd: root,
-          env: { ...environment },
+          env: launchEnvironment,
           detached: true,
           shell: false,
           windowsHide: true,
@@ -173,12 +240,26 @@ export function createDesktopLauncher({
         const result = await broker.result;
         if (!result.applied)
           throw Object.assign(new Error(result.error), { handoff: true });
-        return { started: true, applied: true };
+        return {
+          started: true,
+          applied: true,
+          ...(provisioned
+            ? {
+                version: provisioned.version,
+                ...(provisioned.warning
+                  ? { warning: provisioned.warning }
+                  : {}),
+              }
+            : {}),
+        };
       }
       // This acknowledges only process creation, not login or window readiness.
-      return { started: true };
+      return {
+        started: true,
+        ...(provisioned ? { version: provisioned.version } : {}),
+      };
     } catch (error) {
-      if (error.handoff) throw error;
+      if (error.handoff || error.desktopInstall) throw error;
       throw new Error(
         `桌面窗口启动失败（${error.code || error.message}）。请检查桌面运行时，必要时运行 npm run desktop:install。`,
         { cause: error },
@@ -190,7 +271,7 @@ export function createDesktopLauncher({
     }
   }
 
-  function launch(input, { signal } = {}) {
+  function launch(input, { signal, onStatus: report } = {}) {
     if (input !== undefined) {
       let context;
       try {
@@ -202,7 +283,9 @@ export function createDesktopLauncher({
         .update(JSON.stringify(context))
         .digest("hex");
       if (lastHandoff?.key === key) return lastHandoff.request;
-      const request = handoffTail.then(() => launchOnce(context, signal));
+      const request = handoffTail.then(() =>
+        launchOnce(context, signal, report),
+      );
       lastHandoff = { key, request };
       handoffTail = request
         .catch(() => {})
@@ -214,7 +297,7 @@ export function createDesktopLauncher({
     if (pending) return pending;
     const age = now() - lastStartedAt;
     if (recent && age >= 0 && age < cooldownMs) return recent;
-    const request = launchOnce().then(
+    const request = launchOnce(undefined, signal, report).then(
       (result) => {
         pending = null;
         lastStartedAt = now();

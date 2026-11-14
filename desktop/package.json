@@ -1,0 +1,11 @@
+{
+  "name": "qingdao",
+  "version": "0.3.1",
+  "private": true,
+  "description": "轻岛桌面待办",
+  "author": "Qingdan",
+  "main": "desktop/main.cjs",
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  }
+}

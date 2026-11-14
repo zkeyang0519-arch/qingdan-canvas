@@ -11,12 +11,13 @@ const target = {
   sessionToken: "b".repeat(64),
 };
 
-async function fixture(t) {
+async function fixture(t, { packaged = false } = {}) {
   const listeners = new Map(),
     handlers = new Map(),
     calls = [];
   const electron = {
     app: {
+      isPackaged: packaged,
       setPath() {},
       setName() {},
       requestSingleInstanceLock: () => false,
@@ -42,12 +43,17 @@ async function fixture(t) {
   };
   const context = {
     require(name) {
+      if (name === "./resume-state.cjs")
+        return { readResume: () => null, saveResume() {} };
       if (name === "electron") return electron;
       if (name === "node:fs") return { mkdirSync() {}, writeFileSync() {} };
       if (name === "./session-handoff.cjs")
         return {
           ...require("../desktop/session-handoff.cjs"),
-          claimSession: async () => target,
+          claimSession: async (_descriptor, application) => {
+            calls.push(["claim", application]);
+            return target;
+          },
           acknowledge: async (_descriptor, result) =>
             calls.push(["ack", result]),
         };
@@ -71,9 +77,12 @@ async function fixture(t) {
       `\nglobalThis.host = { activateHandoff, waitForContext, requestSavedAction, requestHandoff, currentAction: () => actionPromise, prepare: saveBeforeQuit, setWindow(w) { window=w; quitting=false; }, cleanup() { clearTimeout(positionTimer); if(readyWaiter) clearTimeout(readyWaiter.timeout); } };`,
     context,
   );
+  // Let the startup trampoline finish its asynchronous instance-lock path
+  // before replacing the window with the test's simulated live instance.
+  await new Promise((resolve) => setImmediate(resolve));
   const host = context.host;
   let bounds = { x: 783, y: 12, width: 354, height: 76 },
-    url = origin + "/app?room=room-old";
+    url = (packaged ? "https://todo.zky.lol" : origin) + "/app?room=room-old";
   const mainFrame = { url };
   const webContents = {
     mainFrame,
@@ -191,6 +200,40 @@ test("host reuses an already matching island without navigating or discarding in
   await f.host.activateHandoff(target, { reuse: true });
   assert.equal(f.calls.filter((call) => call[0] === "load").length, 0);
   assert.equal(f.calls.filter((call) => call[0] === "set-cookie").length, 1);
+});
+
+test("packaged desktop validates origin-less brokers against localhost while starting on production", async (t) => {
+  const f = await fixture(t, { packaged: true });
+  assert.match(f.event.senderFrame.url, /^https:\/\/todo\.zky\.lol/);
+  const pending = f.host.requestHandoff({
+    version: 1,
+    endpoint: "http://127.0.0.1:52341",
+    nonce: "c".repeat(64),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    f.calls.find((call) => call[0] === "claim"),
+    ["claim", origin + "/app"],
+  );
+  const save = f.calls.find((call) => call[0] === "send");
+  f.listeners.get("qingdan-desktop:prepared-quit")(f.event, {
+    token: save[2],
+    ok: false,
+  });
+  await pending;
+});
+
+test("packaged local handoff applies cookies to localhost and loads its local canvas", async (t) => {
+  const f = await fixture(t, { packaged: true });
+  const pending = f.host.activateHandoff(target, { reuse: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  f.report();
+  f.layout();
+  await pending;
+  const cookie = f.calls.find((call) => call[0] === "set-cookie")[1];
+  assert.equal(cookie.url, origin);
+  assert.equal(cookie.secure, false);
+  assert.equal(f.event.senderFrame.url, origin + "/app?room=room-new");
 });
 
 test("host switches to the cloud origin with a secure cookie and waits for its canvas receipt", async (t) => {
@@ -364,6 +407,7 @@ test("context IPC rejects foreign frames and malformed identities; save receipts
     ok: true,
     unsynced: true,
     hasDraft: true,
+    draftsPersisted: false,
     accountId: "alice",
     roomId: "room-old",
   });
@@ -387,7 +431,9 @@ test("finishing an earlier reconnect cannot clear the queued handoff action lock
   await reconnect;
   await new Promise((resolve) => setImmediate(resolve));
   const activeAction = f.host.currentAction();
-  const secondSave = f.calls.filter((call) => call[0] === "send")[1];
+  const secondSave = f.calls.filter(
+    (call) => call[0] === "send" && call[1] === "qingdan-desktop:prepare-quit",
+  )[1];
   assert.ok(secondSave);
   f.listeners.get("qingdan-desktop:prepared-quit")(f.event, {
     token: secondSave[2],

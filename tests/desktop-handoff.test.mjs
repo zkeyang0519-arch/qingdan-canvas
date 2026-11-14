@@ -18,7 +18,53 @@ const session = {
   accountId: "alice",
   roomId: "room-a",
   sessionToken: "b".repeat(64),
+  expiresAt: Date.now() + 3600000,
 };
+
+test("native handoff learns local expiry from authenticated server and never extends a supplied expiry", async () => {
+  const verified = Date.now() + 60000;
+  for (const supplied of [undefined, verified - 10000, verified + 10000]) {
+    let calls = 0;
+    const claimed = { ...session, expiresAt: supplied };
+    const result = await handoff.claimSession(
+      descriptor,
+      "http://127.0.0.1:8790/app",
+      async () => {
+        calls++;
+        return Response.json(
+          calls === 1
+            ? claimed
+            : calls === 2
+              ? { user: { id: "alice" }, sessionExpiresAt: verified }
+              : { room: { id: "room-a" } },
+        );
+      },
+    );
+    assert.equal(result.expiresAt, Math.min(supplied || verified, verified));
+  }
+});
+
+test("native handoff rejects missing expiry and invalid authenticated expiry without applying a session-only cookie", async () => {
+  for (const expiry of [undefined, null, "invalid", Date.now() - 1000]) {
+    let calls = 0;
+    await assert.rejects(
+      handoff.claimSession(
+        descriptor,
+        "http://127.0.0.1:8790/app",
+        async () => {
+          calls++;
+          return Response.json(
+            calls === 1
+              ? { ...session, expiresAt: undefined }
+              : { user: { id: "alice" }, sessionExpiresAt: expiry },
+          );
+        },
+      ),
+      /交接验证失败/,
+    );
+    assert.equal(calls, 2);
+  }
+});
 
 test("cloud handoff validates against its allowlisted HTTPS origin and keeps the native context", async () => {
   const origin = "https://qingdan-canvas.zkeyang0519.workers.dev",

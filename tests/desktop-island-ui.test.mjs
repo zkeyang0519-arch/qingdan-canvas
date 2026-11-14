@@ -55,6 +55,7 @@ await build({
     export { default as DynamicIsland } from './src/island/DynamicIsland.jsx';
     export { createWorkspace, createObject, makeBlock, patchObjects } from './src/canvas/model.js';
     export { default as DesktopIslandWorkspace } from './src/desktop/DesktopIslandWorkspace.jsx';
+    export { default as DesktopUpdateStatus } from './src/desktop/DesktopUpdateStatus.jsx';
     export { default as DesktopFrame } from './src/desktop/DesktopFrame.jsx';
     export { getDesktopBridge, requestDesktopLayout } from './src/desktop/bridge.js';
   `,
@@ -94,6 +95,7 @@ await build({
 const {
   DynamicIsland,
   DesktopIslandWorkspace,
+  DesktopUpdateStatus,
   DesktopFrame,
   getDesktopBridge,
   requestDesktopLayout,
@@ -114,6 +116,7 @@ function bridgeFixture() {
     opened: [],
     handlers: new Set(),
     placementHandlers: new Set(),
+    updateHandlers: new Set(),
     drag: [],
     placement: {
       dock: "top",
@@ -126,6 +129,11 @@ function bridgeFixture() {
   };
   const bridge = {
     version: 1,
+    getUpdateState: async () => ({ status: "idle", currentVersion: "0.3.0" }),
+    onUpdateState: (callback) => {
+      calls.updateHandlers.add(callback);
+      return () => calls.updateHandlers.delete(callback);
+    },
     getPlacement: async () => calls.placement,
     onPlacement: (callback) => {
       calls.placementHandlers.add(callback);
@@ -194,6 +202,10 @@ async function mount(
   function Fixture() {
     const [state, setState] = useState(initial);
     const [patch, setPatch] = useState(overrides);
+    const [generation, setGeneration] = useState(0);
+    const [account, setAccount] = useState("desktop-user");
+    controls.remount = () => setGeneration((value) => value + 1);
+    controls.setAccount = setAccount;
     const current = useRef(state);
     current.current = state;
     const update = (action) => {
@@ -244,8 +256,9 @@ async function mount(
     };
     const content = desktop
       ? React.createElement(DesktopIslandWorkspace, {
+          key: `${account}/${generation}`,
           room,
-          user: { id: "desktop-user", name: "测试用户" },
+          user: { id: account, name: "测试用户" },
           onLeave: () => {
             controls.left++;
           },
@@ -626,6 +639,7 @@ test("桌面工作区复用真实待办与固定身份，退出等待保存且�
   assert.deepEqual(result, {
     unsynced: true,
     hasDraft: true,
+    draftsPersisted: true,
     accountId: "desktop-user",
     roomId: room.id,
   });
@@ -641,6 +655,189 @@ test("桌面工作区复用真实待办与固定身份，退出等待保存且�
     }),
   );
   await assert.rejects([...calls.handlers][0](), /磁盘保存失败/);
+});
+
+test("重启和切换账号分别恢复未提交输入，输入不变成待办", async (t) => {
+  const { host, controls, calls } = await mount(t, { desktop: true });
+  await click(button(host, "展开轻岛"));
+  await type(host.querySelector("textarea"), "第一行未提交\n第二行继续写");
+  assert.equal((await [...calls.handlers][0]()).draftsPersisted, true);
+  await act(async () => controls.remount());
+  assert.equal(
+    host.querySelector("textarea").value,
+    "第一行未提交\n第二行继续写",
+  );
+  assert.equal(controls.state().objects.length, 1);
+  await act(async () => controls.setAccount("another-account"));
+  assert.equal(host.querySelector("textarea").value, "");
+  await type(host.querySelector("textarea"), "另一个账号的草稿");
+  await act(async () => controls.setAccount("desktop-user"));
+  assert.equal(
+    host.querySelector("textarea").value,
+    "第一行未提交\n第二行继续写",
+  );
+});
+
+test("输入存储失败保留当前文字并拒绝更新保存确认，恢复后可重试", async (t) => {
+  const { host, calls } = await mount(t, { desktop: true });
+  await click(button(host, "展开轻岛"));
+  const original = window.Storage.prototype.setItem;
+  window.Storage.prototype.setItem = () => {
+    throw Error("磁盘空间不足");
+  };
+  t.after(() => {
+    window.Storage.prototype.setItem = original;
+  });
+  await type(host.querySelector("textarea"), "必须保留的输入");
+  assert.equal(host.querySelector("textarea").value, "必须保留的输入");
+  assert.match(host.textContent, /输入尚未保存到本机/);
+  await assert.rejects([...calls.handlers][0](), /磁盘空间不足/);
+  window.Storage.prototype.setItem = original;
+  assert.equal((await [...calls.handlers][0]()).draftsPersisted, true);
+});
+
+test("提交成功后重启不恢复已提交输入，提交保存失败时保留文字", async (t) => {
+  const { host, controls } = await mount(t, { desktop: true });
+  await click(button(host, "展开轻岛"));
+  await type(host.querySelector("textarea"), "提交后保留为待办");
+  await act(async () =>
+    host
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  assert.equal(host.querySelector("textarea").value, "");
+  await act(async () => controls.remount());
+  assert.equal(host.querySelector("textarea").value, "");
+  assert.equal(controls.state().objects.length, 2);
+  await type(host.querySelector("textarea"), "保存失败不能清空");
+  await act(async () =>
+    controls.setPatch({
+      flushLocal: async () => {
+        throw Error("无法写入");
+      },
+    }),
+  );
+  await act(async () =>
+    host
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  assert.equal(host.querySelector("textarea").value, "保存失败不能清空");
+  await act(async () => controls.remount());
+  assert.equal(host.querySelector("textarea").value, "保存失败不能清空");
+});
+
+test("更新提醒接受下载状态，稍后不安装，保存失败保持可重试", async (t) => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+  });
+  let notify,
+    resolveState,
+    installs = 0;
+  const bridge = {
+    getUpdateState: () =>
+      new Promise((resolve) => {
+        resolveState = resolve;
+      }),
+    onUpdateState: (callback) => {
+      notify = callback;
+      return () => {};
+    },
+    installUpdate: async () => {
+      installs++;
+      throw Error("输入草稿尚未保存");
+    },
+    checkForUpdates: async () => {},
+  };
+  await act(async () =>
+    root.render(React.createElement(DesktopUpdateStatus, { bridge })),
+  );
+  await act(async () => {
+    notify({ status: "downloaded", version: "0.3.0" });
+    resolveState({ status: "checking" });
+  });
+  assert.match(host.textContent, /新版 0.3.0已就绪/);
+  await click(button(host, "稍后"));
+  assert.equal(installs, 0);
+  assert.equal(button(host, "重启更新"), undefined);
+  await click(button(host, "有更新"));
+  await click(button(host, "重启更新"));
+  assert.equal(installs, 1);
+  assert.match(host.textContent, /输入草稿尚未保存/);
+  assert.equal(button(host, "重启更新").disabled, false);
+});
+
+test("更新保存前同步冻结交互，保存失败后立即恢复输入且保留内容", async (t) => {
+  let releaseSave;
+  const saving = new Promise((_, reject) => {
+    releaseSave = reject;
+  });
+  const { host, calls } = await mount(t, {
+    desktop: true,
+    overrides: { flushLocal: () => saving },
+  });
+  await click(button(host, "展开轻岛"));
+  await type(host.querySelector("textarea"), "更新过程中必须保留");
+  assert.match(
+    host.querySelector(".desktop-update-status").textContent,
+    /轻岛 0.3.0/,
+  );
+  const main = host.querySelector("main");
+  await act(async () => {
+    for (const handler of calls.updateHandlers)
+      handler({
+        status: "installing",
+        currentVersion: "0.3.0",
+        version: "0.4.0",
+      });
+    // This assertion runs before React commits the update-state render.
+    assert.equal(main.inert, true);
+    assert.equal(main.hasAttribute("inert"), true);
+    const prepared = [...calls.handlers][0]();
+    releaseSave(Error("保存失败，稍后重试"));
+    await assert.rejects(prepared, /保存失败/);
+  });
+  assert.match(
+    host.querySelector(".desktop-update-status").textContent,
+    /正在保存并重启更新/,
+  );
+  await act(async () => {
+    for (const handler of calls.updateHandlers)
+      handler({
+        status: "downloaded",
+        version: "0.4.0",
+        error: "保存失败，稍后重试",
+      });
+    assert.equal(main.inert, false);
+    assert.equal(main.hasAttribute("inert"), false);
+  });
+  assert.equal(host.querySelector("textarea").value, "更新过程中必须保留");
+  await type(host.querySelector("textarea"), "失败后继续编辑");
+  assert.equal(host.querySelector("textarea").value, "失败后继续编辑");
+});
+
+test("收起的顶部和侧签显示首条未完成待办，完成后自动前移", async (t) => {
+  const { host, bridge, calls } = await mount(t, { desktop: true, count: 2 });
+  assert.equal(
+    host.querySelector(".island-summary").textContent,
+    "桌面真实待办",
+  );
+  await click(button(host, "展开轻岛"));
+  await click(button(host, "完成这件"));
+  await click(button(host, "收起轻岛"));
+  assert.equal(host.querySelector(".island-summary").textContent, "桌面待办 2");
+  await act(async () => {
+    calls.placement = { ...calls.placement, dock: "left" };
+    for (const handler of calls.placementHandlers) handler(calls.placement);
+  });
+  assert.equal(
+    host.querySelector(".island-side-word").textContent,
+    "桌面待办 2",
+  );
 });
 
 test("桌面冲突与连接错误有恢复操作，锁定任务不被写入", async (t) => {

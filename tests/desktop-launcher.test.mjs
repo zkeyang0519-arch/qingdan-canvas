@@ -321,3 +321,55 @@ test("synchronous spawn errors also close the opened log descriptor", async (t) 
   await assert.rejects(f.launcher.launch(), /桌面.*启动失败/);
   assert.equal(f.closed.length, 1);
 });
+
+test("installed Qingdao takes priority over source Electron and keeps handoff credentials off argv", async (t) => {
+  const f = await fixture(t, { installed: false });
+  const local = path.join(f.projectRoot, "local");
+  const executable = path.join(local, "Programs", "Qingdao", "Qingdao.exe");
+  await mkdir(path.dirname(executable), { recursive: true });
+  await writeFile(executable, "installed desktop fixture");
+  await rm(f.electronDirectory, { recursive: true, force: true });
+  const calls = [];
+  let received = "";
+  const descriptor = {
+    version: 1,
+    endpoint: "http://127.0.0.1:61234",
+    nonce: "b".repeat(64),
+  };
+  const launcher = createDesktopLauncher({
+    projectRoot: f.projectRoot,
+    env: { ...f.env, LOCALAPPDATA: local },
+    spawnImpl(file, args, options) {
+      calls.push({ file, args, options });
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdin.on("data", (chunk) => (received += chunk));
+      child.unref = () => {};
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
+    },
+    createHandoffImpl: async () => ({
+      descriptor,
+      result: Promise.resolve({ applied: true }),
+      close: async () => {},
+    }),
+  });
+  const context = {
+    accountId: "alice",
+    roomId: "room-a",
+    sessionToken: "a".repeat(64),
+  };
+  assert.deepEqual(await launcher.launch(context), {
+    started: true,
+    applied: true,
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, executable);
+  assert.deepEqual(calls[0].args, ["--qingdan-desktop-handoff"]);
+  assert.equal(
+    calls[0].options.env.QINGDAN_DESKTOP_PROFILE,
+    f.env.QINGDAN_DESKTOP_PROFILE,
+  );
+  assert.equal(JSON.stringify(calls[0]).includes(context.sessionToken), false);
+  assert.deepEqual(JSON.parse(received), descriptor);
+});
