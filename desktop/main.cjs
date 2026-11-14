@@ -154,7 +154,7 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
         mode: "island",
         dock: "free",
         expanded: false,
-        width: dragSession.layout.appearance === "jade" ? 214 : 354,
+        width: dragSession.layout.appearance === "jade" ? 314 : 354,
         height: dragSession.layout.appearance === "jade" ? 64 : 76,
         ...(dragSession.layout.appearance
           ? { appearance: dragSession.layout.appearance }
@@ -263,7 +263,7 @@ function dragWindow(action, origin) {
         x: Math.max(
           24,
           Math.min(
-            layout.appearance === "jade" ? 202 : 330,
+            layout.appearance === "jade" ? 302 : 330,
             origin?.x ?? point.x - bounds.x,
           ),
         ),
