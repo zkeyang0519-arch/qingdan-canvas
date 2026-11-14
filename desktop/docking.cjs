@@ -23,7 +23,7 @@ function restorePlacement(saved, work, appearance) {
     ? { dock, width: 64, height: 160 }
     : {
         dock,
-        width: appearance === "jade" ? 214 : 354,
+        width: appearance === "jade" ? 314 : 354,
         height: appearance === "jade" ? 64 : 76,
       };
   if (appearance === "jade") layout.appearance = appearance;
@@ -37,7 +37,7 @@ function restorePlacement(saved, work, appearance) {
 
 function placementAtPoint(point, offset, work, appearance) {
   const dock = dockAtPoint(point, work);
-  const width = appearance === "jade" ? 214 : 354,
+  const width = appearance === "jade" ? 314 : 354,
     height = appearance === "jade" ? 64 : 76;
   const requested = side(dock)
     ? { width: 64, height: 160, dock }
@@ -137,7 +137,7 @@ function roundedRect(x, y, width, height, radius, squareSide) {
 
 function dockShape(bounds, layout, anchor, work) {
   if (layout.appearance === "jade" && !side(layout.dock)) {
-    const width = Math.min(190, bounds.width - 24);
+    const width = Math.min(290, bounds.width - 24);
     const capsule = roundedRect(
       Math.round((bounds.width - width) / 2),
       12,
