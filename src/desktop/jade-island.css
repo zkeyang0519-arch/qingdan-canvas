@@ -126,34 +126,18 @@
     transform: none;
   }
 }
-.dynamic-island[data-appearance="jade"] .island-current {
+.dynamic-island[data-appearance="jade"] .island-list-heading {
   position: relative;
   margin-bottom: 6px;
-  padding-bottom: 18px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--island-line);
 }
-.dynamic-island[data-appearance="jade"] .island-current-meta {
+.dynamic-island[data-appearance="jade"] .island-list-meta {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  margin: 0 25px 9px 0;
+  margin: 0 25px 0 0;
   color: #75876b;
-  font-size: 11px;
-}
-.dynamic-island[data-appearance="jade"] .island-current h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 500;
-  line-height: 1.65;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.dynamic-island[data-appearance="jade"] .island-current-lock {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 8px;
-  color: var(--island-muted);
   font-size: 11px;
 }
 .desktop-island-workspace
@@ -251,37 +235,6 @@
 .dynamic-island[data-appearance="jade"] .island-close {
   min-height: 26px;
   padding: 3px 0 3px 8px;
-}
-.dynamic-island[data-appearance="jade"] .island-task-controls {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 22px;
-  padding-top: 16px;
-  margin-top: 13px;
-  border-top: 1px solid var(--island-line);
-}
-.dynamic-island[data-appearance="jade"] .island-task-controls button {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  color: #718866;
-  background: transparent;
-}
-.dynamic-island[data-appearance="jade"] .island-task-controls .island-finish {
-  display: flex;
-  justify-content: center;
-  gap: 7px;
-  width: 120px;
-  border-radius: 19px;
-  color: #f6faee;
-  background: #69875b;
-  font-size: 12px;
-  box-shadow: 0 3px 7px #516a4224;
 }
 .dynamic-island[data-appearance="jade"] .island-options {
   position: relative;
@@ -436,11 +389,6 @@
     .island-options > summary
   ):hover {
   background-color: #dce7d654;
-}
-.dynamic-island[data-appearance="jade"]
-  .island-task-controls
-  .island-finish:not(:disabled):hover {
-  background: #5c7c51;
 }
 .dynamic-island[data-appearance="jade"] .island-add:not(:disabled):hover {
   background: #577b60;

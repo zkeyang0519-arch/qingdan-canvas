@@ -7,6 +7,7 @@ import {
   wakeInstalledDesktop,
   probeInstalledDesktop,
   desktopDownloadPage,
+  desktopPreviewSelected,
 } from "./online-launch.js";
 
 const localEntry = "http://127.0.0.1:8790/app";
@@ -66,6 +67,7 @@ async function requestLaunch(origin, accountId, roomId, signal) {
 }
 
 export default function DesktopLaunchButton({ user, room }) {
+  const preview = desktopPreviewSelected();
   const accountId = user?.id;
   const roomId = room?.id;
   const context = useRef({ accountId, roomId });
@@ -97,8 +99,8 @@ export default function DesktopLaunchButton({ user, room }) {
     if (!accountId || !roomId || busyRef.current) return;
     const origin = window.location.origin;
     const online = window.location.protocol === "https:";
-    if (online && wake) wakeInstalledDesktop();
-    if (!localOrigins.has(origin) && !online) {
+    if ((online || preview) && wake) wakeInstalledDesktop();
+    if (!localOrigins.has(origin) && !online && !preview) {
       setNotice({
         kind: "info",
         text: "轻岛需要从这台电脑的本机入口启动。请打开本机入口，并登录同一账号。",
@@ -120,7 +122,7 @@ export default function DesktopLaunchButton({ user, room }) {
     setProgress("正在检查轻岛安装和版本…");
     try {
       let result;
-      if (online)
+      if (online || preview)
         result = await requestOnlineLaunch(
           accountId,
           roomId,
@@ -141,7 +143,7 @@ export default function DesktopLaunchButton({ user, room }) {
         setNotice({
           kind: "error",
           text: error.message,
-          localLink: !online,
+          localLink: !online && !preview,
           needsInstall: error.needsInstall === true,
         });
     } finally {
@@ -191,7 +193,7 @@ export default function DesktopLaunchButton({ user, room }) {
       <button
         type="button"
         className="desktop-launch-button"
-        aria-label="轻岛"
+        aria-label={preview ? "轻岛测试版" : "轻岛"}
         aria-busy={busy}
         disabled={busy || !accountId || !roomId}
         title="在其他软件上方显示并操作待办"
@@ -202,7 +204,7 @@ export default function DesktopLaunchButton({ user, room }) {
         ) : (
           <Monitor size={15} />
         )}
-        <span>{busy ? "正在打开…" : "轻岛"}</span>
+        <span>{busy ? "正在打开…" : preview ? "轻岛测试版" : "轻岛"}</span>
       </button>
       {(busy || notice) &&
         createPortal(
@@ -225,7 +227,11 @@ export default function DesktopLaunchButton({ user, room }) {
               {!busy && notice.needsInstall && (
                 <div className="desktop-install-actions">
                   <a
-                    href={desktopDownloadPage}
+                    href={
+                      preview
+                        ? "https://github.com/zkeyang0519-arch/qingdan-canvas/actions/workflows/tauri-preview.yml"
+                        : desktopDownloadPage
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={() =>

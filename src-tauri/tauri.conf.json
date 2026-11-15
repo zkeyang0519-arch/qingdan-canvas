@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Qingdao Preview",
+  "version": "0.4.0-preview.2",
+  "identifier": "cn.zky.qingdao.preview",
+  "build": {
+    "beforeBuildCommand": "node scripts/build-tauri.mjs",
+    "beforeDevCommand": "node scripts/build-tauri.mjs",
+    "frontendDist": "../.tmp/tauri-web"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'"
+    }
+  },
+  "plugins": {
+    "deep-link": { "desktop": { "schemes": ["qingdao-preview"] } },
+    "updater": { "pubkey": "", "endpoints": [], "requireSignedVersion": true }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      }
+    },
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
+}

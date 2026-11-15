@@ -7,10 +7,7 @@ import React, {
 } from "react";
 import {
   CheckCheck,
-  Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   CornerDownLeft,
   LockKeyhole,
   Pin,
@@ -77,7 +74,6 @@ export default function DynamicIsland({
     onDraftsChange?.(next);
   };
   const [feedback, setFeedback] = useState("");
-  const [focusedTask, setFocusedTask] = useState(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const [offset, setOffset] = useState(top ?? 76);
   const dock = useRef(null),
@@ -99,9 +95,6 @@ export default function DynamicIsland({
   const completed = tasks.filter((task) => task.block.done).length;
   const nextTask = tasks.find((task) => !task.block.done);
   const pendingTasks = tasks.filter((task) => !task.block.done);
-  const taskId = (task) => `${task.note.id}/${task.key}`;
-  const currentTask =
-    pendingTasks.find((task) => taskId(task) === focusedTask) || nextTask;
   const animal = useAnimalRunner(
     jade && !hidden && !desktop.dragging && pendingTasks.length > 0,
     island,
@@ -245,7 +238,6 @@ export default function DynamicIsland({
       { record: false, navigation: true },
     );
     setFeedback("");
-    setFocusedTask(null);
     setShowCompleted(false);
   };
   const toggleTask = (task, done = !task.block.done) => {
@@ -321,12 +313,6 @@ export default function DynamicIsland({
       : tasks.length
         ? "都完成了，休息一下"
         : "顺手记一件事";
-  const moveTask = (step) => {
-    const index = pendingTasks.indexOf(currentTask);
-    const target =
-      pendingTasks[(index + step + pendingTasks.length) % pendingTasks.length];
-    if (target) setFocusedTask(taskId(target));
-  };
   const projectControls = (
     <div className="island-panel-heading">
       <select
@@ -361,7 +347,7 @@ export default function DynamicIsland({
   const visibleTasks = jade
     ? showCompleted
       ? tasks.filter((task) => task.block.done)
-      : pendingTasks.filter((task) => task !== currentTask)
+      : pendingTasks
     : tasks;
   return (
     <div
@@ -520,30 +506,15 @@ export default function DynamicIsland({
                     {projectControls}
                   </div>
                 </details>
-                <header className="island-current">
-                  <div className="island-current-meta">
-                    <span>{showCompleted ? "完成记录" : "当前任务"}</span>
+                <header className="island-list-heading">
+                  <div className="island-list-meta">
+                    <span>{showCompleted ? "完成记录" : "项目待办"}</span>
                     <span>
                       {showCompleted
                         ? `${completed} 件已完成`
                         : `${pendingTasks.length} 件待办`}
                     </span>
                   </div>
-                  <h3>
-                    {showCompleted
-                      ? "已完成"
-                      : currentTask
-                        ? blockText(currentTask.block) || "未命名待办"
-                        : tasks.length
-                          ? "都完成了，休息一下。"
-                          : "记下第一件小事。"}
-                  </h3>
-                  {currentTask?.locked && !showCompleted && (
-                    <span className="island-current-lock">
-                      <LockKeyhole size={12} />
-                      已锁定
-                    </span>
-                  )}
                 </header>
               </>
             ) : (
@@ -584,13 +555,15 @@ export default function DynamicIsland({
                     </label>
                   );
                 })
-              ) : !jade || showCompleted ? (
+              ) : (
                 <div className="island-empty">
                   {jade && showCompleted
                     ? "还没有已完成事项。"
-                    : "还没有待办，记下第一件小事。"}
+                    : jade && tasks.length
+                      ? "都完成了，休息一下。"
+                      : "还没有待办，记下第一件小事。"}
                 </div>
-              ) : null}
+              )}
             </div>
             <form
               className="island-compose"
@@ -684,48 +657,6 @@ export default function DynamicIsland({
               <p className="island-sync">
                 更新本机代码并重启轻岛，即可使用雾玉双舱和动物奔跑。
               </p>
-            )}
-            {jade && (
-              <footer
-                className="island-task-controls"
-                aria-label="当前任务操作"
-              >
-                <button
-                  type="button"
-                  aria-label="上一项任务"
-                  disabled={showCompleted || pendingTasks.length < 2}
-                  onClick={() => moveTask(-1)}
-                >
-                  <ChevronLeft size={17} />
-                </button>
-                <button
-                  type="button"
-                  className="island-finish"
-                  aria-label={
-                    currentTask
-                      ? `完成当前任务：${blockText(currentTask.block) || "未命名待办"}`
-                      : "完成这件"
-                  }
-                  disabled={
-                    showCompleted ||
-                    !currentTask ||
-                    !writable ||
-                    currentTask.locked
-                  }
-                  onClick={() => toggleTask(currentTask, true)}
-                >
-                  <Check size={15} />
-                  <span>完成这件</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label="下一项任务"
-                  disabled={showCompleted || pendingTasks.length < 2}
-                  onClick={() => moveTask(1)}
-                >
-                  <ChevronRight size={17} />
-                </button>
-              </footer>
             )}
           </div>
         </Surface>

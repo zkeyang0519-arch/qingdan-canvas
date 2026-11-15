@@ -8,3 +8,6 @@ dist/
 coverage/
 # Local design previews, screenshots and verification exports.
 /output/
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/generated/

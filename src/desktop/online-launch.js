@@ -1,5 +1,23 @@
 const native = "http://127.0.0.1:8791/api/local-desktop/online/";
 const agent = "http://127.0.0.1:8790/api/local-desktop/online/";
+const preview = "http://127.0.0.1:8792/api/local-desktop/online/";
+export function desktopPreviewSelected() {
+  if (typeof window === "undefined") return false;
+  try {
+    const channel = new URL(window.location.href).searchParams.get("desktop");
+    if (channel === "tauri-preview")
+      window.sessionStorage.setItem("qingdan.desktop.channel", channel);
+    if (channel === "stable")
+      window.sessionStorage.removeItem("qingdan.desktop.channel");
+    return (
+      channel === "tauri-preview" ||
+      window.sessionStorage.getItem("qingdan.desktop.channel") ===
+        "tauri-preview"
+    );
+  } catch {
+    return false;
+  }
+}
 export const desktopDownloadPage =
   "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/latest";
 export function wakeInstalledDesktop() {
@@ -8,7 +26,9 @@ export function wakeInstalledDesktop() {
   const frame = document.createElement("iframe");
   frame.hidden = true;
   frame.title = "打开轻岛";
-  frame.src = "qingdao://open";
+  frame.src = desktopPreviewSelected()
+    ? "qingdao-preview://open"
+    : "qingdao://open";
   document.body.append(frame);
   setTimeout(() => frame.remove(), 10000);
 }
@@ -70,13 +90,16 @@ const pause = (ms, signal) =>
   });
 export async function probeInstalledDesktop(signal) {
   return post(
-    native + "probe",
+    (desktopPreviewSelected() ? preview : native) + "probe",
     {},
     AbortSignal.any([signal, AbortSignal.timeout(1500)]),
   );
 }
 async function prepareLaunch(accountId, roomId, signal) {
-  for (const local of [native, agent, native]) {
+  const endpoints = desktopPreviewSelected()
+    ? [preview, preview]
+    : [native, agent, native];
+  for (const local of endpoints) {
     signal.throwIfAborted();
     try {
       const prepared = await post(
@@ -143,6 +166,15 @@ export async function requestOnlineLaunch(
       pollController.abort();
     };
     signal.addEventListener("abort", stopProgress, { once: true });
+    const cancelPreview = () => {
+      if (local !== preview) return;
+      void post(
+        local + "cancel",
+        { requestId: prepared.requestId },
+        AbortSignal.timeout(3000),
+      ).catch(() => {});
+    };
+    signal.addEventListener("abort", cancelPreview, { once: true });
     let result;
     try {
       result = await post(
@@ -152,6 +184,7 @@ export async function requestOnlineLaunch(
       );
     } finally {
       signal.removeEventListener("abort", stopProgress);
+      signal.removeEventListener("abort", cancelPreview);
       stopProgress();
     }
     if (result?.started !== true || result?.applied !== true)

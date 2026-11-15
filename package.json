@@ -7,6 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
+    "tauri:dev": "node scripts/tauri.mjs dev",
+    "tauri:build": "node scripts/tauri.mjs build",
+    "tauri:check": "node scripts/tauri.mjs check",
     "dev": "node scripts/dev-agent.mjs",
     "dev:agent": "node scripts/dev-agent.mjs",
     "desktop": "node scripts/desktop.mjs",
@@ -63,6 +66,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261019.1",
     "@tailwindcss/vite": "^4.1.0",
+    "@tauri-apps/cli": "^2.12.4",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "45.3.2",
     "electron-builder": "26.18.0",

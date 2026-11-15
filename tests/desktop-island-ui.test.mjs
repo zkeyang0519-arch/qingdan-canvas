@@ -333,24 +333,34 @@ test("旧桌面组件保留可操作的原布局，升级提示不会发送不�
   );
 });
 
-test("雾玉双舱显示所有待办，底部切换和完成作用于当前任务，已完成可恢复", async (t) => {
+test("收起显示待办摘要，悬浮展开按原顺序列出全部待办，逐条完成和恢复", async (t) => {
   const { host, controls } = await mount(t, { desktop: true, count: 36 });
-  await click(button(host, "展开轻岛"));
   assert.equal(
-    host.querySelector(".island-current h3").textContent,
+    host.querySelector(".island-summary").textContent,
     "桌面真实待办",
   );
-  assert.equal(host.querySelectorAll(".island-task-row").length, 35);
-  assert.match(
-    host.querySelector(".island-task-list").textContent,
-    /桌面待办 36/,
+  await act(async () => {
+    host.querySelector(".dynamic-island").dispatchEvent(
+      new MouseEvent("pointerover", {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
+  assert.equal(host.querySelector(".island-summary").textContent, "项目待办");
+  assert.equal(host.querySelector(".island-current"), null);
+  assert.equal(host.querySelector(".island-task-controls"), null);
+  assert.deepEqual(
+    [...host.querySelectorAll(".island-task-text")].map(
+      (item) => item.textContent,
+    ),
+    Array.from({ length: 36 }, (_, i) =>
+      i ? `桌面待办 ${i + 1}` : "桌面真实待办",
+    ),
   );
-  await click(button(host, "下一项任务"));
-  assert.equal(
-    host.querySelector(".island-current h3").textContent,
-    "桌面待办 2",
-  );
-  await click(button(host, "完成这件"));
+  await click(host.querySelectorAll('input[type="checkbox"]')[1]);
   assert.equal(controls.state().objects[0].blocks[1].done, true);
   assert.equal(controls.state().objects[0].blocks[0].done, false);
   await click(button(host, "已完成 1"));
@@ -367,11 +377,7 @@ test("雾玉双舱显示所有待办，底部切换和完成作用于当前任�
       ),
   );
   assert.equal(controls.state().objects.length, 2);
-  assert.equal(host.querySelectorAll(".island-task-row").length, 36);
-  assert.equal(
-    host.querySelector(".island-panel").lastElementChild.className,
-    "island-task-controls",
-  );
+  assert.equal(host.querySelectorAll(".island-task-row").length, 37);
 });
 
 test("动物每十秒切换，隐藏及全部完成后暂停", async (t) => {
@@ -398,7 +404,7 @@ test("动物每十秒切换，隐藏及全部完成后暂停", async (t) => {
   delete document.hidden;
   await act(async () => document.dispatchEvent(new Event("visibilitychange")));
   await click(button(host, "展开轻岛"));
-  await click(button(host, "完成这件"));
+  await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(animal().dataset.playing, "false");
   const finished = animal().dataset.animal;
   await act(async () => t.mock.timers.tick(30000));
@@ -442,7 +448,7 @@ test("桌面拖动手柄独立于点击按钮，任务控件仍可操作", async
   );
   assert.equal(handle.closest("section").getAttribute("aria-label"), "轻岛");
   await click(button(host, "展开轻岛"));
-  await click(button(host, "完成这件"));
+  await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(controls.state().objects[0].blocks[0].done, true);
 });
 
@@ -511,7 +517,7 @@ test("待办、展开按钮与输入框不能拖动窗口，钉住状态跨拖�
   await click(button(host, "展开轻岛"));
   for (const target of [
     host.querySelector("textarea"),
-    button(host, "完成这件"),
+    host.querySelector('input[type="checkbox"]'),
     button(host, "收起轻岛"),
   ]) {
     await pointer(target, "pointerdown", 50, 50);
@@ -631,7 +637,7 @@ test("桌面工作区复用真实待办与固定身份，退出等待保存且�
     "setup quit handler must not shadow workspace handler",
   );
   await click(button(host, "展开轻岛"));
-  await click(button(host, "完成这件"));
+  await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(controls.state().objects[0].blocks[0].done, true);
   await type(host.querySelector("textarea"), "本地输入");
   const result = await [...calls.handlers][0]();
@@ -824,7 +830,7 @@ test("收起的顶部和侧签显示首条未完成待办，完成后自动前�
     "桌面真实待办",
   );
   await click(button(host, "展开轻岛"));
-  await click(button(host, "完成这件"));
+  await click(host.querySelector('input[type="checkbox"]'));
   await click(button(host, "收起轻岛"));
   assert.equal(host.querySelector(".island-summary").textContent, "桌面待办 2");
   await act(async () => {
@@ -849,7 +855,7 @@ test("桌面冲突与连接错误有恢复操作，锁定任务不被写入", as
   });
   await click(button(host, "展开轻岛"));
   assert.match(host.textContent, /版本冲突/);
-  assert.equal(button(host, "完成这件").disabled, true);
+  assert.equal(host.querySelector('input[type="checkbox"]').disabled, true);
   await click(button(host, "保留我的冲突内容"));
   await click(button(host, "使用共享冲突内容"));
   assert.deepEqual(controls.choices, ["local", "remote"]);
