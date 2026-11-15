@@ -87,6 +87,17 @@ const invoke = (op, data = null) =>
     `window.__TAURI_INTERNALS__.invoke('desktop',${JSON.stringify({ op, data })})`,
   );
 const text = () => c.evaluate("document.body.innerText");
+const cloudSnapshot = async () =>
+  JSON.stringify(
+    await (
+      await fetch(origin + "/api/rooms/room-a/snapshot", {
+        headers: {
+          Cookie: "qd_session=" + "a".repeat(64),
+          "X-QD-Account": "alice",
+        },
+      })
+    ).json(),
+  );
 const identity = () =>
   c.evaluate("fetch('/api/session').then(r=>r.json()).then(r=>r.user?.id)");
 async function stop() {
@@ -224,6 +235,50 @@ try {
     "Task not synced to real Worker",
   );
   pass("desktop edit persisted through real WebSocket/DO snapshot");
+  await c.evaluate("document.querySelector('input[type=checkbox]').click()");
+  await waitFor(
+    async () => (await cloudSnapshot()).includes('"done":true'),
+    "Completion not synchronized",
+  );
+  await c.evaluate(
+    "[...document.querySelectorAll('button')].find(b=>b.innerText==='已完成 1').click()",
+  );
+  await c.evaluate(
+    "document.querySelector('input[type=checkbox]:checked').click()",
+  );
+  await waitFor(
+    async () => !(await cloudSnapshot()).includes('"done":true'),
+    "Restoration not synchronized",
+  );
+  await c.evaluate(
+    "[...document.querySelectorAll('button')].find(b=>b.innerText==='返回待办').click()",
+  );
+  pass("task completion and restoration are synchronized with the real Worker");
+  await c.send("Network.enable");
+  await c.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await c.evaluate("window.__testSockets.forEach(socket=>socket.close())");
+  await pause(300);
+  await input("断网新增后恢复同步");
+  await c.evaluate("document.querySelector('[aria-label=添加待办]').click()");
+  await pause(600);
+  assert.ok(!(await cloudSnapshot()).includes("断网新增后恢复同步"));
+  assert.ok((await text()).includes("断网新增后恢复同步"));
+  await c.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await waitFor(
+    async () => (await cloudSnapshot()).includes("断网新增后恢复同步"),
+    "Offline draft did not synchronize after reconnection",
+  );
+  pass("offline edit stays local and synchronizes after network reconnection");
   await input("同账号交接和重启必须保留");
   await c.evaluate("window.__handoffMarker='unchanged'");
   assert.equal((await handoff()).status, 200);

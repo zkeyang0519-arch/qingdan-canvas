@@ -77,7 +77,18 @@ const options = convertV4MiniflareOptions({
             ".svg": "image/svg+xml",
             ".png": "image/png",
           }[path.extname(file)] || "application/octet-stream";
-        return new Response(await readFile(file), {
+        let contents = await readFile(file);
+        if (mime === "text/html") {
+          // Observe real sockets so the acceptance driver can close them while
+          // Chromium is offline. Production application scripts are unchanged.
+          contents = contents
+            .toString()
+            .replace(
+              "<head>",
+              "<head><script>{ const NativeSocket = window.WebSocket; window.__testSockets = []; window.WebSocket = class extends NativeSocket { constructor(...args) { super(...args); window.__testSockets.push(this); } }; }</script>",
+            );
+        }
+        return new Response(contents, {
           headers: { "Content-Type": mime },
         });
       } catch {

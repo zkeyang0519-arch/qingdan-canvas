@@ -110,7 +110,8 @@ node scripts/export-desktop-state.mjs --profile "D:\absolute\old-profile" --orig
 `scripts/test-tauri-native.mjs` 通过实际 WebView2 CDP 完成：
 
 - 原生授权交接、身份/画布确认、HttpOnly Cookie、一次性请求和状态归属。
-- 新增待办经真实 WebSocket / DO 同步，独立 HTTP 快照确认。
+- 新增、完成和恢复待办经真实 WebSocket / DO 同步，独立 HTTP 快照确认。
+- 已打开的真实画布断网后仍可新增；关闭连接并模拟离线期间，服务端快照保持不变；恢复网络后新增内容同步成功。这不代表离线冷启动已支持。
 - 同账号同画布交接保持原页面及未提交输入。
 - 保存退出进程后重新启动，恢复 Cookie、上次画布和输入草稿。
 - 故意让账号 B 页面加载失败，确认恢复账号 A 的 Cookie 和画布；之后可正常切换 B。
