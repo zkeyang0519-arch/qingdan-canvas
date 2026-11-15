@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -61,6 +61,7 @@ test("packaged verification canvas completes/restores tasks and preserves restor
     },
     hide: async () => {},
   };
+  await mkdir(path.resolve(".tmp"), { recursive: true });
   const directory = await mkdtemp(path.resolve(".tmp/tauri-preview-test-"));
   let preview;
   t.after(async () => {

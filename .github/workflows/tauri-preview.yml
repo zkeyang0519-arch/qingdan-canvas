@@ -44,7 +44,7 @@ jobs:
       - run: npm run check
       - run: node --test tests/tauri-*.test.mjs tests/desktop-island-ui.test.mjs
       - run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-      - run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo test --release --locked --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: Qingdao-Preview-${{ matrix.target }}
