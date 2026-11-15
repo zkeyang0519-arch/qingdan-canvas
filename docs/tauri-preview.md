@@ -2,7 +2,7 @@
 
 本目录是 **独立验证版本，尚未达到正式替代 Electron 的验收条件**。当前版本 `0.4.0-preview.2`，应用标识 `cn.zky.qingdao.preview`；现有 Electron 打包、更新源、登录与草稿目录不被替换。
 
-第二版已实测 Windows WebView2 的账号交接、真实 Worker / WebSocket 同步、同画布保留输入、重启恢复、跨账号失败回退及备份导入。Mac 构建/实机、正式签名更新、断网首次加载等门槛仍需完成，不能称为功能体验完全等价。
+第二版已实测 Windows WebView2 的账号交接、真实 Worker / WebSocket 同步、同画布保留输入、重启恢复、跨账号失败回退、断网编辑恢复同步及备份导入。Windows x64、Mac Apple Silicon 和 Intel 构建与原生测试均已通过。Mac 实机、正式签名更新、断网首次加载等门槛仍需完成，不能称为功能体验完全等价。
 
 ## 启动与构建
 
@@ -78,7 +78,7 @@ node scripts/export-desktop-state.mjs --profile "D:\absolute\old-profile" --orig
 | 自动更新 | 验签及保存安装代码已接入；更新源/公钥未配置，实际发布安装待验收 |
 | 旧版登录和草稿迁移 | 已有便携备份导出/导入；实际 Electron 导出和 WebView2 导入分别通过，普通用户一键迁移尚未实现 |
 | 重启恢复上次真实画布 | 已实现并在实际进程保存退出、重启后验证账号、画布及未提交输入恢复 |
-| macOS | 配置 Apple Silicon / Intel 构建；本机 Windows 无法证明 Mac 编译、签名、公证或实机效果 |
+| macOS | Apple Silicon / Intel 均已在对应 Mac 云端环境成功编译、打包 DMG，通过 33 项桌面测试和 6 项原生测试；签名、公证和实机效果仍待验收 |
 
 ## 第一版记录：0.4.0-preview.1（2026-11-15）
 
@@ -132,4 +132,18 @@ node scripts/test-tauri-native.mjs "D:\absolute\Qingdao-Acceptance.exe"
 
 分发包使用默认 feature 构建，不接受验收服务器的授权来源，也没有测试退出接口。最新测试记录和安装包见 `output/tauri-preview2/`。
 
-本机 Windows 发布构建和 NSIS 打包通过，原生 Rust 测试 **6/6**、类型检查及部署 dry-run 通过。本地工作区全仓 `npm test` **1655/1655** 通过（153 秒，无失败或取消）；日志 `.tmp/tauri-preview2-full-test.log`。本轮保留了既有 Agent 测试修复，未将那些无关修改纳入迁移提交。安装包 **13,730,663 字节（13.73 MB / 13.09 MiB）**，独立程序 17,994,752 字节；SHA-256 记录在产物目录。系统 WebView2 和应用资料占用不包含在安装包体积内。云端 Mac 构建的最终结果需以实际运行记录为准。
+本机 Windows 发布构建和 NSIS 打包通过，原生 Rust 测试 **6/6**、类型检查及部署 dry-run 通过。本地工作区全仓 `npm test` **1655/1655** 通过（153 秒，无失败或取消）；日志 `.tmp/tauri-preview2-full-test.log`。本轮保留了既有 Agent 测试修复，未将那些无关修改纳入迁移提交。安装包 **13,730,663 字节（13.73 MB / 13.09 MiB）**，独立程序 17,994,752 字节；SHA-256 记录在产物目录。系统 WebView2 和应用资料占用不包含在安装包体积内。
+
+[三平台云端构建记录](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/43728356029) 对应源码 `c6ebe5e`：Windows x64、Mac Apple Silicon、Mac Intel 各通过类型检查、33 项桌面 JavaScript 测试和 6 项 Rust 测试，并上传 NSIS / DMG。Mac 使用 `macos-15` 与 `macos-15-intel` 原生架构环境。后续提交仅扩展本机原生验收脚本和记录，未改动分发程序代码。
+
+第二版交付目录为 `output/tauri-preview2/`：
+
+| 平台 | 安装包 | 字节 | MB | MiB |
+| --- | --- | ---: | ---: | ---: |
+| Windows x64 | `Qingdao-Preview-0.4.0-preview.2-x64-Setup.exe` | 13,730,663 | 13.73 | 13.09 |
+| Mac Apple Silicon | `Qingdao-Preview-0.4.0-preview.2-mac-AppleSilicon.dmg` | 14,317,815 | 14.32 | 13.65 |
+| Mac Intel | `Qingdao-Preview-0.4.0-preview.2-mac-Intel.dmg` | 14,427,135 | 14.43 | 13.76 |
+
+Mac 下载归档已与 GitHub Artifact 的 SHA-256 一致性校验；解压后各安装包的 SHA-256 见同目录 `artifacts.json`。Windows 相比此前 132,874,335 字节的 Electron 0.3.2 安装包缩小约 **89.67%**，此结果只代表当前验证版。`native-account.png` 为 Windows 实际 WebView2 截图，`native-acceptance.json` 记录 9 组原生验收结果。所有验收辅助程序及调试端口已退出；未安装第二版覆盖用户现有应用。
+
+这次构建只上传验证产物，未创建正式 Release、未合入 main，也未部署线上网页。自动更新签名、公证、一键迁移、线上按钮冷唤起、离线冷启动，以及 Mac / 多屏实机交互仍是正式替换前的验收项目。
