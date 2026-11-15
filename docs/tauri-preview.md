@@ -131,4 +131,4 @@ node scripts/test-tauri-native.mjs "D:\absolute\Qingdao-Acceptance.exe"
 
 分发包使用默认 feature 构建，不接受验收服务器的授权来源，也没有测试退出接口。最新测试记录和安装包见 `output/tauri-preview2/`。
 
-本机 Windows 发布构建和 NSIS 打包通过，原生 Rust 测试 **6/6**、类型检查及部署 dry-run 通过。安装包 **13,730,663 字节（13.73 MB / 13.09 MiB）**，独立程序 17,994,752 字节；SHA-256 记录在产物目录。系统 WebView2 和应用资料占用不包含在安装包体积内。全仓回归与云端 Mac 构建的最终结果需以实际运行记录为准。
+本机 Windows 发布构建和 NSIS 打包通过，原生 Rust 测试 **6/6**、类型检查及部署 dry-run 通过。本地工作区全仓 `npm test` **1655/1655** 通过（153 秒，无失败或取消）；日志 `.tmp/tauri-preview2-full-test.log`。本轮保留了既有 Agent 测试修复，未将那些无关修改纳入迁移提交。安装包 **13,730,663 字节（13.73 MB / 13.09 MiB）**，独立程序 17,994,752 字节；SHA-256 记录在产物目录。系统 WebView2 和应用资料占用不包含在安装包体积内。云端 Mac 构建的最终结果需以实际运行记录为准。
