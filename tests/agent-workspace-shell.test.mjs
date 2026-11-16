@@ -125,7 +125,7 @@ test.afterEach(async () => {
   await act(async () => root.unmount());
 });
 
-test("workspace counts saved nonblank checklist tasks, excluding editing rows and prose", async () => {
+test("workspace counts saved nonblank pending checklist tasks, excluding completed tasks, editing rows and prose", async () => {
   const task = (text, done = false, noteKind = "checklist") => ({
     note: { noteKind },
     block: { done, runs: [{ type: "text", text }] },
@@ -153,7 +153,12 @@ test("workspace counts saved nonblank checklist tasks, excluding editing rows an
     document.querySelector(".agent-pane-count").textContent,
     "1 项待办",
   );
-  assert.match(document.body.textContent, /1 项待办 · 1 项已完成/);
+  assert.equal(
+    document
+      .querySelector(".agent-project-item small")
+      .getAttribute("aria-label"),
+    "1 项未完成",
+  );
 });
 
 test("formal workspace scopes every panel to the selected project and preserves chat node on mobile tab changes", async () => {

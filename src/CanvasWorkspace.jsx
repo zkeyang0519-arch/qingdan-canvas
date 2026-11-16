@@ -681,7 +681,7 @@ export default function CanvasWorkspace({
         onToast={showToast}
       >
         <div
-          className={`app-shell cloud-canvas${agentMode ? " agent-mode" : ""}`}
+          className={`app-shell cloud-canvas${agentMode ? " agent-mode" : arranged ? " arranged-mode" : " canvas-mode"}`}
           onCompositionStartCapture={() => {
             composing.current = true;
           }}

@@ -1,0 +1,797 @@
+/* Luma / Neutral presentation. Existing controls, canvas geometry and state stay in their owning components. */
+@font-face {
+  font-family: "Qingdan Rounded";
+  src: url("/fonts/resource-han-rounded/ResourceHanRoundedCN-Regular.woff2")
+    format("woff2");
+  font-weight: 100 449;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Qingdan Rounded";
+  src: url("/fonts/resource-han-rounded/ResourceHanRoundedCN-Medium.woff2")
+    format("woff2");
+  font-weight: 450 900;
+  font-style: normal;
+  font-display: swap;
+}
+:root {
+  --font-sans: "Qingdan Rounded", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --luma-ink: #262725;
+  --luma-muted: #858581;
+  --luma-line: #e9e9e6;
+  --luma-soft: #f7f7f6;
+  --luma-canvas: #f4f4f2;
+  --ink: var(--luma-ink);
+  --muted: var(--luma-muted);
+  --line: var(--luma-line);
+  --green: #646d5c;
+  --canvas-background: var(--luma-canvas);
+  --canvas-grid: #d7d7d3;
+  --frame-border: #cecec7;
+  --frame-active: #949b8b;
+  font-family: var(--font-sans);
+  color: var(--luma-ink);
+}
+body,
+button,
+input,
+textarea,
+select {
+  font-family: var(--font-sans);
+}
+.cloud-canvas {
+  color: var(--luma-ink);
+  background: var(--luma-canvas);
+}
+.cloud-canvas .topbar {
+  height: 64px;
+  padding: 0 22px;
+  background: #fff;
+  border-bottom: 1px solid var(--luma-line);
+  gap: 14px;
+}
+.cloud-canvas .nav-start {
+  gap: 11px;
+}
+.cloud-canvas .brand {
+  font-weight: 500;
+  letter-spacing: 0;
+  font-size: 20px;
+  gap: 10px;
+}
+.cloud-canvas .brand-mark {
+  width: 29px;
+  height: 31px;
+  border-radius: 9px;
+  background: var(--luma-ink);
+  transform: rotate(-6deg);
+}
+.cloud-canvas .brand-mark::before {
+  top: 11px;
+  width: 15px;
+}
+.cloud-canvas .brand-mark::after {
+  top: 18px;
+  width: 9px;
+}
+.cloud-canvas .board-title {
+  font-size: 12px;
+  color: #4a4b46;
+  font-weight: 400;
+  max-width: 180px;
+}
+.cloud-canvas .sync-indicator {
+  font-size: 10px;
+  color: var(--luma-muted);
+}
+.cloud-canvas .view-mode-switch {
+  border: 0;
+  padding: 4px;
+  border-radius: 24px;
+  background: var(--luma-soft);
+  gap: 3px;
+}
+.cloud-canvas .view-mode-switch button {
+  min-width: 64px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 20px;
+  color: #858581;
+  font-size: 12px;
+  gap: 6px;
+}
+.cloud-canvas .view-mode-switch button[aria-pressed="true"] {
+  background: #fff;
+  color: var(--luma-ink);
+  box-shadow: 0 1px 4px #00000008;
+}
+.cloud-canvas .nav-end {
+  gap: 7px;
+}
+.cloud-canvas .nav-end .icon-button,
+.cloud-canvas .nav-start .icon-button {
+  color: #757670;
+  border-radius: 10px;
+}
+.cloud-canvas .icon-button:hover:not(:disabled) {
+  background: var(--luma-soft);
+  color: var(--luma-ink);
+}
+.cloud-canvas .nav-end :is(.help-button, .ops-nav-entry, .share-button) {
+  border-radius: 18px;
+  padding: 0 11px;
+  height: 33px;
+  font-size: 11px;
+}
+.cloud-canvas .nav-end .share-button {
+  background: #fff;
+  color: var(--luma-ink);
+  border: 1px solid var(--luma-line);
+  box-shadow: 0 1px 2px #00000004;
+}
+.cloud-canvas .nav-end .share-button:hover:not(:disabled) {
+  background: var(--luma-soft);
+}
+.cloud-canvas .presence > span {
+  color: var(--luma-muted);
+  font-size: 10px;
+}
+.cloud-canvas .avatar {
+  background: #dfe5d9;
+  color: #5b6653;
+}
+.cloud-canvas .avatar-1 {
+  background: #e9dfcc;
+  color: #8a7757;
+}
+.cloud-canvas .avatar-2 {
+  background: #e0deeb;
+  color: #78718d;
+}
+.cloud-canvas .canvas-toolbox {
+  padding: 7px;
+  gap: 3px;
+  border: 1px solid #e9e9e680;
+  border-radius: 26px;
+  background: #fffffff5;
+  box-shadow: 0 5px 25px #26272508;
+}
+.cloud-canvas .canvas-toolbox button {
+  height: 37px;
+  border-radius: 17px;
+  color: #55574f;
+}
+.cloud-canvas .canvas-toolbox button:hover:not(:disabled) {
+  background: var(--luma-soft);
+}
+.cloud-canvas .canvas-toolbox i {
+  background: var(--luma-line);
+}
+.cloud-canvas .canvas-view-tools {
+  background: #fffffff2;
+  border: 1px solid var(--luma-line);
+  border-radius: 22px;
+  box-shadow: none;
+}
+.cloud-canvas .canvas-view-tools button {
+  border-radius: 50%;
+}
+.cloud-canvas .note-paper {
+  border-radius: 19px;
+  box-shadow:
+    0 2px 4px #26272503,
+    0 8px 22px #26272505;
+  color: var(--luma-ink);
+}
+.cloud-canvas
+  .canvas:not(.arranged)
+  .canvas-object:is(.object-note, .object-image) {
+  rotate: var(--card-tilt, 0deg);
+}
+.cloud-canvas
+  .canvas:not(.arranged)
+  .canvas-object:is(
+    .is-selected,
+    .is-image-editing,
+    :has(.note-paper.is-editing)
+  ) {
+  rotate: 0deg;
+}
+.cloud-canvas .canvas.selection-tool:not(.space-pan):not(.is-dragging) {
+  cursor: crosshair;
+}
+.cloud-canvas .canvas-object {
+  cursor: default;
+}
+.cloud-canvas
+  .canvas:not(.arranged)
+  .object-frame:not(.inspiration-board)
+  .group-frame {
+  background: #e9ece580;
+  border: 1px solid #d5dbce;
+  border-radius: 19px;
+}
+.cloud-canvas .frame-title-input {
+  width: 200px;
+  max-width: 60%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid #a5b19b;
+  background: #ffffffb3;
+  border-radius: 5px 5px 0 0;
+  padding: 3px 6px;
+  font-size: 13px;
+  outline: none;
+}
+.cloud-canvas .frame-rename {
+  opacity: 0;
+  border-radius: 5px;
+}
+.cloud-canvas
+  .object-frame:is(:hover, :focus-within, .is-selected)
+  .frame-rename {
+  opacity: 1;
+}
+.cloud-canvas .canvas-selection-actions,
+.cloud-canvas .canvas-gesture-tools {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  border: 1px solid #e4e7df;
+  background: #fffffff5;
+  box-shadow: 0 5px 20px #2627250c;
+  border-radius: 16px;
+  padding: 5px;
+  gap: 5px;
+  z-index: 160;
+  cursor: default;
+}
+.cloud-canvas .canvas-selection-actions > span {
+  font-size: 11px;
+  color: #8b9283;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.cloud-canvas .canvas-selection-actions button,
+.cloud-canvas .canvas-gesture-tools button {
+  gap: 5px;
+  border: 0;
+  border-radius: 11px;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: transparent;
+  color: #77816d;
+}
+.cloud-canvas .canvas-selection-actions button:not(.selection-dismiss) {
+  background: #30352a;
+  color: #fff;
+}
+.cloud-canvas .canvas-selection-actions .selection-dismiss {
+  padding: 8px;
+}
+.cloud-canvas .canvas-gesture-tools {
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.cloud-canvas .canvas-gesture-tools button[aria-pressed="true"] {
+  background: #eef1e9;
+  color: #3f4935;
+}
+.cloud-canvas .canvas-gesture-tools button:hover {
+  background: #f2f4ee;
+}
+.cloud-canvas .note-paper.color-sage {
+  background: #edf1e8;
+}
+.cloud-canvas .note-paper.color-sand {
+  background: #f1edda;
+}
+.cloud-canvas .note-paper.color-rose {
+  background: #f4e9e4;
+}
+.cloud-canvas .note-paper.color-blue {
+  background: #e8edf2;
+}
+.cloud-canvas .note-paper.color-lavender {
+  background: #ece9f1;
+}
+.cloud-canvas .note-block input {
+  accent-color: #6d7864;
+  border-radius: 5px;
+}
+.cloud-canvas .frame-heading {
+  color: #6b6d63;
+}
+.cloud-canvas .object-image img {
+  border-radius: 17px;
+}
+.cloud-canvas .collection-icon {
+  border-radius: 19px;
+  color: #66705d;
+}
+.cloud-canvas .canvas-welcome {
+  color: #92958b;
+}
+.cloud-canvas .button,
+.cloud-canvas .primary,
+.cloud-canvas .secondary {
+  border-radius: 12px;
+}
+.cloud-canvas .primary {
+  background: var(--luma-ink);
+  border-color: var(--luma-ink);
+  color: #fff;
+}
+.cloud-canvas .primary:hover:not(:disabled) {
+  background: #42433f;
+}
+
+/* Arranged mode keeps both existing independently interactive panes. */
+.cloud-canvas .arranged-workspace {
+  padding: 0 max(24px, calc((100vw - 1180px) / 2)) 28px;
+  color: var(--luma-ink);
+  background: var(--luma-canvas);
+}
+.cloud-canvas .arranged-workspace .project-navigation {
+  min-height: 52px;
+  margin: 0 calc(-1 * max(24px, (100vw - 1180px) / 2)) 0;
+  padding: 0 24px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--luma-line);
+  background: #fff;
+}
+.cloud-canvas .project-tabs {
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+}
+.cloud-canvas .project-tab-shell {
+  flex: 0 0 auto;
+  min-width: 100px;
+  max-width: 245px;
+  height: 33px;
+  padding: 0 4px 0 0;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  color: #858581;
+  box-shadow: none;
+  gap: 3px;
+}
+.cloud-canvas .project-tab-shell + .project-tab-shell {
+  margin-left: 0;
+}
+.cloud-canvas .project-tab-shell[data-selected="true"] {
+  height: 33px;
+  background: var(--luma-soft);
+  color: var(--luma-ink);
+  border-color: transparent;
+  box-shadow: none;
+}
+.cloud-canvas .project-tab-shell:hover {
+  background: var(--luma-soft);
+}
+.cloud-canvas .project-tab {
+  border-radius: 20px;
+  padding: 0 7px 0 12px;
+  gap: 8px;
+}
+.cloud-canvas .project-tab > svg {
+  width: 11px;
+  height: 11px;
+  color: #9ca78e;
+}
+.cloud-canvas .project-tab-title {
+  font-size: 11px;
+}
+.cloud-canvas .project-tab-count {
+  font-size: 9px;
+  padding: 1px 5px;
+  background: #fff;
+  color: var(--luma-muted);
+}
+.cloud-canvas .project-tab-menu {
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  color: #96968e;
+}
+.cloud-canvas .project-tab-add {
+  margin: 0;
+  color: #76786f;
+  border-radius: 50%;
+}
+.cloud-canvas .arranged-toolbar {
+  min-height: 82px;
+  margin-bottom: 0;
+  gap: 16px;
+}
+.cloud-canvas .arranged-project-heading {
+  gap: 10px;
+  color: var(--luma-ink);
+}
+.cloud-canvas .arranged-project-heading > svg {
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  border-radius: 11px;
+  background: #e9dfcc;
+  color: #968463;
+}
+.cloud-canvas .arranged-project-heading > span {
+  max-width: 390px;
+  font-size: 20px;
+  font-weight: 500;
+}
+.cloud-canvas .arranged-toolbar button {
+  color: #7e8177;
+  border-radius: 10px;
+}
+.cloud-canvas .arranged-toolbar button:hover:not(:disabled) {
+  background: #eaece6;
+}
+.cloud-canvas .arranged-view-switch {
+  padding: 3px;
+  border-radius: 18px;
+  border: 1px solid var(--luma-line);
+  background: #fff;
+}
+.cloud-canvas .arranged-view-switch button {
+  border-radius: 14px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+.cloud-canvas .arranged-view-switch button[aria-pressed="true"] {
+  background: var(--luma-soft);
+  color: var(--luma-ink);
+  box-shadow: none;
+}
+.cloud-canvas .arranged-columns {
+  grid-template-columns: minmax(0, 1.42fr) minmax(0, 1fr);
+  gap: 22px;
+}
+.cloud-canvas .checklist-list,
+.cloud-canvas .checklist-empty {
+  border: 1px solid var(--luma-line);
+  border-radius: 22px;
+  box-shadow: 0 3px 14px #00000002;
+  background: #fff;
+  backdrop-filter: none;
+}
+.cloud-canvas .checklist-pane.is-active .checklist-list {
+  border-color: #dbdfd5;
+  box-shadow: 0 3px 14px #00000002;
+}
+.cloud-canvas .checklist-list .todo-panel,
+.cloud-canvas .checklist-list .done-panel {
+  background: #fff;
+}
+.cloud-canvas .checklist-list .todo-panel > header {
+  min-height: 70px;
+  padding: 18px 23px;
+  gap: 9px;
+  border-bottom: 1px solid #efefed;
+}
+.cloud-canvas .checklist-list .todo-panel h1 {
+  font-size: 15px;
+  font-weight: 500;
+  gap: 9px;
+  color: var(--luma-ink);
+  letter-spacing: 0;
+}
+.cloud-canvas .pending-panel h1::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a6b09a;
+}
+.cloud-canvas .done-panel h1::before {
+  content: "✓";
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid #a4ae99;
+  border-radius: 50%;
+  color: #8b9b7c;
+  font-size: 10px;
+}
+.cloud-canvas .checklist-list .todo-panel h1 small {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--luma-soft);
+  color: var(--luma-muted);
+  font-size: 11px;
+}
+.cloud-canvas .checklist-created-at {
+  font-size: 9px;
+  color: #999b92;
+  margin-left: auto;
+}
+.cloud-canvas .checklist-panel-actions {
+  margin-left: auto;
+  color: #898b81;
+  gap: 3px;
+}
+.cloud-canvas .checklist-clear-completed {
+  font-size: 10px;
+  color: #919488;
+}
+.cloud-canvas .checklist-list .todo-panel-body {
+  padding: 4px 18px 20px;
+}
+.cloud-canvas .checklist-list .todo-row {
+  min-height: 64px;
+  gap: 10px;
+  padding: 15px 7px;
+  border-bottom-color: #efefed;
+}
+.cloud-canvas .checklist-list .todo-row[data-deadline] {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid #efefed;
+  border-radius: 0;
+  background: transparent;
+}
+.cloud-canvas .checklist-list .todo-row:hover {
+  background: #fafaf8;
+}
+.cloud-canvas .checklist-list .todo-row[data-deadline]:hover {
+  background: #fafaf8;
+}
+.cloud-canvas .checklist-list .todo-row[data-deadline] .todo-deadline-glow {
+  inset: 0;
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  animation: none;
+}
+.cloud-canvas
+  .checklist-list
+  .todo-row[data-deadline="urgent"]
+  .todo-deadline-glow {
+  background: #fbf8ef;
+  border-left: 2px solid #d3b980;
+  opacity: 1;
+}
+.cloud-canvas
+  .checklist-list
+  .todo-row[data-deadline="late"]
+  .todo-deadline-glow {
+  background: #fcf3ef;
+  border-left: 2px solid #d5a596;
+}
+.cloud-canvas .checklist-list .todo-row.is-selected:not(:has(.block-editor)) {
+  background: #f1f3ec;
+}
+.cloud-canvas .checklist-list .todo-copy,
+.cloud-canvas .checklist-list .todo-copy .block-editor {
+  color: var(--luma-ink);
+  font-size: 14px;
+  line-height: 1.75;
+}
+.cloud-canvas .checklist-list .todo-created-meta {
+  color: #a5a69e;
+  font-size: 9px;
+}
+.cloud-canvas .checklist-list .todo-circle {
+  width: 17px;
+  height: 17px;
+  flex-basis: 17px;
+  border-radius: 6px;
+  border-color: #dedfd8;
+  background: #fff;
+}
+.cloud-canvas .checklist-list .todo-circle[aria-checked="true"] {
+  border-color: #9ca394;
+  background: #9ca394;
+  color: #fff;
+}
+.cloud-canvas .checklist-list .todo-row.is-done .todo-copy {
+  color: #96998e;
+}
+.cloud-canvas .checklist-list .todo-row-tools {
+  color: #a2a598;
+}
+.cloud-canvas .checklist-list .todo-row-tools button {
+  border-radius: 6px;
+}
+.cloud-canvas .checklist-list .todo-empty-row {
+  margin: 12px 7px 0;
+  padding: 15px 0;
+  border-top: 1px dashed #e4e6df;
+  color: #8a8f80;
+}
+.cloud-canvas .checklist-empty-done {
+  padding: 22px 7px;
+  color: #999d91;
+}
+.cloud-canvas .arranged-progress {
+  height: 3px;
+  margin: 15px 23px 10px;
+  border-radius: 8px;
+  background: #f1f2ed;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.cloud-canvas .arranged-progress > span {
+  display: block;
+  height: 100%;
+  background: #a1ad95;
+  border-radius: inherit;
+  transition: width 0.2s;
+}
+.cloud-canvas .arranged-calendar-panel {
+  border: 1px solid var(--luma-line);
+  border-radius: 22px;
+  background: #fff;
+  overflow: hidden;
+}
+
+@media (max-width: 1250px) {
+  .cloud-canvas .topbar {
+    padding: 0 16px;
+    gap: 10px;
+  }
+  .cloud-canvas .nav-start {
+    gap: 8px;
+  }
+  .cloud-canvas .nav-end {
+    gap: 4px;
+  }
+  .cloud-canvas .nav-end :is(.help-button, .ops-nav-entry, .share-button) {
+    padding: 0 8px;
+  }
+  .cloud-canvas .arranged-project-heading > span {
+    max-width: 280px;
+  }
+  .cloud-canvas .checklist-created-at {
+    display: none;
+  }
+}
+@media (max-width: 880px) {
+  .cloud-canvas .arranged-workspace {
+    padding: 0 18px 20px;
+  }
+  .cloud-canvas .arranged-workspace .project-navigation {
+    margin-inline: -18px;
+    padding-inline: 18px;
+  }
+  .cloud-canvas .arranged-columns {
+    gap: 15px;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+  .cloud-canvas .arranged-toolbar {
+    min-height: 74px;
+  }
+  .cloud-canvas .arranged-project-heading > span {
+    font-size: 17px;
+    max-width: 200px;
+  }
+  .cloud-canvas .checklist-list .todo-panel > header {
+    padding: 16px;
+  }
+  .cloud-canvas .checklist-list .todo-panel-body {
+    padding-inline: 11px;
+  }
+  .cloud-canvas .checklist-list .todo-copy {
+    font-size: 13px;
+  }
+}
+@media (max-width: 600px) {
+  .cloud-canvas .topbar {
+    padding: 0 10px;
+    gap: 6px;
+  }
+  .cloud-canvas .view-mode-switch {
+    gap: 0;
+    padding: 3px;
+  }
+  .cloud-canvas .view-mode-switch button {
+    min-width: 44px;
+    padding: 0 8px;
+    height: 29px;
+    font-size: 11px;
+  }
+  .cloud-canvas .canvas-toolbox {
+    padding: 5px;
+    gap: 0;
+    border-radius: 23px;
+    max-width: calc(100vw - 22px);
+  }
+  .cloud-canvas .canvas-toolbox button {
+    height: 33px;
+    border-radius: 16px;
+  }
+  .cloud-canvas .canvas-minimap {
+    bottom: 80px;
+  }
+  .cloud-canvas .canvas-gesture-tools {
+    bottom: 76px;
+  }
+  .cloud-canvas .canvas-gesture-tools button {
+    padding: 8px;
+  }
+  .cloud-canvas .canvas-gesture-tools button > span {
+    display: none;
+  }
+  .cloud-canvas .arranged-workspace {
+    padding: 0 12px 16px;
+  }
+  .cloud-canvas .arranged-workspace .project-navigation {
+    margin-inline: -12px;
+    padding-inline: 12px;
+    min-height: 49px;
+  }
+  .cloud-canvas .project-tab-shell {
+    min-width: 90px;
+    max-width: 190px;
+  }
+  .cloud-canvas .arranged-toolbar {
+    min-height: 94px;
+    height: auto;
+    flex-wrap: wrap;
+    align-content: center;
+    gap: 10px;
+    padding: 14px 1px;
+  }
+  .cloud-canvas .arranged-project-heading {
+    flex: 1 0 100%;
+  }
+  .cloud-canvas .arranged-project-heading > span {
+    max-width: calc(100vw - 150px);
+    font-size: 18px;
+  }
+  .cloud-canvas .arranged-project-heading > svg {
+    width: 29px;
+    height: 29px;
+    padding: 7px;
+  }
+  .cloud-canvas .arranged-toolbar > div:last-child {
+    margin-left: auto;
+  }
+  .cloud-canvas .arranged-columns {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(2, minmax(280px, 1fr));
+    gap: 15px;
+  }
+  .cloud-canvas .checklist-list,
+  .cloud-canvas .checklist-empty {
+    border-radius: 19px;
+  }
+  .cloud-canvas .checklist-list .todo-panel > header {
+    min-height: 60px;
+  }
+  .cloud-canvas .checklist-list .todo-panel h1 {
+    font-size: 14px;
+  }
+  .cloud-canvas .checklist-list .todo-row {
+    min-height: 60px;
+    padding: 13px 5px;
+  }
+  .cloud-canvas .checklist-list .todo-copy {
+    font-size: 13px;
+  }
+  .cloud-canvas .checklist-hover-text:not(.show-full-text) > .block-copy {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cloud-canvas .arranged-progress > span {
+    transition: none;
+  }
+}

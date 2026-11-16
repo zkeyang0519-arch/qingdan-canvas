@@ -22,8 +22,8 @@ import ProjectBindingPicker from "./ProjectBindingPicker.jsx";
 import { useWorkspaceDraft } from "./workspace-state.js";
 import "./experience.css";
 import "./agent.css";
-import "./noto-sans-sc.css";
 import "./workbench.css";
+import "./luma.css";
 
 function validTarget(target) {
   return (
@@ -384,82 +384,64 @@ function WorkspaceScope({
           })}
         </div>
       </aside>
+      <div className="agent-workspace-tools agent-workspace-utilities">
+        <div className="agent-project-tools" role="group" aria-label="项目工具">
+          <button
+            aria-label={projectPickerLabel}
+            title={projectPickerLabel}
+            onClick={openProjectPicker}
+          >
+            <Folder size={16} />
+            <span>{projectPickerLabel}</span>
+          </button>
+          <button
+            aria-label="打开项目摘要"
+            title="项目摘要"
+            onClick={() => {
+              setProjectPickerOpen(false);
+              setSummaryOpen(true);
+              setMemoryOpen(false);
+              setMobilePane("chat");
+            }}
+          >
+            <StickyNote size={16} />
+            <span>项目摘要</span>
+          </button>
+          <button
+            aria-label="打开记忆"
+            title="记忆"
+            onClick={() => {
+              setProjectPickerOpen(false);
+              setMemoryOpen(true);
+              setSummaryOpen(false);
+              setMobilePane("chat");
+            }}
+          >
+            <Sparkles size={16} />
+            <span>记忆</span>
+          </button>
+        </div>
+        <div
+          className="agent-device-tools"
+          role="group"
+          aria-label="电脑连接与设置"
+        >
+          <span
+            className={`agent-connection-chip ${connection === "online" ? "is-online" : ""}`}
+            role="status"
+          >
+            <i aria-hidden="true" />
+            {connectionText}
+          </span>
+        </div>
+      </div>
       <div className="agent-workspace-main">
         {(projectStorage.warning || targetStorage.warning) && (
           <p className="agent-error" role="alert">
             {projectStorage.warning || targetStorage.warning}
           </p>
         )}
-        <header className="agent-workspace-header">
-          <div className="agent-workspace-heading">
-            <span className="agent-heading-icon" aria-hidden="true">
-              <Folder size={20} />
-            </span>
-            <div>
-              <h1 title={page?.title}>{page?.title || "开始你的第一个项目"}</h1>
-              <p>
-                {counts.total
-                  ? `${counts.pending} 项待办 · ${counts.total - counts.pending} 项已完成${counts.review ? ` · ${counts.review} 项待核对` : ""}`
-                  : "暂无待办"}
-              </p>
-            </div>
-          </div>
-          <div className="agent-workspace-tools">
-            <div
-              className="agent-project-tools"
-              role="group"
-              aria-label="项目工具"
-            >
-              <button
-                aria-label={projectPickerLabel}
-                title={projectPickerLabel}
-                onClick={openProjectPicker}
-              >
-                <Folder size={16} />
-                <span>{projectPickerLabel}</span>
-              </button>
-              <button
-                aria-label="打开项目摘要"
-                title="项目摘要"
-                onClick={() => {
-                  setProjectPickerOpen(false);
-                  setSummaryOpen(true);
-                  setMemoryOpen(false);
-                  setMobilePane("chat");
-                }}
-              >
-                <StickyNote size={16} />
-                <span>项目摘要</span>
-              </button>
-              <button
-                aria-label="打开记忆"
-                title="记忆"
-                onClick={() => {
-                  setProjectPickerOpen(false);
-                  setMemoryOpen(true);
-                  setSummaryOpen(false);
-                  setMobilePane("chat");
-                }}
-              >
-                <Sparkles size={16} />
-                <span>记忆</span>
-              </button>
-            </div>
-            <div
-              className="agent-device-tools"
-              role="group"
-              aria-label="电脑连接与设置"
-            >
-              <span
-                className={`agent-connection-chip ${connection === "online" ? "is-online" : ""}`}
-                role="status"
-              >
-                <i aria-hidden="true" />
-                {connectionText}
-              </span>
-            </div>
-          </div>
-        </header>
+
         <div className="agent-mobile-navigation">
           <label>
             当前项目

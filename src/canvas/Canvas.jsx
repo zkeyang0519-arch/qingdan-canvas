@@ -15,6 +15,11 @@ import {
   StickyNote,
   LockKeyhole,
   ArrowUpRight,
+  Frame,
+  Hand,
+  MousePointer2,
+  Pencil,
+  X,
 } from "lucide-react";
 import useCanvasReturn from "./useCanvasReturn.jsx";
 import Minimap from "./Minimap.jsx";
@@ -85,6 +90,7 @@ import {
   boardsOverlap,
 } from "./inspirationBoards.js";
 import { formatCreatedAt } from "./dateFormat.js";
+import { cardTilt, groupableCards } from "./freeform.js";
 
 const GROUP_DWELL_MS = 2000;
 const BOARD_EXIT_DWELL_MS = 1000;
@@ -141,6 +147,10 @@ export default function Canvas({
     [hoveredId, setHoveredId] = useState(null);
   const [dragLayer, setDragLayer] = useState(null);
   const [boardDraft, setBoardDraft] = useState(null);
+  const [groupName, setGroupName] = useState(null);
+  const [navigationTool, setNavigationTool] = useState(() =>
+    window.matchMedia?.("(pointer: coarse)").matches ? "pan" : "select",
+  );
   const contextMenuUntil = useRef(0);
   const { animateTakeOut, returningIds } = useCanvasReturn({
     objects: state.objects,
@@ -486,9 +496,9 @@ export default function Canvas({
     clearTimeout(groupTimer.current);
     clearTimeout(alignmentTimer.current);
     const g = gesture.current;
-    if (g?.kind === "selection") {
+    if (["selection", "box-select"].includes(g?.kind)) {
       setSelection(g.selection);
-      contextMenuUntil.current = Date.now() + 500;
+      if (g.kind === "selection") contextMenuUntil.current = Date.now() + 500;
     }
     if (g?.started && ["move", "resize"].includes(g.kind)) end(true);
     if (g?.kind === "pan" || g?.kind === "pinch") onView(g.view);
@@ -640,7 +650,8 @@ export default function Canvas({
         o.boardId === live.current.boardId &&
         !o.collapsed &&
         !hiddenByAncestor(live.current.state.objects, o.id) &&
-        (frameId ? o.id === frameId : point && contains(o, point)),
+        frameId &&
+        o.id === frameId,
     );
     if (frame) {
       if (effectivelyLocked(live.current.state.objects, frame.id)) return;
@@ -673,6 +684,27 @@ export default function Canvas({
     update((s) => ({ ...s, objects: [...s.objects, note] }));
     setSelection([note.id]);
     onEdit(note.id, note.blocks[0].id);
+  };
+  const groupSelection = (ids = selection) => {
+    if (live.current.blocked) return;
+    onExit();
+    let createdId;
+    update((current) => {
+      const cards = groupableCards(current, live.current.boardId, ids);
+      if (!cards.length) return current;
+      const next = groupObjects(
+        current,
+        cards.map((o) => o.id),
+      );
+      if (next !== current) createdId = next.objects.at(-1).id;
+      return next;
+    });
+    const frame = workspace.current.current.objects.find(
+      (o) => o.id === createdId,
+    );
+    if (!frame) return;
+    setSelection([frame.id]);
+    setGroupName({ id: frame.id, value: "" });
   };
   const pasteText = (text, html = "", point) => {
     if (live.current.blocked || (!text.trim() && !html)) return;
@@ -1001,10 +1033,15 @@ export default function Canvas({
       onExit();
       if (!event.shiftKey) setSelection([]);
       gesture.current = {
-        kind: event.shiftKey && !blocked ? "marquee" : "pan",
+        kind:
+          event.shiftKey && !blocked
+            ? "marquee"
+            : navigationTool === "select" && !blocked
+              ? "box-select"
+              : "pan",
         start: p,
         view,
-        selection: [],
+        selection,
         snapshot: workspace.current.current,
         pointerId: event.pointerId,
       };
@@ -1114,7 +1151,7 @@ export default function Canvas({
       onView({ ...g.view, x: g.view.x + dx, y: g.view.y + dy });
       return;
     }
-    if (["marquee", "selection", "board"].includes(g.kind)) {
+    if (["marquee", "selection", "box-select", "board"].includes(g.kind)) {
       const a = screenToWorld(g.start, g.view),
         b = screenToWorld(p, g.view),
         rect = {
@@ -1730,7 +1767,16 @@ export default function Canvas({
     if (g.pointerId !== event.pointerId) return;
     if (g.started) {
       // Re-evaluate the final pointer position and modifiers before committing.
-      if (["move", "resize", "selection", "marquee", "board"].includes(g.kind))
+      if (
+        [
+          "move",
+          "resize",
+          "selection",
+          "box-select",
+          "marquee",
+          "board",
+        ].includes(g.kind)
+      )
         move(event);
       suppressClick.current = true;
       setTimeout(() => {
@@ -1969,10 +2015,21 @@ export default function Canvas({
       return;
     return workspace.toggleBlock(object.id, blockId);
   };
+  const saveGroupName = () => {
+    if (!groupName) return;
+    const frame = workspace.current.current.objects.find(
+      (o) => o.id === groupName.id,
+    );
+    if (frame && !live.current.blocked && groupName.value.trim())
+      patch(frame, { title: groupName.value.trim().slice(0, 80) });
+    setGroupName(null);
+  };
+  const groupCards = groupableCards(state, boardId, selection);
+  const groupRect = groupCards.length ? bounds(groupCards.map(actual)) : null;
   return (
     <main
       ref={viewport}
-      className={`canvas ${arranged ? "arranged" : ""} ${dragging || arrangedCollection.session?.phase === "dragging" ? "is-dragging" : ""} ${!arranged && view.gridVisible ? "has-grid" : ""}`}
+      className={`canvas ${arranged ? "arranged" : ""} ${navigationTool === "select" ? "selection-tool" : "pan-tool"} ${dragging || arrangedCollection.session?.phase === "dragging" ? "is-dragging" : ""} ${!arranged && view.gridVisible ? "has-grid" : ""}`}
       aria-label={arranged ? "排列视图" : "自由画布"}
       tabIndex={0}
       style={{
@@ -2001,6 +2058,10 @@ export default function Canvas({
           return;
         const key = event.target.closest("[data-object-id]")?.dataset.objectId;
         const frame = objects.get(key);
+        if (!key) {
+          addNote("text", contentPoint(local(event)));
+          return;
+        }
         if (isInspirationBoard(frame) && !frame.collapsed) {
           event.stopPropagation();
           addNote("checklist", contentPoint(local(event)), frame.id);
@@ -2112,7 +2173,7 @@ export default function Canvas({
             <p>
               {arranged
                 ? "长按空白处，选择想要添加的内容"
-                : "右键任意位置，开始一张便签"}
+                : "双击空白处新建，再框选卡片分组"}
             </p>
             <button
               onPointerDown={(e) => e.stopPropagation()}
@@ -2126,7 +2187,7 @@ export default function Canvas({
                 "长按新建 · 向下滚动浏览"
               ) : (
                 <>
-                  按住空白处移动画布 <span>·</span> Ctrl + 滚轮缩放
+                  空格 + 拖动平移 <span>·</span> Ctrl + 滚轮缩放
                 </>
               )}
             </div>
@@ -2188,6 +2249,7 @@ export default function Canvas({
               className={`canvas-object ${isInspirationBoard(object) ? "inspiration-board" : ""} ${groupHover?.id === object.id && groupHover.ready && !groupHover.unavailable && isInspirationBoard(object) ? "board-receiving" : ""} ${isInspirationBoard(objects.get(object.parentId)) ? "board-member" : ""} ${arranged ? "arranged-object" : ""} object-${object.type} ${selected ? "is-selected" : ""} ${editingImage ? "is-image-editing" : ""} ${temporaryVisible === object.id ? "located" : ""} ${receiving ? "receiving" : ""} ${lifted === object.id ? "is-lifted" : ""} ${placement?.targetId === object.id ? "drop-group" : ""}`}
               data-object-id={object.id}
               style={{
+                "--card-tilt": `${cardTilt(object)}deg`,
                 visibility:
                   arranged && arrangedCollection.hiddenIds.has(object.id)
                     ? "hidden"
@@ -2318,9 +2380,62 @@ export default function Canvas({
                         <ChevronDown size={16} />
                       )}
                     </button>
-                    <span className="frame-title" title={object.title}>
-                      {object.title}
-                    </span>
+                    {groupName?.id === object.id ? (
+                      <input
+                        className="frame-title-input"
+                        aria-label="分组名称"
+                        placeholder="给分组起个名字"
+                        autoFocus
+                        maxLength={80}
+                        value={groupName.value}
+                        onFocus={(event) => event.target.select()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onChange={(event) =>
+                          setGroupName({
+                            id: object.id,
+                            value: event.target.value,
+                          })
+                        }
+                        onBlur={saveGroupName}
+                        onKeyDown={(event) => {
+                          event.stopPropagation();
+                          if (
+                            event.nativeEvent.isComposing ||
+                            event.keyCode === 229
+                          )
+                            return;
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            saveGroupName();
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            setGroupName(null);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span className="frame-title" title={object.title}>
+                        {object.title}
+                      </span>
+                    )}
+                    {!blocked &&
+                      !effectivelyLocked(objects, object.id) &&
+                      groupName?.id !== object.id && (
+                        <button
+                          className="object-action frame-rename"
+                          aria-label={`重命名分组：${object.title}`}
+                          title="重命名分组"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() =>
+                            setGroupName({
+                              id: object.id,
+                              value: object.title || "",
+                            })
+                          }
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
                     {isInspirationBoard(object) ? (
                       <time
                         className="frame-created-at"
@@ -2627,6 +2742,90 @@ export default function Canvas({
               style={{ animationDuration: `${groupHover.duration}ms` }}
             />
           </span>
+        </div>
+      )}
+      {!arranged &&
+        !blocked &&
+        !toolsHidden &&
+        !dragging &&
+        !editing &&
+        !imageMode &&
+        groupRect && (
+          <div
+            className="canvas-selection-actions"
+            role="toolbar"
+            aria-label="已选卡片操作"
+            style={{
+              left: Math.max(
+                12,
+                Math.min(
+                  (groupRect.x + groupRect.width / 2) * view.scale +
+                    view.x -
+                    118,
+                  dimensions.width - 248,
+                ),
+              ),
+              top: Math.max(
+                12,
+                Math.min(
+                  groupRect.y * view.scale + view.y - 54,
+                  dimensions.height - 120,
+                ),
+              ),
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <span>已选 {groupCards.length} 张</span>
+            <button
+              onClick={() => groupSelection()}
+              aria-label="将选中卡片分组"
+            >
+              <Frame size={15} />
+              分组
+            </button>
+            <button
+              className="selection-dismiss"
+              aria-label="取消选择"
+              onClick={() => setSelection([])}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+      {!arranged && !toolsHidden && (
+        <div
+          className="canvas-gesture-tools"
+          role="group"
+          aria-label="画布操作方式"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            aria-label="框选卡片"
+            title="拖动空白处框选卡片"
+            aria-pressed={navigationTool === "select"}
+            disabled={blocked}
+            onClick={() => {
+              onExit();
+              setNavigationTool("select");
+            }}
+          >
+            <MousePointer2 size={15} />
+            <span>框选</span>
+          </button>
+          <button
+            aria-label="平移画布"
+            title="平移画布，也可按住空格拖动或使用中键"
+            aria-pressed={navigationTool === "pan"}
+            onClick={() => {
+              onExit();
+              setNavigationTool("pan");
+            }}
+          >
+            <Hand size={15} />
+            <span>平移</span>
+          </button>
         </div>
       )}
       {selectedImage &&

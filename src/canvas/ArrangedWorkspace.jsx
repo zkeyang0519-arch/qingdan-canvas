@@ -867,6 +867,21 @@ function ChecklistPane({
                 </button>
               </header>
               <div
+                className="arranged-progress"
+                role="progressbar"
+                aria-label="项目完成进度"
+                aria-valuemin={0}
+                aria-valuemax={page.tasks.length || 1}
+                aria-valuenow={completed.length}
+                aria-valuetext={`${completed.length} / ${page.tasks.length} 项已完成`}
+              >
+                <span
+                  style={{
+                    width: `${(completed.length / Math.max(page.tasks.length, 1)) * 100}%`,
+                  }}
+                />
+              </div>
+              <div
                 className="todo-panel-body"
                 tabIndex={0}
                 aria-label={`${label}已完成清单`}
