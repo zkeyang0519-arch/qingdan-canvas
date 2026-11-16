@@ -5,7 +5,7 @@ import * as model from "../src/canvas/model.js";
 import * as layout from "../src/canvas/layout.js";
 import * as geometry from "../src/canvas/geometry.js";
 import * as boards from "../src/canvas/inspirationBoards.js";
-import { groupableCards, cardTilt } from "../src/canvas/freeform.js";
+import { cardTilt } from "../src/canvas/freeform.js";
 import { todoPages } from "../src/canvas/todoPages.js";
 import { prepareEdit } from "../src/sync/workspace-changes.js";
 
@@ -24,10 +24,7 @@ const handlers = [
   section("  const up = ", "  const startResize = "),
 ].join("\n");
 
-function fixture(
-  t,
-  { scale = 1, navigationTool = "select", blocked = false, home = false } = {},
-) {
+function fixture(t, { scale = 1, blocked = false, home = false } = {}) {
   const state = model.createWorkspace();
   const boardId = state.boards[0].id;
   const a = {
@@ -62,7 +59,6 @@ function fixture(
     Object.values(timers).forEach((ref) => clearTimeout(ref.current)),
   );
   let selected = [],
-    naming = null,
     context = null,
     nextView = view;
   const env = {
@@ -71,12 +67,10 @@ function fixture(
     ...geometry,
     ...boards,
     ...timers,
-    groupableCards,
     state,
     boardId,
     workspace,
     view,
-    navigationTool,
     blocked,
     arranged: false,
     live: { current: { state, boardId, view, blocked } },
@@ -124,9 +118,6 @@ function fixture(
     setSelection: (ids) => {
       selected = ids;
     },
-    setGroupName: (value) => {
-      naming = value;
-    },
   };
   for (const key of [
     "Dragging",
@@ -142,7 +133,7 @@ function fixture(
     env[`set${key}`] = () => {};
   const methods = new Function(
     ...Object.keys(env),
-    `${handlers}\nreturn {down,move,up,addNote,groupSelection};`,
+    `${handlers}\nreturn {down,move,up,addNote};`,
   )(...Object.values(env));
   env.moveRef.current = methods.move;
   const event = (x, y, extra = {}) => ({
@@ -161,7 +152,6 @@ function fixture(
     event,
     state: () => workspace.current.current,
     selected: () => selected,
-    naming: () => naming,
     context: () => context,
     view: () => nextView,
     boardId,
@@ -171,60 +161,64 @@ function fixture(
 }
 
 for (const scale of [0.5, 1, 2]) {
-  test(`default blank drag selects without grouping or moving at zoom ${scale}`, (t) => {
+  test(`default blank drag pans without grouping or changing cards at zoom ${scale}`, (t) => {
     const ui = fixture(t, { scale });
     const before = structuredClone(ui.state());
     ui.down(ui.event(70, 70));
     ui.move(ui.event(590, 290));
     ui.up(ui.event(590, 290));
-    assert.deepEqual(ui.selected().sort(), ["a", "b"]);
+    assert.deepEqual(ui.selected(), []);
+    assert.deepEqual([ui.view().x, ui.view().y], [520 * scale, 220 * scale]);
     assert.deepEqual(ui.state(), before);
     assert.equal(ui.context(), null);
-    ui.groupSelection(ui.selected());
-    const frame = ui.state().objects.find((o) => o.type === "frame");
-    assert.ok(frame);
-    assert.equal(frame.fixedBounds, undefined, "group follows content bounds");
-    assert.deepEqual(ui.naming(), { id: frame.id, value: "" });
-    for (const original of [ui.a, ui.b]) {
-      const saved = ui.state().objects.find((o) => o.id === original.id);
-      assert.deepEqual(saved.blocks, original.blocks);
-      assert.deepEqual(
-        [saved.x, saved.y, saved.width, saved.height],
-        [original.x, original.y, original.width, original.height],
-      );
-      assert.equal(saved.parentId, frame.id);
-    }
+  });
+
+  test(`Ctrl drag creates an empty inspiration board without regrouping existing cards at zoom ${scale}`, (t) => {
+    const ui = fixture(t, { scale });
+    const before = structuredClone(ui.state().objects);
+    ui.down(ui.event(70, 70, { ctrlKey: true }));
+    ui.move(ui.event(710, 550, { ctrlKey: true }));
+    ui.up(ui.event(710, 550, { ctrlKey: true }));
+    const frame = ui.state().objects.at(-1);
+    assert.ok(boards.isInspirationBoard(frame));
     assert.deepEqual(
-      todoPages(ui.state(), ui.boardId).map((page) => page.id),
-      [frame.id],
+      [frame.x, frame.y, frame.width, frame.height],
+      [70, 70, 640, 480],
     );
-    assert.equal(
-      prepareEdit(ui.state()).find((o) => o.id === ui.b.id).parentId,
-      frame.id,
-    );
+    assert.deepEqual(ui.state().objects.slice(0, -1), before);
+    assert.deepEqual(ui.selected(), [frame.id]);
   });
 }
 
-test("point creation stays free even over a board; explicitly choosing a board still works", (t) => {
+test("point creation inside a board joins it, explicit board creation works, and outside cards stay free", (t) => {
   const ui = fixture(t, { home: true });
   const frame = ui.state().objects[0];
   ui.addNote("text", { x: 70, y: 80 });
-  const loose = ui.state().objects.at(-1);
-  assert.equal(loose.parentId, null);
-  assert.deepEqual([loose.x, loose.y], [70, 80]);
-  assert.ok(
-    todoPages(ui.state(), ui.boardId).some((page) => page.id === "ungrouped"),
+  const member = ui.state().objects.at(-1);
+  assert.equal(member.parentId, frame.id);
+  assert.equal(
+    prepareEdit(ui.state()).find((o) => o.id === member.id).parentId,
+    frame.id,
+  );
+  assert.deepEqual(
+    todoPages(ui.state(), ui.boardId).map((page) => page.id),
+    [frame.id],
   );
   ui.addNote("checklist", { x: 340, y: 80 }, frame.id);
   assert.equal(ui.state().objects.at(-1).parentId, frame.id);
+  ui.addNote("text", { x: 1200, y: 80 });
+  const loose = ui.state().objects.at(-1);
+  assert.equal(loose.parentId, null);
+  assert.deepEqual([loose.x, loose.y], [1200, 80]);
+  assert.ok(
+    todoPages(ui.state(), ui.boardId).some((page) => page.id === "ungrouped"),
+  );
   assert.deepEqual(ui.state().objects[0], frame);
 });
 
-test("pan tool, Space and middle button still pan without changing content", (t) => {
-  for (const mode of ["pan", "space", "middle"]) {
-    const ui = fixture(t, {
-      navigationTool: mode === "pan" ? "pan" : "select",
-    });
+test("blank drag, Space and middle button pan without changing content", (t) => {
+  for (const mode of ["blank", "space", "middle"]) {
+    const ui = fixture(t);
     const before = structuredClone(ui.state());
     ui.env.space.current = mode === "space";
     const extra = { button: mode === "middle" ? 1 : 0 };
@@ -236,32 +230,23 @@ test("pan tool, Space and middle button still pan without changing content", (t)
   }
 });
 
-test("group click rechecks remote locks and membership instead of grouping stale selection", (t) => {
-  for (const change of ["locked", "parentId"]) {
-    const ui = fixture(t);
-    const frame = model.createInspirationBoard(ui.boardId);
-    ui.env.update((s) => ({
-      ...s,
-      objects: [
-        ...s.objects.map((o) =>
-          o.id === "b"
-            ? { ...o, [change]: change === "locked" ? true : frame.id }
-            : o,
-        ),
-        frame,
-      ],
-    }));
-    const before = structuredClone(ui.state());
-    ui.groupSelection(["a", "b"]);
-    assert.deepEqual(ui.state(), before);
-  }
+test("board creation uses the latest remote lock and does not modify a locked board", (t) => {
+  const ui = fixture(t, { home: true });
+  const frame = ui.state().objects[0];
+  ui.env.update((s) => model.patchObjects(s, { [frame.id]: { locked: true } }));
+  const before = structuredClone(ui.state());
+  ui.addNote("text", { x: 70, y: 80 });
+  ui.addNote("checklist", { x: 340, y: 80 }, frame.id);
+  assert.deepEqual(ui.state(), before);
 });
 
-test("read-only canvas does not create or group cards", (t) => {
+test("read-only canvas does not create cards or inspiration boards", (t) => {
   const ui = fixture(t, { blocked: true });
   const before = structuredClone(ui.state());
   ui.addNote();
-  ui.groupSelection(["a", "b"]);
+  ui.down(ui.event(70, 70, { ctrlKey: true }));
+  ui.move(ui.event(710, 550, { ctrlKey: true }));
+  ui.up(ui.event(710, 550, { ctrlKey: true }));
   assert.deepEqual(ui.state(), before);
 });
 
