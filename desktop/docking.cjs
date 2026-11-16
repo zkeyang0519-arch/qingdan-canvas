@@ -110,7 +110,15 @@ function placementState(anchor, bounds, work, dragging = false) {
   };
 }
 
-function roundedRect(x, y, width, height, radius, squareSide) {
+function roundedRect(
+  x,
+  y,
+  width,
+  height,
+  radius,
+  squareSide,
+  roundInset = Math.ceil,
+) {
   const rows = [],
     r = Math.min(radius, Math.floor(width / 2), Math.floor(height / 2));
   for (let row = 0; row < height; row++) {
@@ -124,7 +132,7 @@ function roundedRect(x, y, width, height, radius, squareSide) {
       squareSide === "top" && row < r
         ? 0
         : distance
-          ? Math.max(0, Math.ceil(r - Math.sqrt(r * r - distance * distance)))
+          ? Math.max(0, roundInset(r - Math.sqrt(r * r - distance * distance)))
           : 0;
     const left = squareSide === "left" ? 0 : edge,
       right = squareSide === "right" ? 0 : edge;
@@ -139,15 +147,31 @@ function roundedRect(x, y, width, height, radius, squareSide) {
   return rows;
 }
 
+function surfaceShape(x, y, width, height, radius) {
+  // setShape clips painting as well as mouse input. Leave transparent space
+  // around the CSS edge so native integer scanlines cannot cut its antialiasing
+  // at fractional display scales. Two DIP still leave both capsule gaps open.
+  const outset = 2;
+  return roundedRect(
+    x - outset,
+    y - outset,
+    width + outset * 2,
+    height + outset * 2,
+    radius + outset,
+    undefined,
+    Math.floor,
+  );
+}
+
 function dockShape(bounds, layout, anchor, work) {
   if (layout.appearance === "jade-twins") {
     const width = Math.max(1, bounds.width - 24);
     if (layout.expanded)
-      return roundedRect(12, 12, width, Math.max(1, bounds.height - 24), 25);
+      return surfaceShape(12, 12, width, Math.max(1, bounds.height - 24), 25);
     if (side(layout.dock)) {
       const height = layout.empty ? 52 : 86;
-      return roundedRect(12, 12, width, height, layout.peek ? 25 : 28).concat(
-        roundedRect(
+      return surfaceShape(12, 12, width, height, layout.peek ? 25 : 28).concat(
+        surfaceShape(
           layout.dock === "left" ? 12 : bounds.width - 68,
           12 + height + 7,
           56,
@@ -157,14 +181,14 @@ function dockShape(bounds, layout, anchor, work) {
       );
     }
     const height = layout.peek ? 64 : 48;
-    return roundedRect(
+    return surfaceShape(
       12,
       12,
       width - 83,
       height,
       layout.peek ? 26 : 24,
     ).concat(
-      roundedRect(bounds.width - 86, 12 + (height - 48) / 2, 74, 48, 24),
+      surfaceShape(bounds.width - 86, 12 + (height - 48) / 2, 74, 48, 24),
     );
   }
   if (layout.appearance === "jade" && !side(layout.dock)) {

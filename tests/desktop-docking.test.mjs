@@ -12,6 +12,139 @@ try {
 }
 const work = { x: -1920, y: 32, width: 1920, height: 1048 };
 
+test("native twin mask preserves the CSS antialias fringe at common display scales", () => {
+  const contains = (shape, x, y) =>
+    shape.some(
+      (r) => x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height,
+    );
+  const cases = [
+    [
+      "top",
+      false,
+      false,
+      false,
+      400,
+      72,
+      [
+        [12, 12, 293, 48, 24],
+        [314, 12, 74, 48, 24],
+      ],
+    ],
+    [
+      "top",
+      false,
+      true,
+      false,
+      436,
+      88,
+      [
+        [12, 12, 329, 64, 26],
+        [350, 20, 74, 48, 24],
+      ],
+    ],
+    [
+      "left",
+      true,
+      false,
+      false,
+      80,
+      127,
+      [
+        [12, 12, 56, 52, 26],
+        [12, 71, 56, 44, 22],
+      ],
+    ],
+    [
+      "right",
+      false,
+      false,
+      false,
+      80,
+      161,
+      [
+        [12, 12, 56, 86, 28],
+        [12, 105, 56, 44, 22],
+      ],
+    ],
+    [
+      "left",
+      false,
+      true,
+      false,
+      342,
+      161,
+      [
+        [12, 12, 318, 86, 25],
+        [12, 105, 56, 44, 22],
+      ],
+    ],
+    [
+      "right",
+      true,
+      true,
+      false,
+      342,
+      127,
+      [
+        [12, 12, 318, 52, 25],
+        [274, 71, 56, 44, 22],
+      ],
+    ],
+    ["top", false, false, true, 444, 510, [[12, 12, 420, 486, 25]]],
+    ["left", false, false, true, 384, 510, [[12, 12, 360, 486, 25]]],
+  ];
+  for (const [side, empty, peek, expanded, width, height, surfaces] of cases) {
+    const layout = {
+      dock: side,
+      empty,
+      peek,
+      expanded,
+      width,
+      height,
+      appearance: "jade-twins",
+    };
+    const shape = dock.dockShape(layout, layout, null, work);
+    for (const [x, y, w, h, r] of surfaces) {
+      for (const scale of [1, 1.25, 1.5, 1.75, 2]) {
+        for (const [cx, cy, start] of [
+          [x + r, y + r, Math.PI],
+          [x + w - r, y + r, Math.PI * 1.5],
+          [x + w - r, y + h - r, 0],
+          [x + r, y + h - r, Math.PI * 0.5],
+        ]) {
+          for (let step = 0; step <= 40; step++) {
+            const angle = start + (step * Math.PI) / 80;
+            // Sample the device pixel covering the browser's soft outer edge,
+            // including subpixel positioning at 125%, 150% and 175% scaling.
+            const px =
+              (Math.floor((cx + Math.cos(angle) * (r + 0.7 / scale)) * scale) +
+                0.5) /
+              scale;
+            const py =
+              (Math.floor((cy + Math.sin(angle) * (r + 0.7 / scale)) * scale) +
+                0.5) /
+              scale;
+            assert.ok(
+              contains(shape, px, py),
+              `${side} ${scale}x clipped CSS edge at ${px},${py}`,
+            );
+          }
+        }
+      }
+    }
+    assert.equal(
+      contains(shape, 12, 12),
+      false,
+      "transparent corners remain outside the window",
+    );
+    assert.equal(
+      contains(shape, 5, height / 2),
+      false,
+      "outer margin still passes through",
+    );
+  }
+});
+
 test("twin island hit regions follow both capsules, mirrored peeks and the shorter empty rail", () => {
   const hit = (shape, x, y) =>
     shape.some(
