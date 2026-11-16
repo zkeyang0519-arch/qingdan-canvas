@@ -132,9 +132,11 @@ function getPlacement() {
       window.getBounds(),
       currentWorkArea(),
       !!dragSession,
+      layout,
     ),
     supportsJade: true,
     supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
   };
 }
 function publishPlacement() {
@@ -158,7 +160,11 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
         expanded: false,
         ...compactSize("free", dragSession.layout.appearance),
         ...(dragSession.layout.appearance === "jade-twins"
-          ? { empty: dragSession.layout.empty, peek: false }
+          ? {
+              empty: dragSession.layout.empty,
+              peek: false,
+              ...(dragSession.layout.retained ? { retained: true } : {}),
+            }
           : {}),
         ...(dragSession.layout.appearance
           ? { appearance: dragSession.layout.appearance }
@@ -327,7 +333,11 @@ function dragWindow(action, origin) {
             ? { appearance: previous.layout.appearance }
             : {}),
           ...(previous.layout.appearance === "jade-twins"
-            ? { peek: false, empty: previous.layout.empty }
+            ? {
+                peek: false,
+                empty: previous.layout.empty,
+                ...(previous.layout.retained ? { retained: true } : {}),
+              }
             : {}),
         },
         { workArea: work },

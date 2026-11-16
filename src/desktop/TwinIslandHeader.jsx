@@ -11,11 +11,14 @@ export default function TwinIslandHeader({
   disabled,
   onComplete,
   toggle,
+  onPointerEnter,
+  onPointerLeave,
   panelId,
   trigger,
   side,
   peek,
   expanded,
+  retained = false,
   project,
 }) {
   const [leaving, setLeaving] = useState(null);
@@ -55,7 +58,7 @@ export default function TwinIslandHeader({
   return (
     <header
       className="island-twin-header"
-      hidden={expanded}
+      hidden={expanded && !retained}
       data-relay={!!leaving}
     >
       <div
@@ -63,7 +66,7 @@ export default function TwinIslandHeader({
         data-desktop-drag="true"
         title="拖动轻岛"
       >
-        {task && (
+        {task && !side && (
           <button
             className="island-twin-complete"
             type="button"
@@ -77,16 +80,9 @@ export default function TwinIslandHeader({
             </span>
           </button>
         )}
-        <button
+        <div
           className="island-twin-summary"
-          type="button"
-          data-desktop-drag="true"
-          tabIndex={side && !peek ? -1 : 0}
           aria-hidden={side && !peek}
-          aria-label={`展开轻岛：${label}`}
-          aria-expanded={false}
-          aria-controls={panelId}
-          onClick={toggle}
           title={label}
         >
           <span className="island-twin-copy">
@@ -103,27 +99,21 @@ export default function TwinIslandHeader({
             </span>
             <span className="island-twin-project">{project || "轻岛"}</span>
           </span>
-        </button>
-        <button
-          className="island-twin-pet"
-          type="button"
-          ref={trigger}
-          data-desktop-drag="true"
-          onClick={toggle}
-          title="展开轻岛 · 拖动移位"
-          aria-label="展开轻岛"
-          aria-expanded={false}
-          aria-controls={panelId}
-        >
+        </div>
+        <span className="island-twin-pet">
           <AnimalRunner {...animal} size={34} />
-        </button>
+        </span>
       </div>
       <button
         className="island-twin-time"
         type="button"
+        ref={trigger}
         onClick={toggle}
-        title={time.title}
-        aria-label={time.title}
+        onPointerEnter={onPointerEnter}
+        onPointerLeave={onPointerLeave}
+        title={`${time.title} · ${expanded ? "收起" : "展开"}轻岛`}
+        aria-label={expanded && retained ? "收起待办列表" : "展开轻岛"}
+        aria-expanded={expanded}
         aria-controls={panelId}
       >
         {time.label && <span>{time.label}</span>}

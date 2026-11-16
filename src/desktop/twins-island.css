@@ -255,34 +255,22 @@
   border-radius: 25px;
 }
 [data-layout="twins"]:is([data-dock="left"], [data-dock="right"])
-  :is(.island-twin-complete, .island-twin-pet) {
+  .island-twin-pet {
   position: absolute;
   left: 5px;
   width: 44px;
 }
 [data-layout="twins"]:is([data-dock="left"], [data-dock="right"])
-  .island-twin-complete {
-  top: 2px;
-}
-[data-layout="twins"]:is([data-dock="left"], [data-dock="right"])
   .island-twin-pet {
-  top: 42px;
+  top: 50%;
+  transform: translateY(-50%);
 }
-[data-layout="twins"][data-dock="right"]
-  :is(.island-twin-complete, .island-twin-pet) {
+[data-layout="twins"][data-dock="right"] .island-twin-pet {
   left: auto;
   right: 5px;
 }
 [data-layout="twins"][data-dock="left"] .island-twin-pet .island-animal {
   transform: scaleX(-1);
-}
-[data-layout="twins"]:is(
-    [data-dock="left"],
-    [data-dock="right"]
-  )[data-empty="true"]
-  .island-twin-pet {
-  top: 50%;
-  transform: translateY(-50%);
 }
 .dynamic-island[data-layout="twins"]:is([data-dock="left"], [data-dock="right"])
   .island-twin-summary {
@@ -381,12 +369,70 @@
 .dynamic-island[data-appearance="jade"][data-layout="twins"] .island-check {
   border-radius: 50%;
 }
-.dynamic-island[data-layout="twins"]
-  :is(.island-twin-pet, .island-twin-collapse):hover {
+.dynamic-island[data-layout="twins"] .island-twin-collapse:hover {
   background: #dfead666;
 }
 .dynamic-island[data-layout="twins"] .island-twin-time:hover {
   background: #3b5b40;
+}
+
+/* The native retained layout keeps the capsules at their compact anchor and
+   adds a separate panel below them. Older shells keep the replacement layout. */
+.dynamic-island[data-layout="twins"][data-retained="true"] {
+  --twin-header-height: 48px;
+  --twin-panel-gap: 10px;
+  --twin-panel-max-height: min(
+    calc(976px - var(--twin-header-height) - var(--twin-panel-gap)),
+    calc(
+      var(--desktop-max-height, 900px) - 24px - var(--twin-header-height) -
+        var(--twin-panel-gap)
+    )
+  );
+}
+.dynamic-island[data-layout="twins"][data-retained="true"][data-open="true"]
+  .island-twin-header {
+  flex: none;
+  width: min(376px, 100%);
+  margin-left: var(--twin-header-offset, max(0px, calc((100% - 376px) / 2)));
+}
+.dynamic-island[data-layout="twins"][data-retained="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  ) {
+  --twin-header-height: calc(var(--twin-main-height) + 51px);
+}
+.dynamic-island[data-layout="twins"][data-retained="true"][data-open="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  )
+  .island-twin-header {
+  width: 56px;
+  margin-left: 0;
+}
+.dynamic-island[data-layout="twins"][data-retained="true"][data-open="true"][data-dock="right"]
+  .island-twin-header {
+  margin-left: auto;
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-retained="true"]
+  .island-panel {
+  margin-top: var(--twin-panel-gap);
+  max-height: var(--twin-panel-max-height);
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-retained="true"][data-open="true"]
+  .island-panel {
+  animation: island-retained-open 220ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+@keyframes island-retained-open {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 100% 0 round 25px);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 round 25px);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .island-twin-out {
@@ -396,5 +442,10 @@
   .island-twin-header *::before {
     animation: none !important;
     transition: none !important;
+  }
+  .desktop-island-workspace
+    .dynamic-island[data-layout="twins"][data-retained="true"]
+    .island-panel {
+    animation: none !important;
   }
 }

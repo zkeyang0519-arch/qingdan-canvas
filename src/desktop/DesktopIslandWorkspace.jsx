@@ -20,6 +20,7 @@ import {
 import DesktopUpdateStatus from "./DesktopUpdateStatus.jsx";
 import "./jade-island.css";
 import "./twins-island.css";
+import "./glass-island.css";
 
 export default function DesktopIslandWorkspace(props) {
   const [attempt, setAttempt] = useState(0);
@@ -185,9 +186,10 @@ function ConnectedWorkspace({
         const dock = desktop.dragging ? "free" : desktop.dock;
         const expanded = island?.dataset.open === "true";
         const twins = island?.dataset.layout === "twins";
+        const retained = island?.dataset.retained === "true";
         const peek = island?.dataset.peek === "true";
         const empty = island?.dataset.empty === "true";
-        const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}`;
+        const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}`;
         if (size === previous) return;
         previous = size;
         requestDesktopLayout(bridge, {
@@ -199,6 +201,7 @@ function ConnectedWorkspace({
             ? { appearance: twins ? "jade-twins" : "jade" }
             : {}),
           ...(twins ? { peek, empty } : {}),
+          ...(retained ? { retained: true } : {}),
         });
       });
     };
@@ -211,6 +214,7 @@ function ConnectedWorkspace({
         attributes: true,
         attributeFilter: [
           "data-layout",
+          "data-retained",
           "data-open",
           "data-peek",
           "data-empty",

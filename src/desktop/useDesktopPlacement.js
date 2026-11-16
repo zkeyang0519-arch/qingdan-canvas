@@ -6,6 +6,7 @@ const initial = {
   railOffset: 12,
   supportsJade: false,
   supportsTwinIsland: false,
+  supportsRetainedTwinIsland: false,
 };
 
 export function useDesktopPlacement(bridge) {

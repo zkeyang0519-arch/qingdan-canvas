@@ -11,6 +11,7 @@ import "../../src/desktop/desktop.css";
 import "../../src/desktop/jade-island.css";
 import "../../src/desktop/twins-island.css";
 import "../../src/ui/luma.css";
+import "../../src/desktop/glass-island.css";
 
 // Real presentation, with an in-memory workspace adapter only.
 // This preview never opens the user's IndexedDB, account or desktop profile.
@@ -34,6 +35,7 @@ function example() {
 function Preview() {
   const [state, setState] = useState(example);
   const [dock, setDock] = useState("top");
+  const [backdrop, setBackdrop] = useState("dark");
   const [generation, setGeneration] = useState(0);
   const current = useRef(state);
   current.current = state;
@@ -72,7 +74,7 @@ function Preview() {
       <header className="preview-heading">
         <div>
           <small>轻单 · 轻岛</small>
-          <h1>雾玉双岛</h1>
+          <h1>青透双岛</h1>
         </div>
         <p>独立预览 · 示例数据</p>
       </header>
@@ -93,6 +95,13 @@ function Preview() {
           ))}
         </div>
         <div>
+          <button
+            onClick={() =>
+              setBackdrop((value) => (value === "dark" ? "light" : "dark"))
+            }
+          >
+            {backdrop === "dark" ? "切换明亮背景" : "切换深色背景"}
+          </button>
           <button
             onClick={() => {
               setState(example());
@@ -128,6 +137,7 @@ function Preview() {
       <section
         className="preview-stage"
         data-side={dock}
+        data-backdrop={backdrop}
         aria-label="轻岛真实组件预览"
       >
         <div className="preview-guide">
@@ -152,6 +162,7 @@ function Preview() {
               dragging: false,
               supportsJade: true,
               supportsTwinIsland: true,
+              supportsRetainedTwinIsland: true,
               handlers: { onPointerDown() {} },
             }}
             panelToolbar={<span>预览中的操作只影响示例待办</span>}
@@ -159,7 +170,8 @@ function Preview() {
         </div>
       </section>
       <footer className="preview-help">
-        悬停展开全部待办 · 点击圆圈完成待办
+        悬停小仓展开剩余待办 · 大仓按住拖动 ·{" "}
+        {dock === "top" ? "点击圆圈完成待办" : "在列表中勾选完成"}
       </footer>
     </>
   );

@@ -70,6 +70,9 @@ function fitDockBounds(anchor, layout, work) {
   const centerY = anchor
     ? anchor.y + anchor.height / 2
     : work.y + work.height / 2;
+  const anchorHeight = layout.retained
+    ? compactSize(dock, layout.appearance, layout.empty).height
+    : height;
   return {
     x: Math.round(
       dock === "left"
@@ -82,7 +85,9 @@ function fitDockBounds(anchor, layout, work) {
       dock === "top"
         ? work.y - (layout.appearance === "jade" ? 12 : 0)
         : clamp(
-            side(dock) ? centerY - height / 2 : (anchor?.y ?? work.y + 12),
+            side(dock)
+              ? centerY - anchorHeight / 2
+              : (anchor?.y ?? work.y + 12),
             work.y,
             work.y + work.height - height,
           ),
@@ -92,7 +97,26 @@ function fitDockBounds(anchor, layout, work) {
   };
 }
 
-function placementState(anchor, bounds, work, dragging = false) {
+function retainedCompactBounds(anchor, layout, work) {
+  return fitDockBounds(
+    anchor,
+    {
+      dock: layout.dock,
+      appearance: layout.appearance,
+      ...compactSize(layout.dock, layout.appearance, layout.empty),
+    },
+    work,
+  );
+}
+
+function retainedHeaderOffset(anchor, bounds, layout, work) {
+  const compact = retainedCompactBounds(anchor, layout, work);
+  return clamp(compact.x - bounds.x, 0, bounds.width - compact.width);
+}
+
+function placementState(anchor, bounds, work, dragging = false, layout = {}) {
+  const retained = layout.appearance === "jade-twins" && layout.retained;
+  const compact = retained && retainedCompactBounds(anchor, layout, work);
   return {
     dock: dragging ? "free" : restorePlacement(anchor, work).dock,
     dragging,
@@ -105,8 +129,15 @@ function placementState(anchor, bounds, work, dragging = false) {
         bounds.height - 148,
       ),
     ),
-    maxHeight: work.height,
+    // Prefer scrolling the list to moving a capsule away from a hovering
+    // pointer. At the very bottom reserve enough room for usable controls.
+    maxHeight: retained
+      ? Math.min(work.height, Math.max(400, work.y + work.height - compact.y))
+      : work.height,
     maxWidth: work.width,
+    ...(retained
+      ? { headerOffset: retainedHeaderOffset(anchor, bounds, layout, work) }
+      : {}),
   };
 }
 
@@ -166,6 +197,43 @@ function surfaceShape(x, y, width, height, radius) {
 function dockShape(bounds, layout, anchor, work) {
   if (layout.appearance === "jade-twins") {
     const width = Math.max(1, bounds.width - 24);
+    if (layout.expanded && layout.retained) {
+      const vertical = side(layout.dock);
+      const mainHeight = vertical ? (layout.empty ? 52 : 86) : 48;
+      const headerHeight = vertical ? mainHeight + 51 : 48;
+      const headerWidth = vertical ? 56 : Math.min(376, width);
+      const x = vertical
+        ? layout.dock === "right"
+          ? bounds.width - 68
+          : 12
+        : 12 + retainedHeaderOffset(anchor, bounds, layout, work);
+      const panelY = 12 + headerHeight + 10;
+      return surfaceShape(
+        x,
+        12,
+        vertical ? 56 : headerWidth - 83,
+        mainHeight,
+        vertical ? 28 : 24,
+      )
+        .concat(
+          surfaceShape(
+            vertical ? x : x + headerWidth - 74,
+            vertical ? 12 + mainHeight + 7 : 12,
+            vertical ? 56 : 74,
+            vertical ? 44 : 48,
+            vertical ? 22 : 24,
+          ),
+        )
+        .concat(
+          surfaceShape(
+            12,
+            panelY,
+            width,
+            Math.max(1, bounds.height - panelY - 12),
+            25,
+          ),
+        );
+    }
     if (layout.expanded)
       return surfaceShape(12, 12, width, Math.max(1, bounds.height - 24), 25);
     if (side(layout.dock)) {

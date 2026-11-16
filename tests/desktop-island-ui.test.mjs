@@ -6,6 +6,10 @@ import path from "node:path";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import React, { act, useRef, useState } from "react";
+import {
+  islandAppearanceKey,
+  defaultIslandAppearance,
+} from "../src/desktop/island-appearance.js";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://localhost/app",
@@ -175,6 +179,7 @@ async function mount(
     count = 1,
     supportsJade = true,
     supportsTwinIsland = false,
+    supportsRetainedTwinIsland = false,
   } = {},
 ) {
   const initial = createWorkspace();
@@ -198,6 +203,7 @@ async function mount(
   const { bridge, calls } = bridgeFixture();
   calls.placement.supportsJade = supportsJade;
   calls.placement.supportsTwinIsland = supportsTwinIsland;
+  calls.placement.supportsRetainedTwinIsland = supportsRetainedTwinIsland;
   window.qingdanDesktop = bridge;
   t.after(() => {
     delete window.qingdanDesktop;
@@ -356,7 +362,7 @@ test("双岛直接完成沿用真实任务，过渡期间重复点击不完成�
   assert.equal(calls.layout.at(-1).empty, true);
 });
 
-test("双岛左右贴边悬停打开完整面板，空态新增和完成恢复仍工作", async (t) => {
+test("双岛左右贴边悬停小仓打开完整面板，空态新增和完成恢复仍工作", async (t) => {
   const { host, controls, calls } = await mount(t, {
     desktop: true,
     supportsTwinIsland: true,
@@ -369,7 +375,7 @@ test("双岛左右贴边悬停打开完整面板，空态新增和完成恢复�
     });
     assert.equal(host.querySelector(".island-twin-complete"), null);
     await act(async () => {
-      host.querySelector(".dynamic-island").dispatchEvent(
+      host.querySelector(".island-twin-time").dispatchEvent(
         new MouseEvent("pointerover", {
           bubbles: true,
           relatedTarget: document.body,
@@ -391,9 +397,9 @@ test("双岛左右贴边悬停打开完整面板，空态新增和完成恢复�
   await click(button(host, "添加待办"));
   assert.equal(controls.state().objects.length, 2);
   await click(button(host, "收起轻岛"));
-  assert.equal(host.querySelector(".island-twin-complete").disabled, false);
-  await click(host.querySelector(".island-twin-complete"));
+  assert.equal(host.querySelector(".island-twin-complete"), null);
   await click(button(host, "展开轻岛"));
+  await click(host.querySelector('input[type="checkbox"]'));
   await click(button(host, "已完成 1"));
   await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(controls.state().objects[1].blocks[0].done, false);
@@ -404,11 +410,13 @@ async function hoverIsland(
   entered,
   relatedTarget = document.body,
   pointerType = "mouse",
+  buttons = 0,
 ) {
   await act(async () => {
     const event = new MouseEvent(entered ? "pointerover" : "pointerout", {
       bubbles: true,
       relatedTarget,
+      buttons,
     });
     Object.defineProperty(event, "pointerType", { value: pointerType });
     element.dispatchEvent(event);
@@ -420,6 +428,7 @@ test("双岛横向与左右悬停显示全部待办，移入列表和短暂移�
   const { host, calls, controls } = await mount(t, {
     desktop: true,
     supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
     count: 36,
   });
   const state = controls.state();
@@ -438,6 +447,8 @@ test("双岛横向与左右悬停显示全部待办，移入列表和短暂移�
     await tick(1);
     assert.equal(island.dataset.open, "true");
     assert.equal(panel.hasAttribute("inert"), false);
+    assert.equal(host.querySelector(".island-twin-header").hidden, false);
+    assert.equal(capsule.getAttribute("aria-expanded"), "true");
     assert.equal(host.querySelectorAll(".island-task-row").length, 36);
     assert.equal(
       host.querySelectorAll(".island-task-text")[35].textContent,
@@ -446,6 +457,7 @@ test("双岛横向与左右悬停显示全部待办，移入列表和短暂移�
     await tick(10);
     assert.equal(calls.layout.at(-1).expanded, true);
     assert.equal(calls.layout.at(-1).dock, dock);
+    assert.equal(calls.layout.at(-1).retained, true);
     await hoverIsland(capsule, false, panel);
     await tick(400);
     assert.equal(island.dataset.open, "true");
@@ -467,6 +479,158 @@ test("双岛横向与左右悬停显示全部待办，移入列表和短暂移�
   );
 });
 
+test("小仓重新展开只显示剩余待办，设置与完成记录不会遮挡列表", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  localStorage.removeItem(islandAppearanceKey);
+  t.after(() => localStorage.removeItem(islandAppearanceKey));
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 3,
+  });
+  const island = host.querySelector(".dynamic-island");
+  const panel = host.querySelector(".island-panel");
+  const settings = host.querySelector(".island-options");
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  await hoverIsland(host.querySelector(".island-twin-time"), true);
+  await tick(120);
+  await click(host.querySelector('input[type="checkbox"]'));
+  const taskState = controls.state();
+  await click(button(host, "收起轻岛"));
+  for (const dock of ["top", "left", "right"]) {
+    for (const exit of ["collapse", "leave", "blur", "drag"]) {
+      await act(async () => {
+        calls.placement = { ...calls.placement, dock, dragging: false };
+        for (const handler of calls.placementHandlers) handler(calls.placement);
+      });
+      await hoverIsland(host.querySelector(".island-twin-time"), true);
+      await tick(120);
+      assert.equal(island.dataset.open, "true");
+      assert.equal(settings.open, false, `${dock}/${exit}: hover opens tasks`);
+      assert.equal(
+        host.querySelectorAll('.island-task-row[data-done="false"]').length,
+        2,
+      );
+      await click(button(host, "已完成 1"));
+      assert.equal(
+        host.querySelectorAll('.island-task-row[data-done="true"]').length,
+        1,
+      );
+      await click(settings.querySelector("summary"));
+      assert.equal(settings.open, true, "settings require an explicit click");
+      await click(button(host, "冰青"));
+      if (exit === "collapse") await click(button(host, "收起轻岛"));
+      else if (exit === "leave") {
+        await hoverIsland(panel, false);
+        await tick(300);
+      } else if (exit === "blur") {
+        await act(async () => window.dispatchEvent(new Event("blur")));
+      } else {
+        await act(async () => {
+          calls.placement = { ...calls.placement, dragging: true };
+          for (const handler of calls.placementHandlers)
+            handler(calls.placement);
+        });
+      }
+      assert.equal(island.dataset.open, "false");
+      assert.equal(
+        settings.open,
+        false,
+        `${dock}/${exit}: settings do not survive collapse`,
+      );
+      assert.equal(
+        controls.state(),
+        taskState,
+        "opening and closing panels never changes tasks",
+      );
+      assert.equal(
+        JSON.parse(localStorage.getItem(islandAppearanceKey)).color,
+        "#83dce5",
+        "closing settings preserves the saved appearance",
+      );
+    }
+  }
+});
+
+test("双岛仅小仓悬停展开，大仓文字和小猫可拖动，移回大仓取消展开", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { host, calls, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+  });
+  const state = controls.state();
+  const island = host.querySelector(".dynamic-island");
+  const main = host.querySelector(".island-twin-main");
+  const capsule = host.querySelector(".island-twin-time");
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  for (const dock of ["free", "top", "left", "right"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock };
+      for (const handler of calls.placementHandlers) handler(calls.placement);
+    });
+    for (const selector of [
+      ".island-twin-main",
+      ".island-twin-current",
+      ".island-twin-pet",
+    ]) {
+      const target = host.querySelector(selector);
+      await hoverIsland(target, true);
+      await tick(500);
+      assert.equal(island.dataset.open, "false", `${dock}: hover ${selector}`);
+      await click(target);
+      assert.equal(island.dataset.open, "false", `${dock}: click ${selector}`);
+      const before = calls.drag.length;
+      await pointer(target, "pointerdown", 50, 36);
+      await pointer(target, "pointermove", 53, 36);
+      assert.equal(calls.drag.length, before);
+      await pointer(target, "pointermove", 80, 36);
+      assert.equal(calls.drag.at(-1), "start");
+      assert.equal(
+        host.querySelector(".island-animal").dataset.playing,
+        "false",
+      );
+      await tick(150);
+      assert.equal(island.dataset.open, "false");
+      await pointer(target, "pointerup", 80, 36);
+      assert.equal(calls.drag.at(-1), "end");
+      await click(target);
+      await tick(500);
+      assert.equal(island.dataset.open, "false");
+      assert.equal(
+        host.querySelector(".island-animal").dataset.playing,
+        "true",
+      );
+      await hoverIsland(target, false);
+    }
+    const complete = host.querySelector(".island-twin-complete");
+    if (dock === "left" || dock === "right") {
+      assert.equal(complete, null, "side capsules only keep the draggable cat");
+    } else {
+      assert.ok(complete, "horizontal capsules retain quick completion");
+      await hoverIsland(complete, true);
+      await tick(150);
+      assert.equal(island.dataset.open, "false");
+      await hoverIsland(complete, false);
+    }
+    await hoverIsland(capsule, true);
+    await tick(60);
+    await hoverIsland(capsule, false, main);
+    await tick(150);
+    assert.equal(island.dataset.open, "false");
+    // Moving between siblings must start a fresh small-capsule timer even
+    // though the pointer never leaves the shared island section.
+    await hoverIsland(main, false, capsule);
+    await tick(119);
+    assert.equal(island.dataset.open, "false");
+    await tick(1);
+    assert.equal(island.dataset.open, "true");
+    await click(button(host, "收起轻岛"));
+    assert.equal(document.activeElement, capsule);
+    await hoverIsland(island, false);
+  }
+  assert.strictEqual(controls.state(), state);
+});
+
 test("双岛掠过和触摸不触发悬停展开，拖动取消待展开计时，输入和钉住继续保护面板", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { host, controls } = await mount(t, {
@@ -475,23 +639,28 @@ test("双岛掠过和触摸不触发悬停展开，拖动取消待展开计时�
   });
   const island = host.querySelector(".dynamic-island");
   const pet = host.querySelector(".island-twin-pet");
+  const capsule = host.querySelector(".island-twin-time");
   const tick = (ms) => act(async () => t.mock.timers.tick(ms));
-  await hoverIsland(pet, true, document.body, "touch");
+  await hoverIsland(capsule, true, document.body, "touch");
   await tick(150);
   assert.equal(island.dataset.open, "false");
-  await hoverIsland(pet, true);
+  await hoverIsland(capsule, true, document.body, "mouse", 1);
+  await tick(150);
+  assert.equal(island.dataset.open, "false");
+  await hoverIsland(capsule, true);
   await tick(50);
-  await hoverIsland(pet, false);
+  await hoverIsland(capsule, false);
   await tick(150);
   assert.equal(island.dataset.open, "false");
-  await hoverIsland(pet, true);
+  await hoverIsland(capsule, true);
   await pointer(pet, "pointerdown", 277, 36);
   await pointer(pet, "pointermove", 307, 36);
+  await hoverIsland(capsule, true);
   await tick(150);
   assert.equal(island.dataset.open, "false");
   await pointer(pet, "pointercancel", 307, 36);
   await tick(1);
-  await hoverIsland(pet, true);
+  await hoverIsland(capsule, true);
   await tick(120);
   const input = host.querySelector("textarea");
   await act(async () => input.focus());
@@ -504,12 +673,149 @@ test("双岛掠过和触摸不触发悬停展开，拖动取消待展开计时�
   assert.equal(island.dataset.open, "false");
   assert.equal(input.value, "悬停展开时的未提交内容");
   assert.equal(controls.state().objects.length, 1);
-  await hoverIsland(pet, true);
+  await hoverIsland(capsule, true);
   await tick(120);
   await click(button(host, "钉住轻岛"));
   await hoverIsland(island, false);
   await tick(400);
   assert.equal(island.dataset.open, "true");
+});
+
+test("小仓悬停后的原位点击不误完成任务，移动后正常操作，主动收起不立即重开", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 2,
+  });
+  const island = host.querySelector(".dynamic-island");
+  const capsule = host.querySelector(".island-twin-time");
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  await hoverIsland(capsule, true);
+  await pointer(capsule, "pointermove", 100, 40);
+  await tick(120);
+  const task = host.querySelector('input[type="checkbox"]');
+  const clickAt = (element, x, y) =>
+    act(async () => {
+      element.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+          clientX: x,
+          clientY: y,
+          screenX: x,
+          screenY: y,
+        }),
+      );
+    });
+  await clickAt(task, 100, 40);
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  assert.equal(task.checked, false);
+  await click(button(host, "收起轻岛"));
+  assert.equal(island.dataset.open, "false");
+  // Resizing the panel can reveal the capsule under a stationary pointer.
+  await hoverIsland(capsule, true, task);
+  await tick(150);
+  assert.equal(island.dataset.open, "false");
+  await hoverIsland(island, false);
+  await hoverIsland(capsule, true);
+  await pointer(capsule, "pointermove", 100, 40);
+  await tick(120);
+  await pointer(task, "pointermove", 120, 60);
+  await clickAt(task, 120, 60);
+  assert.equal(controls.state().objects[0].blocks[0].done, true);
+  assert.equal(controls.state().objects[0].blocks[1].done, false);
+});
+
+test("保留双舱时小仓原位点击可收起，任务更新同步标题，未提交草稿保留", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+    count: 3,
+  });
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  const island = host.querySelector(".dynamic-island");
+  const header = host.querySelector(".island-twin-header");
+  const capsule = host.querySelector(".island-twin-time");
+  for (const dock of ["top", "left", "right"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock };
+      for (const callback of calls.placementHandlers) callback(calls.placement);
+    });
+    await hoverIsland(capsule, true);
+    await pointer(capsule, "pointermove", 100, 40);
+    await tick(120);
+    assert.equal(header.hidden, false);
+    assert.equal(island.dataset.open, "true");
+    const firstTask = host.querySelector('input[type="checkbox"]');
+    await act(async () =>
+      firstTask.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          detail: 1,
+          clientX: 120,
+          clientY: 300,
+          screenX: 100,
+          screenY: 40,
+        }),
+      ),
+    );
+    assert.equal(
+      controls.state().objects[0].blocks[0].done,
+      false,
+      "native edge repositioning cannot put a task under a stationary click",
+    );
+    await act(async () =>
+      capsule.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          detail: 1,
+          clientX: 100,
+          clientY: 40,
+        }),
+      ),
+    );
+    assert.equal(
+      island.dataset.open,
+      "false",
+      "retained trigger is never mistaken for a replaced task",
+    );
+    await tick(200);
+    assert.equal(
+      island.dataset.open,
+      "false",
+      "explicit collapse does not bounce open",
+    );
+    await hoverIsland(island, false);
+    await hoverIsland(capsule, true);
+    await tick(120);
+    assert.equal(island.dataset.open, "true");
+    assert.equal(!!host.querySelector(".island-twin-complete"), dock === "top");
+    await click(button(host, "收起轻岛"));
+    await hoverIsland(island, false);
+  }
+  await click(capsule);
+  await click(host.querySelector('input[type="checkbox"]'));
+  assert.equal(controls.state().objects[0].blocks[0].done, true);
+  assert.equal(
+    host.querySelector(".island-twin-current").textContent,
+    "桌面待办 2",
+  );
+  await type(host.querySelector("textarea"), "保留未提交草稿");
+  await click(button(host, "收起轻岛"));
+  await click(capsule);
+  assert.equal(host.querySelector("textarea").value, "保留未提交草稿");
+  await click(button(host, "已完成 1"));
+  await click(host.querySelector('input[type="checkbox"]'));
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  assert.equal(
+    host.querySelector(".island-twin-current").textContent,
+    "桌面真实待办",
+  );
 });
 
 test("双岛只读、最新锁定或远端已完成均不误写，不启动成功动画", async (t) => {
@@ -655,15 +961,16 @@ test("收起显示待办摘要，悬浮展开按原顺序列出全部待办，�
   assert.equal(host.querySelectorAll(".island-task-row").length, 37);
 });
 
-test("动物每十秒切换，隐藏及全部完成后暂停", async (t) => {
+test("奔跑固定为小猫且不再轮换，隐藏及全部完成后暂停", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const { host } = await mount(t, { desktop: true });
   const animal = () => host.querySelector(".island-animal");
   const first = animal().dataset.animal;
-  await act(async () => t.mock.timers.tick(9999));
-  assert.equal(animal().dataset.animal, first);
-  await act(async () => t.mock.timers.tick(1));
-  assert.notEqual(animal().dataset.animal, first);
+  assert.equal(first, "classic-cat");
+  assert.equal(animal().dataset.playing, "true");
+  await act(async () => t.mock.timers.tick(60000));
+  assert.equal(animal().dataset.animal, "classic-cat");
+  assert.equal(animal().dataset.playing, "true");
   Object.defineProperty(document, "hidden", {
     configurable: true,
     value: true,
@@ -678,12 +985,31 @@ test("动物每十秒切换，隐藏及全部完成后暂停", async (t) => {
   assert.equal(animal().dataset.playing, "false");
   delete document.hidden;
   await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  assert.equal(animal().dataset.playing, "true");
   await click(button(host, "展开轻岛"));
   await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(animal().dataset.playing, "false");
   const finished = animal().dataset.animal;
   await act(async () => t.mock.timers.tick(30000));
   assert.equal(animal().dataset.animal, finished);
+});
+
+test("双岛空态仍保留奔跑小猫，重新挂载也不改变动物", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 0,
+  });
+  for (let round = 0; round < 3; round++) {
+    await act(async () => t.mock.timers.tick(60000));
+    assert.equal(
+      host.querySelector(".island-animal").dataset.animal,
+      "classic-cat",
+    );
+    assert.equal(host.querySelector(".island-animal").dataset.playing, "true");
+    await act(async () => controls.remount());
+  }
 });
 
 test("桌面胶囊失焦时收起但保留输入，钉住后失焦保持展开", async (t) => {
@@ -786,8 +1112,17 @@ test("双岛动物拖动保留横向抓取点，完成和设置控件不触发�
   assert.deepEqual(calls.dragOrigins[0], { x: 277, y: 36 });
   // Suppressed click after dragging must not expand the panel.
   await click(pet);
-  if (host.querySelector(".dynamic-island").dataset.open === "false")
-    await click(pet);
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "false");
+  await click(pet);
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "false");
+  const capsule = host.querySelector(".island-twin-time");
+  const beforeSmall = calls.drag.length;
+  await pointer(capsule, "pointerdown", 350, 36);
+  await pointer(capsule, "pointermove", 380, 36);
+  await pointer(capsule, "pointerup", 380, 36);
+  assert.equal(calls.drag.length, beforeSmall);
+  await click(capsule);
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
   const settings = host.querySelector(".island-options > summary");
   const before = calls.drag.length;
   await pointer(settings, "pointerdown", 320, 36);
@@ -1267,4 +1602,175 @@ test("桌面最大高度使用显示器区域而非收起窗口高度", async ()
     "540px",
   );
   document.documentElement.style.removeProperty("--desktop-max-height");
+});
+
+test("双岛外观设置即时生效，横向左右与重挂载保留设置，不改待办或输入草稿", async (t) => {
+  localStorage.removeItem(islandAppearanceKey);
+  t.after(() => localStorage.removeItem(islandAppearanceKey));
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 2,
+  });
+  const initial = controls.state();
+  const island = () => host.querySelector(".dynamic-island");
+  assert.equal(island().dataset.material, "glass");
+  assert.equal(
+    localStorage.getItem(islandAppearanceKey),
+    null,
+    "mount must not migrate or save data",
+  );
+  await click(button(host, "展开轻岛"));
+  await type(host.querySelector("textarea"), "改外观时保留的输入");
+  await [...calls.handlers][0]();
+  const otherEntries = () =>
+    Object.fromEntries(
+      Object.keys(localStorage)
+        .filter((key) => key !== islandAppearanceKey)
+        .map((key) => [key, localStorage.getItem(key)]),
+    );
+  const before = otherEntries();
+  await click(host.querySelector(".island-options > summary"));
+  await click(button(host, "冰青"));
+  await click(button(host, "提高轻岛透明度"));
+  assert.equal(
+    island().style.getPropertyValue("--island-glass-color"),
+    "#83dce5",
+  );
+  assert.equal(island().style.getPropertyValue("--island-glass-alpha"), "0.25");
+  assert.deepEqual(JSON.parse(localStorage.getItem(islandAppearanceKey)), {
+    color: "#83dce5",
+    transparency: 75,
+  });
+  // Exercise actual native input events as well as the shortcut buttons.
+  for (const [selector, value] of [
+    ["color", "#46acbf"],
+    ["range", "83"],
+  ]) {
+    await act(async () => {
+      const input = host.querySelector(
+        `.island-appearance-settings input[type="${selector}"]`,
+      );
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      ).set.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+  assert.deepEqual(JSON.parse(localStorage.getItem(islandAppearanceKey)), {
+    color: "#46acbf",
+    transparency: 83,
+  });
+  for (const dock of ["left", "right", "top"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock };
+      for (const handler of calls.placementHandlers) handler(calls.placement);
+    });
+    assert.equal(
+      island().style.getPropertyValue("--island-glass-color"),
+      "#46acbf",
+    );
+    assert.equal(
+      island().style.getPropertyValue("--island-glass-alpha"),
+      "0.17",
+    );
+  }
+  await act(async () => controls.remount());
+  assert.equal(
+    host.querySelector('input[aria-label="轻岛颜色"]').value,
+    "#46acbf",
+  );
+  assert.equal(
+    host.querySelector('input[aria-label="轻岛透明度"]').value,
+    "83",
+  );
+  assert.equal(host.querySelector("textarea").value, "改外观时保留的输入");
+  assert.equal(
+    controls.state(),
+    initial,
+    "appearance must never update shared workspace",
+  );
+  assert.deepEqual(otherEntries(), before);
+  await click(button(host, "恢复默认外观"));
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(islandAppearanceKey)),
+    defaultIslandAppearance,
+  );
+  assert.deepEqual(otherEntries(), before);
+  assert.equal(controls.state(), initial);
+});
+
+test("双岛调色输入保留面板，普通失焦仍收起；保存失败可预览并重试", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  localStorage.removeItem(islandAppearanceKey);
+  const original = window.Storage.prototype.setItem;
+  t.after(() => {
+    window.Storage.prototype.setItem = original;
+    localStorage.removeItem(islandAppearanceKey);
+  });
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+  });
+  const initial = controls.state();
+  await click(button(host, "展开轻岛"));
+  await click(host.querySelector(".island-options > summary"));
+  const range = host.querySelector('input[aria-label="轻岛透明度"]');
+  await act(async () => range.focus());
+  await hoverIsland(range, false);
+  await act(async () => t.mock.timers.tick(400));
+  assert.equal(
+    host.querySelector(".dynamic-island").dataset.open,
+    "true",
+    "adjusting transparency must survive leaving the panel",
+  );
+  const color = host.querySelector('input[aria-label="轻岛颜色"]');
+  await act(async () => {
+    color.focus();
+    window.dispatchEvent(new Event("blur"));
+  });
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
+  await act(async () => {
+    color.blur();
+    window.dispatchEvent(new Event("blur"));
+  });
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "false");
+  await click(button(host, "展开轻岛"));
+  window.Storage.prototype.setItem = function (key, value) {
+    if (key === islandAppearanceKey) throw Error("存储已满");
+    return original.call(this, key, value);
+  };
+  await click(button(host, "青色"));
+  assert.equal(
+    host.querySelector('input[aria-label="轻岛颜色"]').value,
+    "#53c7c2",
+  );
+  assert.match(
+    host.querySelector(".island-appearance-error").textContent,
+    /已预览.*暂未保存/,
+  );
+  assert.equal(localStorage.getItem(islandAppearanceKey), null);
+  assert.equal(controls.state(), initial);
+  window.Storage.prototype.setItem = original;
+  await click(button(host, "降低轻岛透明度"));
+  assert.equal(host.querySelector(".island-appearance-error"), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem(islandAppearanceKey)), {
+    color: "#53c7c2",
+    transparency: 65,
+  });
+  assert.equal(controls.state(), initial);
+});
+
+test("旧桌面布局与普通页面不读取或写入双岛外观设置", async (t) => {
+  localStorage.setItem(islandAppearanceKey, "{unreadable");
+  t.after(() => localStorage.removeItem(islandAppearanceKey));
+  const { host } = await mount(t, { desktop: true, supportsTwinIsland: false });
+  assert.equal(
+    host.querySelector(".dynamic-island").dataset.material,
+    undefined,
+  );
+  assert.equal(host.querySelector(".island-appearance-settings"), null);
+  assert.equal(localStorage.getItem(islandAppearanceKey), "{unreadable");
 });

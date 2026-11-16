@@ -60,6 +60,11 @@ function validateLayout(input) {
     throw new Error("Invalid desktop appearance");
   const twins = input.appearance === "jade-twins";
   if (
+    input.retained !== undefined &&
+    (!twins || typeof input.retained !== "boolean")
+  )
+    throw new Error("Invalid retained twin island state");
+  if (
     twins &&
     (!hasDock ||
       typeof input.peek !== "boolean" ||
@@ -90,6 +95,7 @@ function validateLayout(input) {
     ...(hasDock ? { dock: input.dock, expanded: input.expanded } : {}),
     ...(input.appearance ? { appearance: input.appearance } : {}),
     ...(twins ? { peek: input.peek, empty: input.empty } : {}),
+    ...(twins && input.retained ? { retained: true } : {}),
   };
 }
 

@@ -204,6 +204,11 @@ test("native twin capability, drag cancellation and empty side docking preserve 
   const layout = f.handlers.get("qingdan-desktop:layout"),
     drag = f.handlers.get("qingdan-desktop:drag");
   assert.equal(
+    f.handlers.get("qingdan-desktop:placement")(f.event)
+      .supportsRetainedTwinIsland,
+    true,
+  );
+  assert.equal(
     f.handlers.get("qingdan-desktop:placement")(f.event).supportsTwinIsland,
     true,
   );
@@ -239,6 +244,135 @@ test("native twin capability, drag cancellation and empty side docking preserve 
   });
   assert.equal(f.bounds().width, 342);
   assert.equal(f.bounds().x, -12);
+});
+
+test("retained capsules keep their screen position while a separate clickable list opens below", () => {
+  const hit = (shape, x, y) =>
+    shape.some(
+      (r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+    );
+  for (const edge of ["top", "left", "right"])
+    for (const empty of [false, true])
+      for (const horizontal of [
+        work.x,
+        work.x + 700,
+        work.x + work.width - 100,
+      ]) {
+        const layout = {
+          dock: edge,
+          appearance: "jade-twins",
+          empty,
+          peek: false,
+          retained: true,
+        };
+        const anchor = dock.restorePlacement(
+          {
+            x: horizontal,
+            y: 200,
+            ...dock.compactSize(edge, "jade-twins", empty),
+            dock: edge,
+          },
+          work,
+          "jade-twins",
+          empty,
+        );
+        const compact = dock.fitDockBounds(
+          anchor,
+          {
+            ...layout,
+            ...dock.compactSize(edge, "jade-twins", empty),
+            expanded: false,
+          },
+          work,
+        );
+        const expandedLayout = {
+          ...layout,
+          expanded: true,
+          width: edge === "top" ? 444 : 384,
+          height: 450,
+        };
+        const expanded = dock.fitDockBounds(anchor, expandedLayout, work);
+        const placement = dock.placementState(
+          anchor,
+          expanded,
+          work,
+          false,
+          expandedLayout,
+        );
+        const shape = dock.dockShape(expanded, expandedLayout, anchor, work);
+        const headerX =
+          edge === "top"
+            ? 12 + placement.headerOffset
+            : edge === "left"
+              ? 12
+              : expanded.width - 68;
+        const compactX = edge === "right" ? compact.width - 68 : 12;
+        assert.equal(expanded.x + headerX, compact.x + compactX);
+        assert.equal(
+          expanded.y,
+          compact.y,
+          "expanding must not recenter a side rail vertically",
+        );
+        const headerHeight = edge === "top" ? 48 : (empty ? 52 : 86) + 51;
+        assert.ok(hit(shape, headerX + 28, 40));
+        const timeX = edge === "top" ? headerX + 339 : headerX + 28;
+        const timeY = edge === "top" ? 36 : 12 + headerHeight - 22;
+        assert.ok(hit(shape, timeX, timeY), "small capsule remains clickable");
+        assert.ok(
+          hit(shape, expanded.width / 2, headerHeight + 60),
+          "list below remains clickable",
+        );
+        assert.equal(
+          hit(shape, timeX, 12 + headerHeight + 5),
+          false,
+          "transparent gap passes through",
+        );
+        if (edge !== "top")
+          assert.equal(
+            hit(shape, expanded.width / 2, 40),
+            false,
+            "empty space beside side capsules passes through",
+          );
+        const closed = dock.fitDockBounds(
+          anchor,
+          {
+            ...layout,
+            ...dock.compactSize(edge, "jade-twins", empty),
+            expanded: false,
+          },
+          work,
+        );
+        assert.deepEqual(
+          closed,
+          compact,
+          "collapse returns to the saved compact bounds",
+        );
+      }
+});
+
+test("retained list uses available space below its anchor and stays inside a short display", () => {
+  const area = { x: 1920, y: 0, width: 1280, height: 720 };
+  const anchor = { x: 1908, y: 540, width: 80, height: 161, dock: "left" };
+  const layout = {
+    dock: "left",
+    appearance: "jade-twins",
+    retained: true,
+    empty: false,
+    expanded: true,
+    width: 384,
+    height: 400,
+  };
+  const bounds = dock.fitDockBounds(anchor, layout, area);
+  assert.equal(bounds.y + bounds.height, 720);
+  assert.equal(
+    dock.placementState(anchor, bounds, area, false, layout).maxHeight,
+    400,
+  );
+  const higher = { ...anchor, y: 100 };
+  assert.equal(
+    dock.placementState(higher, bounds, area, false, layout).maxHeight,
+    620,
+  );
 });
 
 test("jade capsule uses separate native hit regions and its transparent gap passes through", () => {

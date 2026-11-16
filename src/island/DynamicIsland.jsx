@@ -30,6 +30,9 @@ import {
 import "./dynamic-island.css";
 import { useAnimalRunner } from "./animal-runners.js";
 import TwinIslandHeader from "../desktop/TwinIslandHeader.jsx";
+import IslandAppearanceSettings from "../desktop/IslandAppearanceSettings.jsx";
+import { useIslandAppearance } from "../desktop/useIslandAppearance.js";
+import { islandAppearanceStyle } from "../desktop/island-appearance.js";
 
 const syncLabels = {
   loading: "连接中",
@@ -66,6 +69,8 @@ export default function DynamicIsland({
   const side = desktop?.dock === "left" || desktop?.dock === "right";
   const jade = desktop?.supportsJade === true;
   const twins = jade && desktop?.supportsTwinIsland === true;
+  const retained = twins && desktop?.supportsRetainedTwinIsland === true;
+  const appearance = useIslandAppearance(twins);
   const [peek, setPeek] = useState(false);
   const Surface = dragHandleTitle ? "div" : React.Fragment;
   const [drafts, setDrafts] = useState(initialDrafts);
@@ -82,12 +87,16 @@ export default function DynamicIsland({
   const dock = useRef(null),
     island = useRef(null),
     panel = useRef(null),
+    twinOptions = useRef(null),
     trigger = useRef(null),
     input = useRef(null);
   const enterTimer = useRef(null),
     leaveTimer = useRef(null);
   const returnFocus = useRef(false);
   const pointerInside = useRef(false),
+    pointerPosition = useRef(null),
+    hoverClickOrigin = useRef(null),
+    hoverDismissed = useRef(false),
     keyboard = useRef(false),
     composing = useRef(false),
     clickHeld = useRef(false);
@@ -122,11 +131,32 @@ export default function DynamicIsland({
     );
   const open = () => {
     clearTimers();
+    hoverClickOrigin.current = null;
     setPeek(false);
     setExpanded(true);
   };
+  const scheduleOpen = (event) => {
+    if (
+      event.pointerType === "touch" ||
+      event.buttons ||
+      desktop?.dragging ||
+      (twins && hoverDismissed.current)
+    )
+      return;
+    clearTimers();
+    pointerPosition.current = { x: event.screenX, y: event.screenY };
+    if (!expanded)
+      enterTimer.current = setTimeout(() => {
+        open();
+        // A short display can force the native window upward. Screen points
+        // keep a stationary click from hitting a task that moved underneath it.
+        if (twins) hoverClickOrigin.current = pointerPosition.current;
+      }, 120);
+  };
   const close = ({ focus = false, unpin = false } = {}) => {
     clearTimers();
+    hoverClickOrigin.current = null;
+    hoverDismissed.current = twins && pointerInside.current;
     clickHeld.current = false;
     if (unpin && live.current.pinned) savePin(false);
     if (focus && twins) returnFocus.current = true;
@@ -143,6 +173,9 @@ export default function DynamicIsland({
     leaveTimer.current = setTimeout(() => {
       const active = document.activeElement;
       const editing = active === input.current;
+      const editingAppearance = active?.matches?.(
+        ".island-appearance-settings input",
+      );
       const keyboardFocus =
         keyboard.current && (twins ? dock : panel).current?.contains(active);
       if (
@@ -150,6 +183,7 @@ export default function DynamicIsland({
         !clickHeld.current &&
         !pointerInside.current &&
         !editing &&
+        !editingAppearance &&
         !keyboardFocus
       ) {
         setExpanded(false);
@@ -157,6 +191,15 @@ export default function DynamicIsland({
       }
     }, 300);
   };
+
+  useLayoutEffect(() => {
+    // Collapsing hides (rather than unmounts) the panel. Reset its transient
+    // views so entering the small capsule always returns to remaining tasks.
+    if (twins && !shown) {
+      if (twinOptions.current) twinOptions.current.open = false;
+      setShowCompleted(false);
+    }
+  }, [shown, twins]);
 
   useLayoutEffect(() => {
     if (!shown && returnFocus.current) {
@@ -191,6 +234,14 @@ export default function DynamicIsland({
   useEffect(() => {
     if (!closeOnWindowBlur) return;
     const blurred = () => {
+      // A native color picker temporarily owns window focus. Keep its control
+      // mounted/visible until it returns; ordinary window blur is unchanged.
+      if (
+        document.activeElement?.matches?.(
+          '.island-appearance-settings input[type="color"]',
+        )
+      )
+        return;
       clearTimers();
       pointerInside.current = false;
       keyboard.current = false;
@@ -381,6 +432,24 @@ export default function DynamicIsland({
         clearTimers();
         desktop?.handlers.onPointerDown(event);
       }}
+      onClickCapture={(event) => {
+        desktop?.handlers.onClickCapture?.(event);
+        if (event.isPropagationStopped()) return;
+        const origin = hoverClickOrigin.current;
+        hoverClickOrigin.current = null;
+        if (
+          twins &&
+          shown &&
+          origin &&
+          (!retained || !event.target.closest(".island-twin-header")) &&
+          event.detail > 0 &&
+          Math.hypot(event.screenX - origin.x, event.screenY - origin.y) < 5
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          clickHeld.current = true;
+        }
+      }}
       hidden={hidden}
       style={{ top: offset, "--island-top": `${offset}px` }}
     >
@@ -390,6 +459,9 @@ export default function DynamicIsland({
         data-open={shown}
         data-appearance={jade ? "jade" : undefined}
         data-layout={twins ? "twins" : undefined}
+        data-retained={retained || undefined}
+        data-material={twins ? "glass" : undefined}
+        data-glass-motion={twins && animal.playing}
         data-peek={twins && peek && !shown && !desktop?.dragging}
         data-empty={!nextTask}
         data-dock={desktop?.dragging ? "free" : desktop?.dock}
@@ -398,6 +470,10 @@ export default function DynamicIsland({
           desktop
             ? {
                 "--desktop-rail-offset": `${Math.max(0, (desktop.railOffset || 12) - 12)}px`,
+                ...(retained && Number.isFinite(desktop.headerOffset)
+                  ? { "--twin-header-offset": `${desktop.headerOffset}px` }
+                  : {}),
+                ...(twins ? islandAppearanceStyle(appearance.value) : {}),
               }
             : undefined
         }
@@ -405,15 +481,27 @@ export default function DynamicIsland({
         onPointerEnter={(event) => {
           if (event.pointerType === "touch" || desktop?.dragging) return;
           pointerInside.current = true;
+          hoverDismissed.current = false;
           clearTimers();
-          if (!expanded) enterTimer.current = setTimeout(open, 120);
+          if (!twins) scheduleOpen(event);
         }}
         onPointerLeave={(event) => {
           if (event.pointerType === "touch") return;
           pointerInside.current = false;
+          hoverDismissed.current = false;
+          hoverClickOrigin.current = null;
           clickHeld.current = false;
           clearTimeout(enterTimer.current);
           scheduleClose();
+        }}
+        onPointerMove={(event) => {
+          pointerPosition.current = { x: event.screenX, y: event.screenY };
+          const origin = hoverClickOrigin.current;
+          if (
+            origin &&
+            Math.hypot(event.screenX - origin.x, event.screenY - origin.y) >= 5
+          )
+            hoverClickOrigin.current = null;
         }}
         onBlur={(event) => {
           if (!event.currentTarget.contains(event.relatedTarget))
@@ -464,11 +552,17 @@ export default function DynamicIsland({
               disabled={!writable || nextTask?.locked}
               onComplete={toggleTask}
               toggle={toggle}
+              onPointerEnter={scheduleOpen}
+              onPointerLeave={() => {
+                clearTimeout(enterTimer.current);
+                hoverDismissed.current = false;
+              }}
               panelId={panelId}
               trigger={trigger}
               side={side && !desktop?.dragging}
               peek={peek}
               expanded={shown}
+              retained={retained}
               project={page?.title}
             />
           ) : dragHandleTitle ? (
@@ -550,11 +644,18 @@ export default function DynamicIsland({
                 title="拖动轻岛"
               >
                 {projectControls}
-                <details className="island-options">
-                  <summary aria-label="轻岛设置" title="画布与桌面操作">
+                <details ref={twinOptions} className="island-options">
+                  <summary aria-label="轻岛设置" title="外观、画布与桌面操作">
                     <Settings2 size={15} />
                   </summary>
-                  <div className="island-options-content">{panelToolbar}</div>
+                  <div className="island-options-content">
+                    {panelToolbar}
+                    <IslandAppearanceSettings
+                      value={appearance.value}
+                      onChange={appearance.update}
+                      error={appearance.error}
+                    />
+                  </div>
                 </details>
                 <button
                   className="island-twin-collapse"

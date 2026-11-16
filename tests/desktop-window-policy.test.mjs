@@ -126,12 +126,18 @@ test("twin layout validates state and admits the narrow side capsules", () => {
     height: 127,
   };
   assert.deepEqual(policy.validateLayout(layout), layout);
+  assert.deepEqual(policy.validateLayout({ ...layout, retained: true }), {
+    ...layout,
+    retained: true,
+  });
   for (const patch of [
     { peek: undefined },
     { empty: "yes" },
     { dock: undefined },
     { width: 64 },
     { appearance: "other" },
+    { retained: "true" },
+    { appearance: "jade", retained: true },
   ])
     assert.throws(() => policy.validateLayout({ ...layout, ...patch }));
 });
