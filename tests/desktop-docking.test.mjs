@@ -12,6 +12,102 @@ try {
 }
 const work = { x: -1920, y: 32, width: 1920, height: 1048 };
 
+test("twin island hit regions follow both capsules, mirrored peeks and the shorter empty rail", () => {
+  const hit = (shape, x, y) =>
+    shape.some(
+      (r) => x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height,
+    );
+  for (const side of ["left", "right"])
+    for (const empty of [false, true])
+      for (const peek of [false, true]) {
+        const size = dock.compactSize(side, "jade-twins", empty);
+        const layout = {
+          ...size,
+          width: peek ? 342 : size.width,
+          dock: side,
+          expanded: false,
+          appearance: "jade-twins",
+          empty,
+          peek,
+        };
+        const bounds = dock.fitDockBounds(null, layout, work);
+        const shape = dock.dockShape(bounds, layout, null, work);
+        const x = side === "left" ? 40 : bounds.width - 40;
+        const h = empty ? 52 : 86;
+        assert.equal(hit(shape, x, 38), true);
+        assert.equal(hit(shape, x, 12 + h + 3), false, "gap passes through");
+        assert.equal(
+          hit(shape, x, 12 + h + 27),
+          true,
+          "time capsule is clickable",
+        );
+        assert.equal(hit(shape, x, layout.height - 5), false);
+        if (peek)
+          assert.equal(hit(shape, 171, 40), true, "inward title is clickable");
+        assert.equal(
+          side === "left" ? bounds.x + 12 : bounds.x + bounds.width - 12,
+          side === "left" ? work.x : work.x + work.width,
+        );
+      }
+  for (const peek of [false, true]) {
+    const layout = {
+      appearance: "jade-twins",
+      dock: "top",
+      expanded: false,
+      empty: false,
+      peek,
+      width: peek ? 436 : 400,
+      height: peek ? 88 : 72,
+    };
+    const shape = dock.dockShape(layout, layout, null, work);
+    assert.equal(hit(shape, 35, 36), true);
+    assert.equal(hit(shape, layout.width - 90, 36), false);
+    assert.equal(hit(shape, layout.width - 49, 36), true);
+  }
+});
+
+test("native twin capability, drag cancellation and empty side docking preserve matching geometry", async (t) => {
+  const f = await fixture(t);
+  const layout = f.handlers.get("qingdan-desktop:layout"),
+    drag = f.handlers.get("qingdan-desktop:drag");
+  assert.equal(
+    f.handlers.get("qingdan-desktop:placement")(f.event).supportsTwinIsland,
+    true,
+  );
+  layout(f.event, {
+    mode: "island",
+    dock: "top",
+    expanded: false,
+    appearance: "jade-twins",
+    peek: false,
+    empty: true,
+    width: 400,
+    height: 72,
+  });
+  const original = f.bounds();
+  drag(f.event, "start", { x: 80, y: 38 });
+  f.cursor({ x: 30, y: 450 });
+  drag(f.event, "cancel");
+  assert.deepEqual(f.bounds(), original);
+  drag(f.event, "start", { x: 80, y: 38 });
+  drag(f.event, "end");
+  assert.equal(f.bounds().width, 80);
+  assert.equal(f.bounds().height, 127);
+  assert.equal(f.bounds().x, -12);
+  layout(f.event, {
+    mode: "island",
+    dock: "left",
+    expanded: false,
+    appearance: "jade-twins",
+    peek: true,
+    empty: true,
+    width: 342,
+    height: 127,
+  });
+  assert.equal(f.bounds().width, 342);
+  assert.equal(f.bounds().x, -12);
+});
+
 test("jade capsule uses separate native hit regions and its transparent gap passes through", () => {
   const layout = {
     dock: "top",

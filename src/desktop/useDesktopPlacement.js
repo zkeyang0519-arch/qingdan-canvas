@@ -5,6 +5,7 @@ const initial = {
   dragging: false,
   railOffset: 12,
   supportsJade: false,
+  supportsTwinIsland: false,
 };
 
 export function useDesktopPlacement(bridge) {
@@ -97,17 +98,27 @@ export function useDesktopPlacement(bridge) {
       if (!bridge?.drag || event.button !== 0 || gesture.current?.moving)
         return;
       const handle = event.target.closest?.('[data-desktop-drag="true"]');
-      const control = event.target.closest?.("button,input,textarea,select,a");
+      const control = event.target.closest?.(
+        "button,input,textarea,select,a,summary",
+      );
       if (!handle || (control && control !== handle)) return;
+      const twin = handle.closest('[data-layout="twins"]');
+      const dragBox = twin
+        ? handle.closest(".island-twin-main") || handle
+        : handle;
       gesture.current = {
         id: event.pointerId,
         x: event.screenX,
         y: event.screenY,
         origin: {
           x: handle.closest('[data-appearance="jade"]')
-            ? event.clientX - handle.getBoundingClientRect().left + 12
+            ? event.clientX - dragBox.getBoundingClientRect().left + 12
             : event.clientX,
-          y: handle.classList.contains("island-side-tab") ? 38 : event.clientY,
+          y:
+            handle.classList.contains("island-side-tab") ||
+            (twin && ["left", "right"].includes(twin.dataset.dock))
+              ? 38
+              : event.clientY,
         },
         element: event.currentTarget,
         root: event.currentTarget,

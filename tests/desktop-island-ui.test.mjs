@@ -118,6 +118,7 @@ function bridgeFixture() {
     placementHandlers: new Set(),
     updateHandlers: new Set(),
     drag: [],
+    dragOrigins: [],
     placement: {
       dock: "top",
       dragging: false,
@@ -139,8 +140,9 @@ function bridgeFixture() {
       calls.placementHandlers.add(callback);
       return () => calls.placementHandlers.delete(callback);
     },
-    drag: async (action) => {
+    drag: async (action, origin) => {
       calls.drag.push(action);
+      if (action === "start") calls.dragOrigins.push(origin);
       calls.placement = {
         ...calls.placement,
         dragging: action === "start" || action === "move",
@@ -172,6 +174,7 @@ async function mount(
     overrides = {},
     count = 1,
     supportsJade = true,
+    supportsTwinIsland = false,
   } = {},
 ) {
   const initial = createWorkspace();
@@ -194,6 +197,7 @@ async function mount(
   };
   const { bridge, calls } = bridgeFixture();
   calls.placement.supportsJade = supportsJade;
+  calls.placement.supportsTwinIsland = supportsTwinIsland;
   window.qingdanDesktop = bridge;
   t.after(() => {
     delete window.qingdanDesktop;
@@ -249,6 +253,10 @@ async function mount(
     };
     controls.setPatch = setPatch;
     controls.state = () => current.current;
+    controls.update = update;
+    controls.receiveBeforeRender = (action) => {
+      current.current = action(current.current);
+    };
     globalThis.desktopTestWorkspace = (...args) => {
       controls.hookCalls++;
       controls.hookArgs = args;
@@ -311,6 +319,161 @@ async function type(element, value) {
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+
+test("双岛直接完成沿用真实任务，过渡期间重复点击不完成下一条", async (t) => {
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 2,
+  });
+  assert.equal(host.querySelector(".dynamic-island").dataset.layout, "twins");
+  assert.equal(host.querySelector(".island-twin-time").textContent, "剩余2 项");
+  const first = host.querySelector(".island-twin-complete");
+  await act(async () => {
+    first.click();
+    first.click();
+  });
+  assert.deepEqual(
+    controls.state().objects[0].blocks.map((b) => !!b.done),
+    [true, false],
+  );
+  assert.equal(
+    host.querySelector(".island-twin-out").textContent,
+    "桌面真实待办",
+  );
+  assert.equal(
+    host.querySelector(".island-twin-current").textContent,
+    "桌面待办 2",
+  );
+  assert.equal(host.querySelector(".island-twin-complete").disabled, true);
+  await act(async () => new Promise((r) => setTimeout(r, 500)));
+  await click(host.querySelector(".island-twin-complete"));
+  assert.equal(host.querySelector(".island-twin-complete"), null);
+  assert.equal(host.querySelector(".dynamic-island").dataset.empty, "true");
+  assert.equal(host.querySelector(".island-twin-time").textContent, "已清空");
+  await act(async () => new Promise((r) => setTimeout(r, 15)));
+  assert.equal(calls.layout.at(-1).appearance, "jade-twins");
+  assert.equal(calls.layout.at(-1).empty, true);
+});
+
+test("双岛左右贴边悬停只预览，点击打开原面板，空态新增和完成恢复仍工作", async (t) => {
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 0,
+  });
+  for (const side of ["left", "right"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock: side };
+      for (const handler of calls.placementHandlers) handler(calls.placement);
+    });
+    assert.equal(host.querySelector(".island-twin-complete"), null);
+    await act(async () => {
+      host.querySelector(".dynamic-island").dispatchEvent(
+        new MouseEvent("pointerover", {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    assert.equal(host.querySelector(".dynamic-island").dataset.peek, "true");
+    assert.equal(host.querySelector(".dynamic-island").dataset.open, "false");
+    await click(button(host, "展开轻岛"));
+    assert.equal(
+      host.querySelector(".island-panel").hasAttribute("inert"),
+      false,
+    );
+    await type(host.querySelector("textarea"), `保留${side}草稿`);
+    await click(button(host, "收起轻岛"));
+    assert.equal(document.activeElement, button(host, "展开轻岛"));
+  }
+  await click(button(host, "展开轻岛"));
+  await click(button(host, "添加待办"));
+  assert.equal(controls.state().objects.length, 2);
+  await click(button(host, "收起轻岛"));
+  assert.equal(host.querySelector(".island-twin-complete").disabled, false);
+  await click(host.querySelector(".island-twin-complete"));
+  await click(button(host, "展开轻岛"));
+  await click(button(host, "已完成 1"));
+  await click(host.querySelector('input[type="checkbox"]'));
+  assert.equal(controls.state().objects[1].blocks[0].done, false);
+});
+
+test("双岛只读、最新锁定或远端已完成均不误写，不启动成功动画", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 2,
+    overrides: { readOnly: true },
+  });
+  assert.equal(host.querySelector(".island-twin-complete").disabled, true);
+  await click(host.querySelector(".island-twin-complete"));
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  await act(async () => controls.setPatch({}));
+  const stale = host.querySelector(".island-twin-complete");
+  controls.receiveBeforeRender((state) =>
+    patchObjects(state, { [state.objects[0].id]: { locked: true } }),
+  );
+  await click(stale);
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  assert.equal(host.querySelector(".island-twin-out"), null);
+  await act(async () =>
+    controls.update((state) =>
+      patchObjects(state, { [state.objects[0].id]: { locked: false } }),
+    ),
+  );
+  controls.receiveBeforeRender((state) =>
+    patchObjects(state, {
+      [state.objects[0].id]: {
+        blocks: state.objects[0].blocks.map((b, i) => ({
+          ...b,
+          done: i === 0,
+        })),
+      },
+    }),
+  );
+  await click(host.querySelector(".island-twin-complete"));
+  assert.deepEqual(
+    controls.state().objects[0].blocks.map((b) => b.done),
+    [true, false],
+  );
+  assert.equal(host.querySelector(".island-twin-out"), null);
+});
+
+test("双岛完成动画卸载不再写任务，减少动态效果时立即可操作下一条", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 3,
+  });
+  await click(host.querySelector(".island-twin-complete"));
+  await act(async () => controls.remount());
+  await act(async () => new Promise((r) => setTimeout(r, 500)));
+  assert.deepEqual(
+    controls.state().objects[0].blocks.map((b) => !!b.done),
+    [true, false, false],
+  );
+  t.mock.method(window, "matchMedia", () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+  }));
+  await click(host.querySelector(".island-twin-complete"));
+  assert.equal(host.querySelector(".island-twin-out"), null);
+  assert.equal(host.querySelector(".island-twin-complete").disabled, false);
+  assert.deepEqual(
+    controls.state().objects[0].blocks.map((b) => !!b.done),
+    [true, true, false],
+  );
+});
+
+test("仅支持旧雾玉的客户端继续使用旧几何，不发送双岛请求", async (t) => {
+  const { host, calls } = await mount(t, { desktop: true });
+  assert.equal(host.querySelector(".dynamic-island").dataset.layout, undefined);
+  await act(async () => new Promise((r) => setTimeout(r, 15)));
+  assert.ok(calls.layout.every((layout) => layout.appearance !== "jade-twins"));
+});
 
 test("旧桌面组件保留可操作的原布局，升级提示不会发送不兼容的双舱尺寸", async (t) => {
   const { host, controls, calls } = await mount(t, {
@@ -466,6 +629,60 @@ async function pointer(element, type, x, y) {
     element.dispatchEvent(event);
   });
 }
+
+test("双岛动物拖动保留横向抓取点，完成和设置控件不触发拖动", async (t) => {
+  const { host, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+  });
+  const main = host.querySelector(".island-twin-main");
+  const pet = host.querySelector(".island-twin-pet");
+  main.getBoundingClientRect = () => ({
+    left: 12,
+    top: 12,
+    width: 293,
+    height: 48,
+  });
+  pet.getBoundingClientRect = () => ({
+    left: 257,
+    top: 16,
+    width: 40,
+    height: 40,
+  });
+  await pointer(
+    host.querySelector(".island-twin-complete"),
+    "pointerdown",
+    40,
+    36,
+  );
+  await pointer(
+    host.querySelector(".island-twin-complete"),
+    "pointermove",
+    70,
+    36,
+  );
+  await pointer(
+    host.querySelector(".island-twin-complete"),
+    "pointerup",
+    70,
+    36,
+  );
+  assert.deepEqual(calls.drag, []);
+  await pointer(pet, "pointerdown", 277, 36);
+  await pointer(pet, "pointermove", 307, 36);
+  await pointer(pet, "pointerup", 307, 36);
+  assert.deepEqual(calls.dragOrigins[0], { x: 277, y: 36 });
+  // Suppressed click after dragging must not expand the panel.
+  await click(pet);
+  if (host.querySelector(".dynamic-island").dataset.open === "false")
+    await click(pet);
+  const settings = host.querySelector(".island-options > summary");
+  const before = calls.drag.length;
+  await pointer(settings, "pointerdown", 320, 36);
+  await pointer(settings, "pointermove", 350, 36);
+  await pointer(settings, "pointerup", 350, 36);
+  assert.equal(calls.drag.length, before);
+});
 
 test("桌面左右停靠显示侧签，展开保留横排任务和未提交输入", async (t) => {
   const { host, calls } = await mount(t, { desktop: true });

@@ -114,6 +114,28 @@ test("desktop layout rejects malformed or excessively large renderer requests", 
   }
 });
 
+test("twin layout validates state and admits the narrow side capsules", () => {
+  const layout = {
+    mode: "island",
+    appearance: "jade-twins",
+    dock: "right",
+    expanded: false,
+    peek: false,
+    empty: true,
+    width: 80,
+    height: 127,
+  };
+  assert.deepEqual(policy.validateLayout(layout), layout);
+  for (const patch of [
+    { peek: undefined },
+    { empty: "yes" },
+    { dock: undefined },
+    { width: 64 },
+    { appearance: "other" },
+  ])
+    assert.throws(() => policy.validateLayout({ ...layout, ...patch }));
+});
+
 test("desktop resize preserves center and top while constraining all edges to the display", () => {
   assert.equal(typeof policy.fitWindowBounds, "function");
   const work = { x: -1920, y: 32, width: 1920, height: 1048 };

@@ -27,6 +27,7 @@ const {
   workspaceUrl,
 } = require("./window-policy.cjs");
 const {
+  compactSize,
   placementAtPoint,
   restorePlacement,
   fitDockBounds,
@@ -133,6 +134,7 @@ function getPlacement() {
       !!dragSession,
     ),
     supportsJade: true,
+    supportsTwinIsland: true,
   };
 }
 function publishPlacement() {
@@ -154,8 +156,10 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
         mode: "island",
         dock: "free",
         expanded: false,
-        width: dragSession.layout.appearance === "jade" ? 314 : 354,
-        height: dragSession.layout.appearance === "jade" ? 64 : 76,
+        ...compactSize("free", dragSession.layout.appearance),
+        ...(dragSession.layout.appearance === "jade-twins"
+          ? { empty: dragSession.layout.empty, peek: false }
+          : {}),
         ...(dragSession.layout.appearance
           ? { appearance: dragSession.layout.appearance }
           : {}),
@@ -172,6 +176,7 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
           reset ? null : islandPosition,
           work,
           layout.appearance,
+          layout.empty,
         ),
       );
     if (layout.dock) {
@@ -181,9 +186,13 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
         dock: islandPosition.dock,
         ...(changed
           ? {
-              width: islandPosition.width,
-              height: islandPosition.height,
+              ...compactSize(
+                islandPosition.dock,
+                layout.appearance,
+                layout.empty,
+              ),
               expanded: false,
+              ...(layout.appearance === "jade-twins" ? { peek: false } : {}),
             }
           : {}),
       };
@@ -263,13 +272,24 @@ function dragWindow(action, origin) {
         x: Math.max(
           24,
           Math.min(
-            layout.appearance === "jade" ? 302 : 330,
+            layout.appearance === "jade-twins"
+              ? 388
+              : layout.appearance === "jade"
+                ? 302
+                : 330,
             origin?.x ?? point.x - bounds.x,
           ),
         ),
         y: Math.max(
           12,
-          Math.min(layout.appearance === "jade" ? 52 : 64, origin?.y ?? 38),
+          Math.min(
+            layout.appearance === "jade-twins"
+              ? 60
+              : layout.appearance === "jade"
+                ? 52
+                : 64,
+            origin?.y ?? 38,
+          ),
         ),
       },
     };
@@ -293,6 +313,7 @@ function dragWindow(action, origin) {
         previous.offset,
         work,
         previous.layout.appearance,
+        previous.layout.empty,
       );
       rememberPosition(placement);
       resize(
@@ -304,6 +325,9 @@ function dragWindow(action, origin) {
           height: placement.height,
           ...(previous.layout.appearance
             ? { appearance: previous.layout.appearance }
+            : {}),
+          ...(previous.layout.appearance === "jade-twins"
+            ? { peek: false, empty: previous.layout.empty }
             : {}),
         },
         { workArea: work },
