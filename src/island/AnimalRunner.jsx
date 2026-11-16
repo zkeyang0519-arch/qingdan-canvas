@@ -1,7 +1,7 @@
 import React from "react";
 
-export default function AnimalRunner({ runner, playing }) {
-  const scale = Math.min(30 / runner.width, 22 / 36);
+export default function AnimalRunner({ runner, playing, size = 30 }) {
+  const scale = Math.min(size / runner.width, 22 / 36);
   return (
     <span
       className="island-animal"

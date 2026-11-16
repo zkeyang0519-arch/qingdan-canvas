@@ -53,10 +53,23 @@ function validateLayout(input) {
       typeof input.expanded !== "boolean")
   )
     throw new Error("Invalid desktop dock");
-  if (input.appearance !== undefined && input.appearance !== "jade")
+  if (
+    input.appearance !== undefined &&
+    !["jade", "jade-twins"].includes(input.appearance)
+  )
     throw new Error("Invalid desktop appearance");
+  const twins = input.appearance === "jade-twins";
+  if (
+    twins &&
+    (!hasDock ||
+      typeof input.peek !== "boolean" ||
+      typeof input.empty !== "boolean")
+  )
+    throw new Error("Invalid twin island state");
   const minimumWidth = ["left", "right"].includes(input.dock)
-    ? 64
+    ? twins
+      ? 80
+      : 64
     : input.appearance === "jade"
       ? 214
       : 240;
@@ -75,7 +88,8 @@ function validateLayout(input) {
     width: Math.round(input.width),
     height: Math.max(64, Math.round(input.height)),
     ...(hasDock ? { dock: input.dock, expanded: input.expanded } : {}),
-    ...(input.appearance === "jade" ? { appearance: "jade" } : {}),
+    ...(input.appearance ? { appearance: input.appearance } : {}),
+    ...(twins ? { peek: input.peek, empty: input.empty } : {}),
   };
 }
 

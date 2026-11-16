@@ -29,6 +29,7 @@ import {
 } from "../desktop/IslandDesktopHeader.jsx";
 import "./dynamic-island.css";
 import { useAnimalRunner } from "./animal-runners.js";
+import TwinIslandHeader from "../desktop/TwinIslandHeader.jsx";
 
 const syncLabels = {
   loading: "连接中",
@@ -64,6 +65,8 @@ export default function DynamicIsland({
   const shown = expanded && !desktop?.dragging;
   const side = desktop?.dock === "left" || desktop?.dock === "right";
   const jade = desktop?.supportsJade === true;
+  const twins = jade && desktop?.supportsTwinIsland === true;
+  const [peek, setPeek] = useState(false);
   const Surface = dragHandleTitle ? "div" : React.Fragment;
   const [drafts, setDrafts] = useState(initialDrafts);
   const draftValues = useRef(drafts);
@@ -83,6 +86,7 @@ export default function DynamicIsland({
     input = useRef(null);
   const enterTimer = useRef(null),
     leaveTimer = useRef(null);
+  const returnFocus = useRef(false);
   const pointerInside = useRef(false),
     keyboard = useRef(false),
     composing = useRef(false),
@@ -96,7 +100,7 @@ export default function DynamicIsland({
   const nextTask = tasks.find((task) => !task.block.done);
   const pendingTasks = tasks.filter((task) => !task.block.done);
   const animal = useAnimalRunner(
-    jade && !hidden && !desktop.dragging && pendingTasks.length > 0,
+    jade && !hidden && !desktop.dragging && (twins || pendingTasks.length > 0),
     island,
   );
   const draft = drafts[page?.id] || "";
@@ -118,35 +122,49 @@ export default function DynamicIsland({
     );
   const open = () => {
     clearTimers();
+    setPeek(false);
     setExpanded(true);
   };
   const close = ({ focus = false, unpin = false } = {}) => {
     clearTimers();
     clickHeld.current = false;
     if (unpin && live.current.pinned) savePin(false);
-    if (focus)
-      (side
+    if (focus && twins) returnFocus.current = true;
+    else if (focus)
+      (side && !twins
         ? dock.current?.querySelector(".island-side-toggle")
         : trigger.current
       )?.focus();
     setExpanded(false);
+    setPeek(false);
   };
   const scheduleClose = () => {
     clearTimeout(leaveTimer.current);
     leaveTimer.current = setTimeout(() => {
       const active = document.activeElement;
       const editing = active === input.current;
-      const keyboardFocus = keyboard.current && panel.current?.contains(active);
+      const keyboardFocus =
+        keyboard.current && (twins ? dock : panel).current?.contains(active);
       if (
         !live.current.pinned &&
         !clickHeld.current &&
         !pointerInside.current &&
         !editing &&
         !keyboardFocus
-      )
+      ) {
         setExpanded(false);
+        setPeek(false);
+      }
     }, 300);
   };
+
+  useLayoutEffect(() => {
+    if (!shown && returnFocus.current) {
+      returnFocus.current = false;
+      keyboard.current = false;
+      trigger.current?.focus({ preventScroll: true });
+    }
+  }, [shown]);
 
   useEffect(() => {
     const pointerDown = (event) => {
@@ -155,6 +173,7 @@ export default function DynamicIsland({
         clearTimers();
         clickHeld.current = false;
         setExpanded(false);
+        setPeek(false);
       }
     };
     const keyDown = (event) => {
@@ -177,6 +196,7 @@ export default function DynamicIsland({
       keyboard.current = false;
       clickHeld.current = false;
       if (!live.current.pinned) setExpanded(false);
+      setPeek(false);
     };
     window.addEventListener("blur", blurred);
     return () => window.removeEventListener("blur", blurred);
@@ -188,6 +208,7 @@ export default function DynamicIsland({
       pointerInside.current = false;
       clickHeld.current = false;
       setExpanded(false);
+      setPeek(false);
     } else if (pinned) {
       setExpanded(true);
     }
@@ -199,6 +220,7 @@ export default function DynamicIsland({
       clickHeld.current = false;
       pointerInside.current = false;
       setExpanded(false);
+      setPeek(false);
     } else if (pinned && !hidden) setExpanded(true);
   }, [desktop?.dragging, pinned, hidden]);
 
@@ -257,6 +279,7 @@ export default function DynamicIsland({
     if (!!latest.block.done === done) return;
     workspace.toggleBlock(latest.note.id, latest.key);
     setFeedback("");
+    return true;
   };
   const addTask = async () => {
     if (composing.current || workspace.readOnly || !page) return;
@@ -366,6 +389,9 @@ export default function DynamicIsland({
         className="dynamic-island"
         data-open={shown}
         data-appearance={jade ? "jade" : undefined}
+        data-layout={twins ? "twins" : undefined}
+        data-peek={twins && peek && !shown && !desktop?.dragging}
+        data-empty={!nextTask}
         data-dock={desktop?.dragging ? "free" : desktop?.dock}
         data-dragging={desktop?.dragging || undefined}
         style={
@@ -380,7 +406,11 @@ export default function DynamicIsland({
           if (event.pointerType === "touch" || desktop?.dragging) return;
           pointerInside.current = true;
           clearTimeout(leaveTimer.current);
-          if (!expanded) enterTimer.current = setTimeout(open, 120);
+          if (!expanded)
+            enterTimer.current = setTimeout(
+              twins ? () => setPeek(true) : open,
+              120,
+            );
         }}
         onPointerLeave={(event) => {
           if (event.pointerType === "touch") return;
@@ -393,6 +423,9 @@ export default function DynamicIsland({
           if (!event.currentTarget.contains(event.relatedTarget))
             clickHeld.current = false;
           scheduleClose();
+        }}
+        onFocus={() => {
+          if (twins && keyboard.current && !expanded) setPeek(true);
         }}
         onKeyDown={(event) => {
           event.stopPropagation();
@@ -407,7 +440,7 @@ export default function DynamicIsland({
           }
         }}
       >
-        {side && !desktop?.dragging && (
+        {side && !twins && !desktop?.dragging && (
           <IslandSideTab
             dock={desktop.dock}
             summary={summary}
@@ -420,10 +453,29 @@ export default function DynamicIsland({
         )}
         <Surface
           {...(dragHandleTitle
-            ? { className: "island-desktop-surface", inert: side && !shown }
+            ? {
+                className: "island-desktop-surface",
+                inert: !twins && side && !shown,
+              }
             : {})}
         >
-          {dragHandleTitle ? (
+          {twins ? (
+            <TwinIslandHeader
+              key={`${boardId}/${page?.id}`}
+              task={nextTask}
+              remaining={pendingTasks.length}
+              animal={animal}
+              disabled={!writable || nextTask?.locked}
+              onComplete={toggleTask}
+              toggle={toggle}
+              panelId={panelId}
+              trigger={trigger}
+              side={side && !desktop?.dragging}
+              peek={peek}
+              expanded={shown}
+              project={page?.title}
+            />
+          ) : dragHandleTitle ? (
             <IslandDesktopHeader
               title={dragHandleTitle}
               summary={summary}
@@ -495,7 +547,29 @@ export default function DynamicIsland({
             aria-hidden={!shown}
             inert={!shown}
           >
-            {jade ? (
+            {twins ? (
+              <header
+                className="island-twin-panel-heading"
+                data-desktop-drag="true"
+                title="拖动轻岛"
+              >
+                {projectControls}
+                <details className="island-options">
+                  <summary aria-label="轻岛设置" title="画布与桌面操作">
+                    <Settings2 size={15} />
+                  </summary>
+                  <div className="island-options-content">{panelToolbar}</div>
+                </details>
+                <button
+                  className="island-twin-collapse"
+                  type="button"
+                  aria-label="收起轻岛"
+                  onClick={toggle}
+                >
+                  <ChevronDown size={16} />
+                </button>
+              </header>
+            ) : jade ? (
               <>
                 <details className="island-options">
                   <summary aria-label="轻岛设置" title="项目、钉住与画布操作">

@@ -19,6 +19,7 @@ import {
 } from "./input-drafts.js";
 import DesktopUpdateStatus from "./DesktopUpdateStatus.jsx";
 import "./jade-island.css";
+import "./twins-island.css";
 
 export default function DesktopIslandWorkspace(props) {
   const [attempt, setAttempt] = useState(0);
@@ -183,7 +184,10 @@ function ConnectedWorkspace({
           Math.ceil(bounds.height || (island || opening ? 52 : 176)) + 24;
         const dock = desktop.dragging ? "free" : desktop.dock;
         const expanded = island?.dataset.open === "true";
-        const size = `${width}/${height}/${dock}/${expanded}`;
+        const twins = island?.dataset.layout === "twins";
+        const peek = island?.dataset.peek === "true";
+        const empty = island?.dataset.empty === "true";
+        const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}`;
         if (size === previous) return;
         previous = size;
         requestDesktopLayout(bridge, {
@@ -192,17 +196,30 @@ function ConnectedWorkspace({
           height,
           ...(island ? { dock, expanded } : {}),
           ...(island?.dataset.appearance === "jade"
-            ? { appearance: "jade" }
+            ? { appearance: twins ? "jade-twins" : "jade" }
             : {}),
+          ...(twins ? { peek, empty } : {}),
         });
       });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(target);
+    const attributes = new window.MutationObserver(measure);
+    if (island)
+      attributes.observe(island, {
+        attributes: true,
+        attributeFilter: [
+          "data-layout",
+          "data-open",
+          "data-peek",
+          "data-empty",
+        ],
+      });
     window.addEventListener("resize", measure);
     return () => {
       observer.disconnect();
+      attributes.disconnect();
       cancelAnimationFrame(frame);
       window.removeEventListener("resize", measure);
     };

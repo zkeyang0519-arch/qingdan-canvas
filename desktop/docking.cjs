@@ -12,21 +12,28 @@ function dockAtPoint(point, work) {
   return x < 0 ? "left" : "right";
 }
 
-function restorePlacement(saved, work, appearance) {
+function compactSize(dock, appearance, empty = false) {
+  if (appearance === "jade-twins")
+    return side(dock)
+      ? { width: 80, height: empty ? 127 : 161 }
+      : { width: 400, height: 72 };
+  return side(dock)
+    ? { width: 64, height: 160 }
+    : {
+        width: appearance === "jade" ? 314 : 354,
+        height: appearance === "jade" ? 64 : 76,
+      };
+}
+
+function restorePlacement(saved, work, appearance, empty = false) {
   const center = saved
     ? { x: saved.x + saved.width / 2, y: saved.y + saved.height / 2 }
     : { x: work.x + work.width / 2, y: work.y };
   const dock = ["top", "left", "right"].includes(saved?.dock)
     ? saved.dock
     : dockAtPoint(center, work);
-  const layout = side(dock)
-    ? { dock, width: 64, height: 160 }
-    : {
-        dock,
-        width: appearance === "jade" ? 314 : 354,
-        height: appearance === "jade" ? 64 : 76,
-      };
-  if (appearance === "jade") layout.appearance = appearance;
+  const layout = { dock, ...compactSize(dock, appearance, empty) };
+  if (appearance) layout.appearance = appearance;
   const anchor = {
     x: center.x - layout.width / 2,
     y: center.y - layout.height / 2,
@@ -35,16 +42,13 @@ function restorePlacement(saved, work, appearance) {
   return { ...fitDockBounds(anchor, layout, work), dock };
 }
 
-function placementAtPoint(point, offset, work, appearance) {
+function placementAtPoint(point, offset, work, appearance, empty = false) {
   const dock = dockAtPoint(point, work);
-  const width = appearance === "jade" ? 314 : 354,
-    height = appearance === "jade" ? 64 : 76;
-  const requested = side(dock)
-    ? { width: 64, height: 160, dock }
-    : { width, height, dock };
-  if (appearance === "jade") requested.appearance = appearance;
+  const { width, height } = compactSize(dock, appearance, empty);
+  const requested = { width, height, dock };
+  if (appearance) requested.appearance = appearance;
   const anchor = side(dock)
-    ? { x: point.x - 32, y: point.y - 80, width: 64, height: 160, dock }
+    ? { x: point.x - width / 2, y: point.y - height / 2, width, height, dock }
     : {
         x: point.x - offset.x,
         y: point.y - offset.y,
@@ -136,6 +140,33 @@ function roundedRect(x, y, width, height, radius, squareSide) {
 }
 
 function dockShape(bounds, layout, anchor, work) {
+  if (layout.appearance === "jade-twins") {
+    const width = Math.max(1, bounds.width - 24);
+    if (layout.expanded)
+      return roundedRect(12, 12, width, Math.max(1, bounds.height - 24), 25);
+    if (side(layout.dock)) {
+      const height = layout.empty ? 52 : 86;
+      return roundedRect(12, 12, width, height, layout.peek ? 25 : 28).concat(
+        roundedRect(
+          layout.dock === "left" ? 12 : bounds.width - 68,
+          12 + height + 7,
+          56,
+          44,
+          22,
+        ),
+      );
+    }
+    const height = layout.peek ? 64 : 48;
+    return roundedRect(
+      12,
+      12,
+      width - 83,
+      height,
+      layout.peek ? 26 : 24,
+    ).concat(
+      roundedRect(bounds.width - 86, 12 + (height - 48) / 2, 74, 48, 24),
+    );
+  }
   if (layout.appearance === "jade" && !side(layout.dock)) {
     const width = Math.min(290, bounds.width - 24);
     const capsule = roundedRect(
@@ -184,6 +215,7 @@ function dockShape(bounds, layout, anchor, work) {
 }
 
 module.exports = {
+  compactSize,
   dockAtPoint,
   restorePlacement,
   placementAtPoint,
