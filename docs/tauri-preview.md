@@ -43,7 +43,9 @@ npm run tauri:build -- --target x86_64-apple-darwin --bundles dmg
 
 Rust `online.rs` 移植既有的本机 challenge/verifier 协议，校验来源、Host、内容类型、大小、一次性请求、账号和画布，并独立检查 `/api/session` 的身份/有效期及画布访问权限。会话令牌通过原生 Cookie API 设置为 HttpOnly，不通过 URL、命令行或前端桥接传递。收到画布身份及岛布局确认后才返回成功。
 
-第二版固定绑定 **8792**，安装配置注册 **`qingdao-preview://open`**；Electron 的 8791 / `qingdao://` 保留。新网页代码通过 `/app?desktop=tauri-preview` 选择测试入口，选择仅在该标签页保留；`?desktop=stable` 切回原版。测试入口失败不会转而打开原版。**线上网页尚未发布这段选择代码；当前线上按钮仍指向原版。** 安装协议配置已实现，但浏览器许可弹窗和安装后冷唤起还需验收。
+第二版固定绑定 **8792**，安装配置注册 **`qingdao-preview://open`**；Electron 的 8791 / `qingdao://` 保留。网页通过 `/app?desktop=tauri-preview` 选择测试入口，选择仅在该标签页保留；`?desktop=stable` 切回原版。测试入口失败不会转而打开原版。**`6249214` 已于 2026-11-16 合入 main，并经 Cloudflare 自动构建发布。** 安装协议配置已实现，但浏览器许可弹窗和安装后冷唤起还需验收。
+
+公开下载页为 [轻岛 Tauri 0.4.0-preview.2](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2)，在 Assets 选择 Windows / Mac Apple Silicon / Mac Intel 安装包。网页未检测到轻岛时提供「下载轻量验证版（约 14 MB，Windows / Mac）」和「下载正式版（Windows）」；选择下载版本时同时切换当前标签页的启动通道，保留画布与页面状态，安装后继续连接对应程序。GitHub 预发布不替换正式版的 `/releases/latest`，也不进入 Electron 的正式更新源。
 
 同账号同画布交接刷新会话而不重载页面；跨账号先保存、关闭旧页面后再换 Cookie。新页面失败时恢复旧 Cookie 和 URL，避免旧页面继续使用新账号发起同步。草稿未保存则停止切换；状态查询和取消请求校验请求归属。
 
@@ -134,7 +136,7 @@ node scripts/test-tauri-native.mjs "D:\absolute\Qingdao-Acceptance.exe"
 
 本机 Windows 发布构建和 NSIS 打包通过，原生 Rust 测试 **6/6**、类型检查及部署 dry-run 通过。本地工作区全仓 `npm test` **1655/1655** 通过（153 秒，无失败或取消）；日志 `.tmp/tauri-preview2-full-test.log`。本轮保留了既有 Agent 测试修复，未将那些无关修改纳入迁移提交。安装包 **13,730,663 字节（13.73 MB / 13.09 MiB）**，独立程序 17,994,752 字节；SHA-256 记录在产物目录。系统 WebView2 和应用资料占用不包含在安装包体积内。
 
-[三平台云端构建记录](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/43728356029) 对应源码 `c6ebe5e`：Windows x64、Mac Apple Silicon、Mac Intel 各通过类型检查、33 项桌面 JavaScript 测试和 6 项 Rust 测试，并上传 NSIS / DMG。Mac 使用 `macos-15` 与 `macos-15-intel` 原生架构环境。后续提交仅扩展本机原生验收脚本和记录，未改动分发程序代码。
+[三平台云端构建记录](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/43728356029) 对应源码 `c6ebe5e`：Windows x64、Mac Apple Silicon、Mac Intel 各通过类型检查、33 项桌面 JavaScript 测试和 6 项 Rust 测试，并上传 NSIS / DMG。Mac 使用 `macos-15` 与 `macos-15-intel` 原生架构环境。之后的验收脚本、记录与网页下载入口更新未重建上述原生安装包。
 
 第二版交付目录为 `output/tauri-preview2/`：
 
@@ -146,4 +148,4 @@ node scripts/test-tauri-native.mjs "D:\absolute\Qingdao-Acceptance.exe"
 
 Mac 下载归档已与 GitHub Artifact 的 SHA-256 一致性校验；解压后各安装包的 SHA-256 见同目录 `artifacts.json`。Windows 相比此前 132,874,335 字节的 Electron 0.3.2 安装包缩小约 **89.67%**，此结果只代表当前验证版。`native-account.png` 为 Windows 实际 WebView2 截图，`native-acceptance.json` 记录 9 组原生验收结果。所有验收辅助程序及调试端口已退出；未安装第二版覆盖用户现有应用。
 
-这次构建只上传验证产物，未创建正式 Release、未合入 main，也未部署线上网页。自动更新签名、公证、一键迁移、线上按钮冷唤起、离线冷启动，以及 Mac / 多屏实机交互仍是正式替换前的验收项目。
+三平台构建完成时只上传了验证产物。后续已合入 main 并由 Cloudflare 自动部署网页，三个安装包另行发布到明确标注 Pre-release 的验证版 Release。自动更新签名、公证、一键迁移、线上按钮冷唤起、离线冷启动，以及 Mac / 多屏实机交互仍是正式替换前的验收项目。

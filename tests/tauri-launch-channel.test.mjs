@@ -51,3 +51,19 @@ test("preview selection stays in this tab and never falls back to the installed 
   await probeInstalledDesktop(signal);
   assert.ok(calls.at(-1).startsWith("http://127.0.0.1:8791/"));
 });
+
+test("an explicit preview URL still selects the preview bridge when session storage is blocked", (t) => {
+  const previousWindow = globalThis.window;
+  t.after(() => {
+    globalThis.window = previousWindow;
+  });
+  globalThis.window = {
+    location: { href: "https://todo.zky.lol/app?desktop=tauri-preview" },
+    get sessionStorage() {
+      throw Error("Storage denied");
+    },
+  };
+  assert.equal(desktopPreviewSelected(), true);
+  window.location.href = "https://todo.zky.lol/app?desktop=stable";
+  assert.equal(desktopPreviewSelected(), false);
+});

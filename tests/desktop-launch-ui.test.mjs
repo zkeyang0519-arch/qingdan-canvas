@@ -62,6 +62,7 @@ after(async () => {
 
 async function mount(t, origin = "http://127.0.0.1:8790") {
   dom.reconfigure({ url: `${origin}/app?room=test-room` });
+  window.sessionStorage.clear();
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -246,9 +247,77 @@ test("线上未连接到已安装应用时说明浏览器权限并提供首次�
   assert.match(status().textContent, /浏览器|权限/);
   assert.equal(
     status().querySelector("a").href,
-    "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/latest",
+    "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2",
+  );
+  assert.ok(
+    [...status().querySelectorAll("a")].some((link) =>
+      link.href.endsWith("/releases/latest"),
+    ),
   );
   assert.match(status().textContent, /已安装，打开轻岛/);
+});
+
+test("选择轻量安装包保留当前画布，安装后通过验证版协议和端口接入", async (t) => {
+  let installed = false;
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(url);
+    if (!installed) throw new TypeError("Failed to fetch");
+    if (url.endsWith("prepare"))
+      return Response.json({
+        requestId: "a".repeat(32),
+        challenge: "b".repeat(64),
+      });
+    if (url === "/api/desktop/handoff")
+      return Response.json({ ticket: "c".repeat(64) });
+    return Response.json({ started: true, applied: true });
+  });
+  const fixture = await mount(t, "https://todo.zky.lol");
+  await click(fixture.button());
+  const selectDownload = async (label) => {
+    const link = [...status().querySelectorAll("a")].find((item) =>
+      item.textContent.includes(label),
+    );
+    link.addEventListener("click", (event) => event.preventDefault(), {
+      once: true,
+    });
+    await click(link);
+  };
+  await selectDownload("轻量验证版");
+  assert.equal(
+    new URL(window.location.href).searchParams.get("room"),
+    "test-room",
+  );
+  assert.equal(
+    new URL(window.location.href).searchParams.get("desktop"),
+    "tauri-preview",
+  );
+  assert.match(status().textContent, /Windows 或 Mac/);
+  await selectDownload("正式版");
+  assert.equal(
+    new URL(window.location.href).searchParams.get("desktop"),
+    "stable",
+  );
+  await selectDownload("轻量验证版");
+  installed = true;
+  calls.length = 0;
+  await click(
+    [...status().querySelectorAll("button")].find(
+      (item) => item.textContent === "已安装，打开轻岛",
+    ),
+  );
+  assert.ok(
+    [...document.querySelectorAll("iframe")].some(
+      (frame) => frame.src === "qingdao-preview://open",
+    ),
+  );
+  assert.ok(calls.some((url) => url.endsWith("launch")));
+  assert.ok(
+    calls
+      .filter((url) => url.startsWith("http"))
+      .every((url) => url.startsWith("http://127.0.0.1:8792/")),
+  );
+  assert.match(status().textContent, /已打开当前画布的轻岛/);
 });
 
 test("服务不可达、认证失败和未确认启动都提供准确失败提示", async (t) => {

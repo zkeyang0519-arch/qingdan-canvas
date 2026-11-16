@@ -1,18 +1,33 @@
 const native = "http://127.0.0.1:8791/api/local-desktop/online/";
 const agent = "http://127.0.0.1:8790/api/local-desktop/online/";
 const preview = "http://127.0.0.1:8792/api/local-desktop/online/";
+function rememberDesktopChannel(channel) {
+  try {
+    if (channel === "tauri-preview")
+      window.sessionStorage.setItem("qingdan.desktop.channel", channel);
+    else window.sessionStorage.removeItem("qingdan.desktop.channel");
+  } catch {
+    // The explicit URL selection also works when browser storage is unavailable.
+  }
+}
+export function selectDesktopChannel(channel) {
+  const selected = channel === "tauri-preview" ? "tauri-preview" : "stable";
+  const url = new URL(window.location.href);
+  url.searchParams.set("desktop", selected);
+  window.history.replaceState(window.history.state, "", url);
+  rememberDesktopChannel(selected);
+}
 export function desktopPreviewSelected() {
   if (typeof window === "undefined") return false;
   try {
     const channel = new URL(window.location.href).searchParams.get("desktop");
-    if (channel === "tauri-preview")
-      window.sessionStorage.setItem("qingdan.desktop.channel", channel);
-    if (channel === "stable")
-      window.sessionStorage.removeItem("qingdan.desktop.channel");
+    if (channel === "tauri-preview" || channel === "stable") {
+      rememberDesktopChannel(channel);
+      return channel === "tauri-preview";
+    }
     return (
-      channel === "tauri-preview" ||
       window.sessionStorage.getItem("qingdan.desktop.channel") ===
-        "tauri-preview"
+      "tauri-preview"
     );
   } catch {
     return false;
@@ -20,6 +35,8 @@ export function desktopPreviewSelected() {
 }
 export const desktopDownloadPage =
   "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/latest";
+export const desktopPreviewDownloadPage =
+  "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2";
 export function wakeInstalledDesktop() {
   // A fixed protocol has no credentials or commands. Browser permission to
   // open the installed app remains a user-controlled, first-use action.
