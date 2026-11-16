@@ -405,12 +405,8 @@ export default function DynamicIsland({
         onPointerEnter={(event) => {
           if (event.pointerType === "touch" || desktop?.dragging) return;
           pointerInside.current = true;
-          clearTimeout(leaveTimer.current);
-          if (!expanded)
-            enterTimer.current = setTimeout(
-              twins ? () => setPeek(true) : open,
-              120,
-            );
+          clearTimers();
+          if (!expanded) enterTimer.current = setTimeout(open, 120);
         }}
         onPointerLeave={(event) => {
           if (event.pointerType === "touch") return;

@@ -356,7 +356,7 @@ test("双岛直接完成沿用真实任务，过渡期间重复点击不完成�
   assert.equal(calls.layout.at(-1).empty, true);
 });
 
-test("双岛左右贴边悬停只预览，点击打开原面板，空态新增和完成恢复仍工作", async (t) => {
+test("双岛左右贴边悬停打开完整面板，空态新增和完成恢复仍工作", async (t) => {
   const { host, controls, calls } = await mount(t, {
     desktop: true,
     supportsTwinIsland: true,
@@ -377,9 +377,8 @@ test("双岛左右贴边悬停只预览，点击打开原面板，空态新增�
       );
       await new Promise((r) => setTimeout(r, 150));
     });
-    assert.equal(host.querySelector(".dynamic-island").dataset.peek, "true");
-    assert.equal(host.querySelector(".dynamic-island").dataset.open, "false");
-    await click(button(host, "展开轻岛"));
+    assert.equal(host.querySelector(".dynamic-island").dataset.peek, "false");
+    assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
     assert.equal(
       host.querySelector(".island-panel").hasAttribute("inert"),
       false,
@@ -398,6 +397,119 @@ test("双岛左右贴边悬停只预览，点击打开原面板，空态新增�
   await click(button(host, "已完成 1"));
   await click(host.querySelector('input[type="checkbox"]'));
   assert.equal(controls.state().objects[1].blocks[0].done, false);
+});
+
+async function hoverIsland(
+  element,
+  entered,
+  relatedTarget = document.body,
+  pointerType = "mouse",
+) {
+  await act(async () => {
+    const event = new MouseEvent(entered ? "pointerover" : "pointerout", {
+      bubbles: true,
+      relatedTarget,
+    });
+    Object.defineProperty(event, "pointerType", { value: pointerType });
+    element.dispatchEvent(event);
+  });
+}
+
+test("双岛横向与左右悬停显示全部待办，移入列表和短暂移出不会收起", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { host, calls, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    count: 36,
+  });
+  const state = controls.state();
+  const island = host.querySelector(".dynamic-island");
+  const panel = host.querySelector(".island-panel");
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  for (const dock of ["top", "left", "right"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock };
+      for (const handler of calls.placementHandlers) handler(calls.placement);
+    });
+    const capsule = host.querySelector(".island-twin-time");
+    await hoverIsland(capsule, true);
+    await tick(119);
+    assert.equal(island.dataset.open, "false");
+    await tick(1);
+    assert.equal(island.dataset.open, "true");
+    assert.equal(panel.hasAttribute("inert"), false);
+    assert.equal(host.querySelectorAll(".island-task-row").length, 36);
+    assert.equal(
+      host.querySelectorAll(".island-task-text")[35].textContent,
+      "桌面待办 36",
+    );
+    await tick(10);
+    assert.equal(calls.layout.at(-1).expanded, true);
+    assert.equal(calls.layout.at(-1).dock, dock);
+    await hoverIsland(capsule, false, panel);
+    await tick(400);
+    assert.equal(island.dataset.open, "true");
+    await hoverIsland(panel, false);
+    await tick(200);
+    await hoverIsland(panel, true);
+    await tick(400);
+    assert.equal(island.dataset.open, "true");
+    await hoverIsland(panel, false);
+    await tick(299);
+    assert.equal(island.dataset.open, "true");
+    await tick(1);
+    assert.equal(island.dataset.open, "false");
+  }
+  assert.strictEqual(
+    controls.state(),
+    state,
+    "hover never writes workspace data",
+  );
+});
+
+test("双岛掠过和触摸不触发悬停展开，拖动取消待展开计时，输入和钉住继续保护面板", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+  });
+  const island = host.querySelector(".dynamic-island");
+  const pet = host.querySelector(".island-twin-pet");
+  const tick = (ms) => act(async () => t.mock.timers.tick(ms));
+  await hoverIsland(pet, true, document.body, "touch");
+  await tick(150);
+  assert.equal(island.dataset.open, "false");
+  await hoverIsland(pet, true);
+  await tick(50);
+  await hoverIsland(pet, false);
+  await tick(150);
+  assert.equal(island.dataset.open, "false");
+  await hoverIsland(pet, true);
+  await pointer(pet, "pointerdown", 277, 36);
+  await pointer(pet, "pointermove", 307, 36);
+  await tick(150);
+  assert.equal(island.dataset.open, "false");
+  await pointer(pet, "pointercancel", 307, 36);
+  await tick(1);
+  await hoverIsland(pet, true);
+  await tick(120);
+  const input = host.querySelector("textarea");
+  await act(async () => input.focus());
+  await type(input, "悬停展开时的未提交内容");
+  await hoverIsland(island, false);
+  await tick(400);
+  assert.equal(island.dataset.open, "true");
+  await act(async () => input.blur());
+  await tick(300);
+  assert.equal(island.dataset.open, "false");
+  assert.equal(input.value, "悬停展开时的未提交内容");
+  assert.equal(controls.state().objects.length, 1);
+  await hoverIsland(pet, true);
+  await tick(120);
+  await click(button(host, "钉住轻岛"));
+  await hoverIsland(island, false);
+  await tick(400);
+  assert.equal(island.dataset.open, "true");
 });
 
 test("双岛只读、最新锁定或远端已完成均不误写，不启动成功动画", async (t) => {

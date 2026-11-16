@@ -159,7 +159,7 @@ function Preview() {
         </div>
       </section>
       <footer className="preview-help">
-        悬停预览 · 点击动物展开 · 点击圆圈完成待办
+        悬停展开全部待办 · 点击圆圈完成待办
       </footer>
     </>
   );
