@@ -1,11 +1,15 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
+
+// Initialize Node's lazy MessageEvent before JSDOM replaces global Event;
+// native BroadcastChannel requires the Node Event hierarchy.
+void globalThis.MessageEvent;
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://127.0.0.1:8790/app",
@@ -95,7 +99,9 @@ async function mount(t, origin = "http://127.0.0.1:8790") {
 async function click(button) {
   assert.ok(button);
   await act(async () =>
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    button.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    ),
   );
 }
 const status = () => document.querySelector('[aria-label="轻岛启动状态"]');
@@ -245,19 +251,15 @@ test("线上未连接到已安装应用时说明浏览器权限并提供首次�
   await click(f.button());
   assert.match(status().textContent, /尚未连接到轻岛/);
   assert.match(status().textContent, /浏览器|权限/);
-  assert.equal(
-    status().querySelector("a").href,
-    "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2",
-  );
-  assert.ok(
-    [...status().querySelectorAll("a")].some((link) =>
-      link.href.endsWith("/releases/latest"),
-    ),
-  );
+  const downloadUrl = new URL(status().querySelector("a").href);
+  assert.equal(downloadUrl.origin, window.location.origin);
+  assert.equal(downloadUrl.pathname, "/download/");
+  assert.match(downloadUrl.searchParams.get("request"), /^[a-f0-9-]{36}$/i);
+  assert.equal(status().querySelectorAll("a").length, 1);
   assert.match(status().textContent, /已安装，打开轻岛/);
 });
 
-test("选择轻量安装包保留当前画布，安装后通过验证版协议和端口接入", async (t) => {
+test("统一下载页将版本选择传回原画布，安装后通过对应协议和端口接入", async (t) => {
   let installed = false;
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url) => {
@@ -272,18 +274,66 @@ test("选择轻量安装包保留当前画布，安装后通过验证版协议�
       return Response.json({ ticket: "c".repeat(64) });
     return Response.json({ started: true, applied: true });
   });
+  window.BroadcastChannel = globalThis.BroadcastChannel;
+  t.after(() => {
+    delete window.BroadcastChannel;
+  });
   const fixture = await mount(t, "https://todo.zky.lol");
   await click(fixture.button());
-  const selectDownload = async (label) => {
-    const link = [...status().querySelectorAll("a")].find((item) =>
-      item.textContent.includes(label),
+  const downloadUrl = status().querySelector("a").href;
+  const downloadDom = new JSDOM(
+    await readFile(
+      new URL("../public/download/index.html", import.meta.url),
+      "utf8",
+    ),
+    { url: downloadUrl, runScripts: "outside-only" },
+  );
+  downloadDom.window.BroadcastChannel = globalThis.BroadcastChannel;
+  downloadDom.window.eval(
+    await readFile(
+      new URL("../public/download/download.js", import.meta.url),
+      "utf8",
+    ),
+  );
+  t.after(() => {
+    downloadDom.window.dispatchEvent(new downloadDom.window.Event("pagehide"));
+    downloadDom.window.close();
+  });
+  await click(status().querySelector("a"));
+  const selectDownload = async (selected) => {
+    const link = downloadDom.window.document.querySelector(
+      `a[data-channel="${selected}"]`,
     );
     link.addEventListener("click", (event) => event.preventDefault(), {
       once: true,
     });
-    await click(link);
+    await act(async () => {
+      link.dispatchEvent(
+        new downloadDom.window.MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      for (let i = 0; i < 50; i++) {
+        if (
+          new URL(window.location.href).searchParams.get("desktop") === selected
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    });
+    assert.equal(
+      new URL(window.location.href).searchParams.get("desktop"),
+      selected,
+    );
+    assert.equal(
+      new URL(
+        downloadDom.window.document.getElementById("continue-link").href,
+      ).searchParams.get("desktop"),
+      selected,
+    );
   };
-  await selectDownload("轻量验证版");
+  await selectDownload("tauri-preview");
   assert.equal(
     new URL(window.location.href).searchParams.get("room"),
     "test-room",
@@ -292,13 +342,13 @@ test("选择轻量安装包保留当前画布，安装后通过验证版协议�
     new URL(window.location.href).searchParams.get("desktop"),
     "tauri-preview",
   );
-  assert.match(status().textContent, /Windows 或 Mac/);
-  await selectDownload("正式版");
+  assert.match(status().textContent, /已选择轻量验证版/);
+  await selectDownload("stable");
   assert.equal(
     new URL(window.location.href).searchParams.get("desktop"),
     "stable",
   );
-  await selectDownload("轻量验证版");
+  await selectDownload("tauri-preview");
   installed = true;
   calls.length = 0;
   await click(

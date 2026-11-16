@@ -45,7 +45,9 @@ Rust `online.rs` 移植既有的本机 challenge/verifier 协议，校验来源�
 
 第二版固定绑定 **8792**，安装配置注册 **`qingdao-preview://open`**；Electron 的 8791 / `qingdao://` 保留。网页通过 `/app?desktop=tauri-preview` 选择测试入口，选择仅在该标签页保留；`?desktop=stable` 切回原版。测试入口失败不会转而打开原版。**`6249214` 已于 2026-11-16 合入 main，并经 Cloudflare 自动构建发布。** 安装协议配置已实现，但浏览器许可弹窗和安装后冷唤起还需验收。
 
-公开下载页为 [轻岛 Tauri 0.4.0-preview.2](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2)，在 Assets 选择 Windows / Mac Apple Silicon / Mac Intel 安装包。网页未检测到轻岛时提供「下载轻量验证版（约 14 MB，Windows / Mac）」和「下载正式版（Windows）」；选择下载版本时同时切换当前标签页的启动通道，保留画布与页面状态，安装后继续连接对应程序。GitHub 预发布不替换正式版的 `/releases/latest`，也不进入 Electron 的正式更新源。
+统一下载页为 [下载轻岛](https://todo.zky.lol/download/)，无需登录即可查看轻量验证版与原版，并直接下载 Windows / Mac Apple Silicon / Mac Intel 对应安装包。文件继续由 GitHub Releases 分发；轻量版的版本详情见 [0.4.0-preview.2](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2)。GitHub 预发布不替换正式版的 `/releases/latest`，也不进入 Electron 的正式更新源。
+
+网页未检测到轻岛时提供统一的「下载轻岛（轻量版 / 原版）」入口。新标签页通过随机请求标识对应的同源 BroadcastChannel 把版本选择通知原画布，不传递账号或凭据；原画布保留页面和草稿，安装后连接对应程序。独立访问或浏览器不支持标签页消息时，下载页仍可直接下载，并提供带版本选择的「安装后打开轻单」入口。网页启动时在登录和画布路由改写前保存该选择。
 
 同账号同画布交接刷新会话而不重载页面；跨账号先保存、关闭旧页面后再换 Cookie。新页面失败时恢复旧 Cookie 和 URL，避免旧页面继续使用新账号发起同步。草稿未保存则停止切换；状态查询和取消请求校验请求归属。
 

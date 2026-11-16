@@ -2,12 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LoaderCircle, Monitor, X } from "lucide-react";
 import "./desktop-launch.css";
+import { watchDesktopDownloadSelection } from "./download-selection.js";
 import {
   requestOnlineLaunch,
   wakeInstalledDesktop,
   probeInstalledDesktop,
   desktopDownloadPage,
-  desktopPreviewDownloadPage,
   desktopPreviewSelected,
   selectDesktopChannel,
 } from "./online-launch.js";
@@ -81,7 +81,12 @@ export default function DesktopLaunchButton({ user, room }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null);
   const [progress, setProgress] = useState("");
+  const [downloadRequestId] = useState(() => crypto.randomUUID());
   const selectInstaller = (channel) => {
+    request.current?.abort();
+    version.current++;
+    busyRef.current = false;
+    setBusy(false);
     selectDesktopChannel(channel);
     setNotice({
       kind: "info",
@@ -89,10 +94,14 @@ export default function DesktopLaunchButton({ user, room }) {
       waitingInstall: true,
       text:
         channel === "tauri-preview"
-          ? "请选择适合这台电脑的 Windows 或 Mac 验证版安装包。安装完成并打开轻岛验证版后，这里会自动继续。"
-          : "请下载并运行 Windows 正式版安装包。安装完成并打开轻岛后，这里会自动继续。",
+          ? "已选择轻量验证版。安装完成并打开轻岛验证版后，这里会自动继续。"
+          : "已选择原版。安装完成并打开轻岛后，这里会自动继续。",
     });
   };
+  useEffect(
+    () => watchDesktopDownloadSelection(downloadRequestId, selectInstaller),
+    [downloadRequestId],
+  );
 
   useEffect(() => {
     mounted.current = true;
@@ -241,20 +250,18 @@ export default function DesktopLaunchButton({ user, room }) {
               {!busy && notice.needsInstall && (
                 <div className="desktop-install-actions">
                   <a
-                    href={desktopPreviewDownloadPage}
+                    href={`${desktopDownloadPage}?request=${downloadRequestId}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    onClick={() => selectInstaller("tauri-preview")}
+                    onClick={() =>
+                      setNotice({
+                        kind: "info",
+                        needsInstall: true,
+                        text: "请在下载页选择轻量版或原版。安装完成并打开轻岛后，回到这里继续。",
+                      })
+                    }
                   >
-                    下载轻量验证版（约 14 MB，Windows / Mac）
-                  </a>
-                  <a
-                    href={desktopDownloadPage}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => selectInstaller("stable")}
-                  >
-                    下载正式版（Windows）
+                    下载轻岛（轻量版 / 原版）
                   </a>
                   <button type="button" onClick={() => void launch()}>
                     已安装，打开轻岛

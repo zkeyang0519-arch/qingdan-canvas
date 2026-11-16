@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f7f1" />
+    <meta
+      name="description"
+      content="轻岛统一下载页：选择约 14 MB 的 Windows / Mac 轻量验证版，或 Windows 原版。"
+    />
+    <title>下载轻岛 · 轻量版与原版</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./download.css" />
+    <script type="module" src="./download.js"></script>
+  </head>
+  <body>
+    <div class="download-shell">
+      <header class="download-nav">
+        <a class="brand" href="/" aria-label="轻单首页"
+          ><img src="/favicon.svg" width="28" height="28" alt="" /><span
+            >轻单 <span class="brand-divider">/</span> 轻岛</span
+          ></a
+        >
+        <a class="back-link" href="/app"
+          >返回轻单 <span aria-hidden="true">↗</span></a
+        >
+      </header>
+      <main>
+        <div class="download-heading">
+          <span class="eyebrow">轻岛桌面端</span>
+          <h1>下载轻岛</h1>
+          <p>让待办留在手边。选择适合你的版本，安装后连接轻单画布。</p>
+        </div>
+        <section class="version-grid" aria-label="选择轻岛版本">
+          <article
+            class="version-card lightweight"
+            aria-labelledby="light-title"
+          >
+            <div class="card-heading">
+              <h2 id="light-title">轻量版</h2>
+              <span class="badge preview">验证版</span>
+            </div>
+            <p class="version-number">0.4.0-preview.2 · Windows / macOS</p>
+            <div class="package-size">
+              <strong>约 14</strong><span>MB</span
+              ><span class="size-caption">更小的安装包</span>
+            </div>
+            <p class="card-description">
+              适合想体验小体积版本，或在 Mac
+              上使用轻岛的你。部分桌面体验仍在验证。
+            </p>
+            <div class="download-buttons" aria-label="轻量版安装包">
+              <a
+                class="download-button primary"
+                data-channel="tauri-preview"
+                data-platform="Windows 64 位"
+                href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/download/qingdao-preview-v0.4.0-preview.2/Qingdao-Preview-0.4.0-preview.2-x64-Setup.exe"
+                ><span
+                  ><strong>Windows 64 位</strong
+                  ><small>13.73 MB · .exe</small></span
+                ><span class="download-arrow" aria-hidden="true">↓</span></a
+              >
+              <a
+                class="download-button"
+                data-channel="tauri-preview"
+                data-platform="Mac · Apple Silicon"
+                href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/download/qingdao-preview-v0.4.0-preview.2/Qingdao-Preview-0.4.0-preview.2-mac-AppleSilicon.dmg"
+                ><span
+                  ><strong>Mac · Apple Silicon</strong
+                  ><small>M 系列芯片 · 14.32 MB · .dmg</small></span
+                ><span class="download-arrow" aria-hidden="true">↓</span></a
+              >
+              <a
+                class="download-button"
+                data-channel="tauri-preview"
+                data-platform="Mac · Intel"
+                href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/download/qingdao-preview-v0.4.0-preview.2/Qingdao-Preview-0.4.0-preview.2-mac-Intel.dmg"
+                ><span
+                  ><strong>Mac · Intel</strong
+                  ><small>Intel 芯片 · 14.43 MB · .dmg</small></span
+                ><span class="download-arrow" aria-hidden="true">↓</span></a
+              >
+            </div>
+            <p class="version-note">
+              自动更新暂未启用；Mac
+              实机交互、离线重新启动等体验仍待验收。Windows 缺少 WebView2
+              时需联网补装。
+            </p>
+            <a
+              class="release-link"
+              href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2"
+              target="_blank"
+              rel="noopener noreferrer"
+              >查看验证版说明与校验文件 <span aria-hidden="true">↗</span></a
+            >
+          </article>
+          <article
+            class="version-card original"
+            aria-labelledby="original-title"
+          >
+            <div class="card-heading">
+              <h2 id="original-title">原版</h2>
+              <span class="badge stable">正式版</span>
+            </div>
+            <p class="version-number">0.3.3 · Windows</p>
+            <div class="package-size">
+              <strong>132.79</strong><span>MB</span
+              ><span class="size-caption">当前正式版本</span>
+            </div>
+            <p class="card-description">
+              适合希望继续使用当前正式版本的 Windows
+              用户，沿用原版的使用与更新流程。
+            </p>
+            <div class="download-buttons" aria-label="原版安装包">
+              <a
+                class="download-button primary"
+                data-channel="stable"
+                data-platform="Windows 64 位"
+                href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/download/v0.3.3/Qingdao-Setup-0.3.3-x64.exe"
+                ><span
+                  ><strong>Windows 64 位</strong
+                  ><small>132.79 MB · .exe</small></span
+                ><span class="download-arrow" aria-hidden="true">↓</span></a
+              >
+            </div>
+            <div class="original-details">
+              <p><span aria-hidden="true">✓</span> 当前 Windows 正式版本</p>
+              <p><span aria-hidden="true">✓</span> 支持正式版自动更新</p>
+              <p class="muted">原版暂未提供 Mac 安装包。</p>
+            </div>
+            <p class="version-note">
+              已有原版的用户可以继续使用；试用轻量版前，请保留原版中的未同步内容。
+            </p>
+            <a
+              class="release-link"
+              href="https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/v0.3.3"
+              target="_blank"
+              rel="noopener noreferrer"
+              >查看正式版更新说明 <span aria-hidden="true">↗</span></a
+            >
+          </article>
+        </section>
+        <section
+          class="download-feedback"
+          id="download-feedback"
+          role="status"
+          hidden
+        >
+          <div>
+            <strong id="download-feedback-title"></strong>
+            <p>
+              安装并打开轻岛后，回到刚才的画布继续。也可以从这里重新进入轻单。
+            </p>
+          </div>
+          <a id="continue-link" href="/app"
+            >安装后打开轻单 <span aria-hidden="true">↗</span></a
+          >
+        </section>
+        <section class="download-help" aria-label="下载与安装说明">
+          <div class="help-intro">
+            <h2>安装前，了解这几件事</h2>
+            <p>两种版本都在这一个页面下载，文件由 GitHub Releases 提供。</p>
+          </div>
+          <div class="help-items">
+            <details>
+              <summary>轻量版和原版会共用登录与草稿吗？</summary>
+              <p>
+                两种版本使用独立的本机资料目录。轻量版需要重新登录，同一账号下已同步的画布仍可打开；原版未同步的草稿不会自动迁入，请先保留好原版资料。
+              </p>
+            </details>
+            <details>
+              <summary>Mac 应该下载哪一个？</summary>
+              <p>
+                在 Mac 的“关于本机”中查看芯片。M 系列选择 Apple Silicon，Intel
+                处理器选择 Intel。轻量版要求 macOS 12 或更新版本，Mac
+                实机兼容性仍在验证。
+              </p>
+            </details>
+            <details>
+              <summary>安装时出现系统验证提示怎么办？</summary>
+              <p>
+                当前安装包尚未配置发行代码签名，Mac
+                轻量版也未完成公证。系统可能提示或阻止安装；如设备不允许运行，可先保留原版，无需关闭系统安全保护。
+              </p>
+            </details>
+          </div>
+        </section>
+      </main>
+      <footer class="download-footer">
+        <span>轻岛 · 把待办放在手边</span
+        ><span
+          >无需登录即可下载
+          <span aria-hidden="true">·</span> 体积不含应用数据及共享运行环境</span
+        >
+      </footer>
+    </div>
+  </body>
+</html>

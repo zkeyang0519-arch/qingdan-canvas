@@ -33,10 +33,7 @@ export function desktopPreviewSelected() {
     return false;
   }
 }
-export const desktopDownloadPage =
-  "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/latest";
-export const desktopPreviewDownloadPage =
-  "https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2";
+export const desktopDownloadPage = "/download/";
 export function wakeInstalledDesktop() {
   // A fixed protocol has no credentials or commands. Browser permission to
   // open the installed app remains a user-controlled, first-use action.
