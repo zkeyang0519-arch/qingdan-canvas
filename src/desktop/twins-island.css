@@ -53,9 +53,7 @@
   border: 1px solid #d5e1cb;
   border-radius: 26px;
   background: var(--twin-jade);
-  box-shadow:
-    inset 0 1px 0 #ffffffd9,
-    0 5px 16px -6px #29432d36;
+  box-shadow: inset 0 1px 0 #ffffffd9;
 }
 .dynamic-island[data-layout="twins"]
   :is(
@@ -185,9 +183,7 @@
   border-radius: 24px;
   background: var(--twin-forest);
   color: #e2f0d3;
-  box-shadow:
-    inset 0 1px 0 #ffffff18,
-    0 4px 12px -5px #29432d36;
+  box-shadow: inset 0 1px 0 #ffffff18;
   font-variant-numeric: tabular-nums;
 }
 .island-twin-time span {
@@ -325,6 +321,8 @@
   padding: 16px 20px;
   max-height: min(976px, calc(var(--desktop-max-height, 900px) - 24px));
   border-radius: 25px;
+  /* Outer shadows would reach the native click-through mask and be hard-cut. */
+  box-shadow: inset 0 1px 0 #fff;
   animation: none;
 }
 .island-twin-panel-heading {
