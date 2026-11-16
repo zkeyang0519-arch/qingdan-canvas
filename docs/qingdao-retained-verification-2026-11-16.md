@@ -23,3 +23,10 @@
 - `npm run desktop:package`、`npm run desktop:inspect` 通过；本地安装包 `Qingdao-Setup-0.3.6-x64.exe`，142811970 字节，SHA-256 `408501bc7f411acb1db272b2b948215f5ff1903b4a1d0e6e3d497a6e20bde5cc`。包内 322 项检查通过，未打入个人档案、配置密钥或数据库。
 
 公开版本由 `main` 上的 `v0.3.6` 标签触发现有 Windows 发布流水线，云端构建产物与本地安装包的校验值可因构建时间不同而不同。没有使用用户的真实档案做故障注入或改写现有任务；本次更新安装包，不直接退出或替换用户正在运行的客户端。
+
+## 公开发布
+
+- `v0.3.6` 指向实现提交 `41723711425277ff2b60b7ef0ace06fe90468c94`，已推送 `main` 与日常开发分支。
+- [版本发布流水线](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/43891866553)与同提交的 `main` 构建均成功，包含云端桌面测试、类型检查、安装包构建与内容检查。
+- [正式 Release](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/v0.3.6)已公开，包含安装器、blockmap 和 latest.yml；不是草稿或预发行。Windows 安装器为 142729258 字节（约 136.12 MiB），GitHub 资产 SHA-256 为 `e52d9f990d94c1dee40ac2b5d87071adca67ebc0017f0a5833c951600885dfbe`。
+- 下载页正式版版本、安装器链接、大小与发布说明入口同步改为 0.3.6；轻量验证版入口不变。下载页已有回归测试通过。
