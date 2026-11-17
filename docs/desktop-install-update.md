@@ -44,6 +44,8 @@ npm run desktop:inspect
 2. 发布桌面版本时，同时提高根目录和 `desktop/package.json` 的版本号及锁文件版本，推送对应 `v<version>` 标签，例如 `v0.3.0`。
 3. 标签必须来自 `main`，与包版本一致。发布前检查选定的签名模式及更新源可匿名访问，验证通过才创建 GitHub Release。
 4. 更新源为 `zkeyang0519-arch/qingdan-canvas` 的公开 GitHub Releases。若源码仓库是私有库，应改用独立公开的发行仓库或 HTTPS 下载源；不能把个人 GitHub Token 打进客户端。
+5. 每次正式版或验证版发布都必须同步 [下载界面](https://todo.zky.lol/download/) 的对应版本号、安装包及更新说明链接；发布资产就绪后核对安装包大小。正式版修改 `public/download/index.html` 并运行 `npm run desktop:download:check`；忘记更新或只改部分链接会被桌面回归测试阻止。验证版也须更新对应卡片，保留其他平台入口及正式版渠道。
+6. 推送 `main` 后等待 Workers Builds 成功；若自动部署失败，按 [部署说明](cloudflare-setup.md) 修复并完成网页发布。正式 Release 创建后，工作流执行 `npm run desktop:download:check -- --online --wait`，最多等待五分钟，核对真实线上下载页与匿名正式更新源。校验失败时修复下载页、重跑该命令，通过后才能宣布本次发布完成；本机升级成功不代表下载页已同步。
 
 当前未签名发布不需要证书配置，Release 说明会明确标注未签名。将来启用代码签名时，在 GitHub 配置：
 

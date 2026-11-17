@@ -43,7 +43,8 @@
     "deploy": "node scripts/deploy.mjs",
     "format": "prettier --write src worker shared scripts tests *.json *.js docs/*.md README.md",
     "desktop:package": "node scripts/package-desktop.mjs",
-    "desktop:inspect": "node scripts/inspect-desktop-package.mjs"
+    "desktop:inspect": "node scripts/inspect-desktop-package.mjs",
+    "desktop:download:check": "node scripts/check-desktop-download-page.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",

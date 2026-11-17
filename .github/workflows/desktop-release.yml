@@ -15,6 +15,7 @@ on:
       - "package*.json"
       - "electron-builder.config.cjs"
       - "scripts/package-desktop.mjs"
+      - "scripts/check-desktop-download-page.mjs"
       - "scripts/lib/desktop-*.mjs"
       - ".github/workflows/desktop-release.yml"
   workflow_dispatch:
@@ -98,3 +99,19 @@ jobs:
           }
           gh release create $env:GITHUB_REF_NAME @($artifacts.FullName) --verify-tag --generate-notes --notes-file $notesPath --title "轻岛 $env:GITHUB_REF_NAME"
           if ($LASTEXITCODE -ne 0) { throw "Desktop release failed." }
+
+  download-page:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify published download page
+        run: npm run desktop:download:check -- --online --wait

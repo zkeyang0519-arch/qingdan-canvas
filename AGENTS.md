@@ -7,6 +7,7 @@
 - 包管理器：npm；Node.js >= 24。`npm ci` 安装。
 - 开发：`npm run dev`（Node.js 24+；自动构建网页和 Runner、迁移本地 D1，同时启动 127.0.0.1:8788 网页服务与 127.0.0.1:8790 Agent 入口）。
 - 验证：`npm test`、`npm run check`、`npm run deploy:check`。
+- 轻岛每次发布新版本（正式版或验证版），必须同步线上下载界面 `https://todo.zky.lol/download/` 的对应版本号、安装包和更新说明链接；源码更新、GitHub Release 或本机升级都不能代替线上下载页验收。正式版先运行 `npm run desktop:download:check`，发布后运行 `npm run desktop:download:check -- --online --wait`；线上未同步不得宣布发布完成。保持正式版与验证版渠道分开，保留仍受支持的平台入口。
 - 重要：测试启动独立 workerd；不要与已有开发数据目录混用。
 - 真实验收需要测试账号时，隔离应用与 Runner 状态，不能占用用户正在使用的设备绑定；结束时核对用户实际登录账号与电脑在线状态。
 - 多人协作使用每画布一个 SQLite DO。对象版本与操作回执不可绕过。
