@@ -471,6 +471,84 @@ test("删除排列选中行不会删除整张便签或另一栏，备注进入�
   );
 });
 
+test("结束填写丢弃空白待办，不新增回收站记录且保留其他行", () => {
+  const f = fixture(),
+    blank = makeBlock(" \n\t ");
+  f.note.blocks.push(blank);
+  f.note.blockOrder = f.note.blocks.map((block) => block.id);
+  const next = arranged.discardEmptyPageBlock(
+    f.state,
+    f.boardId,
+    "left",
+    "note",
+    blank.id,
+  );
+  const note = next.objects.find((object) => object.id === "note");
+  assert.deepEqual(note.blocks, f.note.blocks.slice(0, -1));
+  assert.deepEqual(note.blockOrder, f.note.blockOrder.slice(0, -1));
+  assert.deepEqual(next.trash, f.state.trash);
+  assert.equal(f.note.blocks.length, 3, "不修改原快照");
+});
+
+test("空行清理保留文字、引用、备注、截止时间、完成记录和锁定内容", () => {
+  for (const protect of [
+    (f, b) => {
+      b.runs = [{ type: "text", text: "协作者填入的内容" }];
+    },
+    (f, b) => {
+      b.runs = [{ type: "ref", targetId: "right", label: "引用" }];
+    },
+    (f, b) => {
+      b.remark = { text: "已有备注", updatedAt: new Date().toISOString() };
+    },
+    (f, b) => {
+      b.dueAt = "2026-11-18T08:00:00.000Z";
+    },
+    (f, b) => {
+      b.done = true;
+      b.completedAt = new Date().toISOString();
+    },
+    (f) => {
+      f.note.locked = true;
+    },
+    (f) => {
+      f.left.locked = true;
+    },
+    (f) => {
+      f.note.noteKind = "text";
+    },
+  ]) {
+    const f = fixture(),
+      blank = makeBlock();
+    f.note.blocks = [blank];
+    protect(f, blank);
+    assert.equal(
+      arranged.discardEmptyPageBlock(
+        f.state,
+        f.boardId,
+        "left",
+        "note",
+        blank.id,
+      ),
+      f.state,
+    );
+  }
+  const f = fixture(),
+    blank = makeBlock();
+  f.note.blocks = [blank];
+  assert.equal(
+    arranged.discardEmptyPageBlock(
+      f.state,
+      f.boardId,
+      "right",
+      "note",
+      blank.id,
+    ),
+    f.state,
+    "不会清理其他项目",
+  );
+});
+
 test("清空仅删除当前项目未锁定的已完成事项，保留未完成、其他项目和备注备份", () => {
   const f = fixture();
   f.note.blocks[0].done = true;

@@ -33,6 +33,7 @@ globalThis.getSelection = dom.window.getSelection.bind(dom.window);
 dom.window.HTMLElement.prototype.scrollIntoView = function () {};
 globalThis.ResizeObserver = class {
   observe() {}
+  unobserve() {}
   disconnect() {}
 };
 globalThis.requestAnimationFrame = (callback) =>
@@ -184,6 +185,32 @@ async function click(element) {
   await act(async () => element.click());
 }
 
+async function pressKey(element, key, options = {}) {
+  await act(async () =>
+    element.dispatchEvent(
+      new window.KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      }),
+    ),
+  );
+}
+
+async function typeInEditor(editor, text) {
+  await act(async () => {
+    editor.textContent = text;
+    const selection = getSelection(),
+      range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 const clipboardBlocks = (controls) =>
   controls.state().objects.flatMap((object) => object.blocks || []);
 const clipboardText = (block) =>
@@ -246,6 +273,133 @@ test("剪贴板：新建输入框的多行文字保存为一个待办", async (t
   );
   assert.equal(added.length, 1);
   assert.equal(clipboardText(added[0]), " 第一行\n\n- 第二行 ");
+});
+
+for (const exit of ["blur", "Escape", "Enter"]) {
+  test(`回车续写的空待办在 ${exit} 后移除，原待办和回收站保持不变`, async (t) => {
+    const { host, controls } = await mount(t);
+    const before = structuredClone(clipboardBlocks(controls));
+    await click(row(host, "none").querySelector('[title="编辑待办"]'));
+    await pressKey(host.querySelector(".block-editor"), "Enter");
+    assert.equal(clipboardBlocks(controls).length, before.length + 1);
+    const editor = host.querySelector(".block-editor");
+    assert.equal(editor.textContent, "");
+    // Whitespace is also an unfilled row.
+    await typeInEditor(editor, " \n\t ");
+    if (exit === "blur") await act(async () => editor.blur());
+    else await pressKey(editor, exit);
+    assert.deepEqual(clipboardBlocks(controls), before);
+    assert.equal(
+      host.querySelectorAll('[aria-label="编辑待办：空白待办"]').length,
+      0,
+    );
+    assert.equal(controls.state().trash.length, 0);
+    assert.deepEqual(controls.toasts, []);
+  });
+}
+
+test("回车可以连续填写待办，退出时只移除最后未填写的一行", async (t) => {
+  const { host, controls, note } = await mount(t);
+  const before = structuredClone(note.blocks);
+  await click(row(host, "none").querySelector('[title="编辑待办"]'));
+  await pressKey(host.querySelector(".block-editor"), "Enter");
+  await typeInEditor(host.querySelector(".block-editor"), "继续填写的待办");
+  await pressKey(host.querySelector(".block-editor"), "Enter");
+  await act(async () => host.querySelector(".block-editor").blur());
+  const blocks = clipboardBlocks(controls);
+  assert.equal(blocks.length, before.length + 1);
+  assert.equal(clipboardText(blocks[1]), "继续填写的待办");
+  assert.deepEqual(
+    blocks.filter((block) => block.id !== blocks[1].id),
+    before,
+  );
+  assert.equal(controls.state().trash.length, 0);
+});
+
+test("切换展示方式时移除回车留下的空待办，再切回不恢复空行", async (t) => {
+  const { host, controls } = await mount(t);
+  const before = structuredClone(clipboardBlocks(controls));
+  await click(row(host, "none").querySelector('[title="编辑待办"]'));
+  await pressKey(host.querySelector(".block-editor"), "Enter");
+  await click(host.querySelector('[aria-label="切换到月历"]'));
+  assert.deepEqual(clipboardBlocks(controls), before);
+  await click(host.querySelector('[aria-label="切换到清单"]'));
+  assert.deepEqual(clipboardBlocks(controls), before);
+  assert.equal(
+    host.querySelectorAll('[aria-label="编辑待办：空白待办"]').length,
+    0,
+  );
+});
+
+test("退出空行时保留协作者刚填入的内容", async (t) => {
+  const { host, controls, note } = await mount(t);
+  await click(row(host, "none").querySelector('[title="编辑待办"]'));
+  await pressKey(host.querySelector(".block-editor"), "Enter");
+  const editor = host.querySelector(".block-editor"),
+    blankId = editor.closest("[data-task-id]").dataset.taskId;
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      objects: state.objects.map((object) =>
+        object.id === note.id
+          ? {
+              ...object,
+              blocks: object.blocks.map((block) =>
+                block.id === blankId
+                  ? {
+                      ...block,
+                      runs: [{ type: "text", text: "协作者已经填写" }],
+                    }
+                  : block,
+              ),
+            }
+          : object,
+      ),
+    })),
+  );
+  await act(async () => editor.blur());
+  const saved = clipboardBlocks(controls).find((block) => block.id === blankId);
+  assert.ok(saved);
+  assert.equal(clipboardText(saved), "协作者已经填写");
+  assert.equal(controls.state().trash.length, 0);
+});
+
+test("回车续写保留中文输入法确认和 Shift+Enter 换行", async (t) => {
+  const { host, controls } = await mount(t);
+  const before = clipboardBlocks(controls).length;
+  await click(row(host, "none").querySelector('[title="编辑待办"]'));
+  await pressKey(host.querySelector(".block-editor"), "Enter");
+  const editor = host.querySelector(".block-editor");
+  await act(async () =>
+    editor.dispatchEvent(
+      new window.CompositionEvent("compositionstart", { bubbles: true }),
+    ),
+  );
+  await pressKey(editor, "Enter", { isComposing: true });
+  assert.equal(clipboardBlocks(controls).length, before + 1);
+  await act(async () => editor.blur());
+  assert.equal(
+    clipboardBlocks(controls).length,
+    before + 1,
+    "组词中失焦不提前丢弃输入",
+  );
+  await typeInEditor(editor, "中文待办");
+  await act(async () =>
+    editor.dispatchEvent(
+      new window.CompositionEvent("compositionend", {
+        bubbles: true,
+        data: "中文待办",
+      }),
+    ),
+  );
+  assert.ok(
+    clipboardBlocks(controls).some(
+      (block) => clipboardText(block) === "中文待办",
+    ),
+  );
+  await act(async () => editor.focus());
+  await pressKey(editor, "Enter", { shiftKey: true });
+  assert.equal(clipboardBlocks(controls).length, before + 1);
 });
 
 test("剪贴板：编辑选区粘贴多行不拆分且保留待办身份和元数据", async (t) => {

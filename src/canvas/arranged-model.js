@@ -2,6 +2,7 @@ import {
   createObject,
   createInspirationBoard,
   patchObjects,
+  blockText,
   movableIds,
   groupObjects,
   deleteObjects,
@@ -286,6 +287,29 @@ export function editPageBlock(state, boardId, pageId, noteId, blockId, runs) {
       blocks: task.note.blocks.map((b) =>
         b.id === blockId ? { ...b, runs } : b,
       ),
+    },
+  });
+}
+
+export function discardEmptyPageBlock(state, boardId, pageId, noteId, blockId) {
+  const task = pageTask(state, boardId, pageId, noteId, blockId);
+  if (
+    !task ||
+    task.article ||
+    blockText(task.block).trim() ||
+    task.block.done ||
+    task.block.dueAt ||
+    task.block.dueStartAt ||
+    task.block.remark?.text.trim()
+  )
+    return state;
+  // Unfilled rows are placeholders, not deleted tasks to keep in the trash.
+  return patchObjects(state, {
+    [noteId]: {
+      blocks: task.note.blocks.filter((block) => block.id !== blockId),
+      ...(task.note.blockOrder
+        ? { blockOrder: task.note.blockOrder.filter((key) => key !== blockId) }
+        : {}),
     },
   });
 }
