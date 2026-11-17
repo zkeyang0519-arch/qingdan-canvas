@@ -50,6 +50,17 @@ async function appComponent() {
         {
           name: "unrelated-canvas",
           setup(builder) {
+            // Package styles are external before esbuild's .css loader runs.
+            // Desktop UI also imports the shared calendar; keep its styles out
+            // of Node while preserving every real authorization component.
+            builder.onResolve({ filter: /\.css$/ }, (args) => ({
+              path: args.path,
+              namespace: "test-css",
+            }));
+            builder.onLoad({ filter: /.*/, namespace: "test-css" }, () => ({
+              contents: "",
+              loader: "js",
+            }));
             builder.onResolve({ filter: /CanvasWorkspace\.jsx$/ }, () => ({
               path: "canvas",
               namespace: "fixture",
