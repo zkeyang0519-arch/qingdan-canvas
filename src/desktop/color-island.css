@@ -144,7 +144,7 @@
 }
 .island-design-options {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 .island-palette-settings .island-design-options button {
@@ -293,4 +293,61 @@
 }
 .island-palette-settings .island-appearance-error {
   color: #9c503a;
+}
+
+.island-meadow-surface,
+.island-meadow-readability {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+.island-meadow-surface {
+  overflow: hidden;
+  isolation: isolate;
+  contain: layout paint;
+  background: #cdddb8 url("/island/meadow/spring-v3.webp") center 67% / cover
+    no-repeat;
+}
+.island-meadow-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.island-meadow-season {
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat-x;
+}
+.island-meadow-next {
+  opacity: 0;
+  will-change: opacity;
+}
+.island-meadow-readability {
+  z-index: 1;
+  background: linear-gradient(
+    90deg,
+    #f4f7e4e0,
+    #f3f5e5c4 22%,
+    #f5f7e499 61%,
+    #f4f6e52b 82%,
+    transparent
+  );
+}
+.island-meadow-surface[data-side="true"] + .island-meadow-readability {
+  background: radial-gradient(ellipse at 50% 50%, #f5f8dc70, transparent 72%);
+}
+.dynamic-island[data-design="meadow"][data-dock="left"][data-peek="true"]
+  .island-meadow-readability {
+  background: linear-gradient(90deg, transparent, #f4f7e4de 27%, #f4f7e4e8);
+}
+.dynamic-island[data-design="meadow"][data-dock="right"][data-peek="true"]
+  .island-meadow-readability {
+  background: linear-gradient(270deg, transparent, #f4f7e4de 27%, #f4f7e4e8);
+}
+.dynamic-island[data-design="meadow"] .island-twin-pet {
+  filter: drop-shadow(0 1px 2px #ffffffb3);
 }

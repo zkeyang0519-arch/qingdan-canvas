@@ -2,6 +2,7 @@
 export const legacyIslandAppearanceKey = "qingdan.desktop.island-appearance.v1";
 export const islandAppearanceKey = "qingdan.desktop.island-appearance.v2";
 export const islandAppearanceVersions = [
+  { id: "meadow", name: "四季草地", detail: "春花、夏荫、秋叶与冬雪" },
   { id: "glass", name: "清透玻璃", detail: "边缘折射与高光" },
   { id: "flow", name: "色块流动", detail: "保留原版配色" },
 ];
@@ -44,10 +45,15 @@ const defaultProfile = Object.freeze({
   motion: true,
   glassStrength: 0.9,
 });
+const meadowProfile = Object.freeze({ ...defaultProfile, scrollSpeed: 24 });
 export const defaultIslandAppearance = Object.freeze({
   version: 2,
   design: "glass",
-  profiles: Object.freeze({ glass: defaultProfile, flow: defaultProfile }),
+  profiles: Object.freeze({
+    glass: defaultProfile,
+    flow: defaultProfile,
+    meadow: meadowProfile,
+  }),
 });
 
 export function normalizeIslandColor(value, fallback = null) {
@@ -60,7 +66,7 @@ function bounded(value, fallback, min, max, scale = 1) {
     ? Math.round(Math.max(min, Math.min(max, value)) * scale) / scale
     : fallback;
 }
-function normalizeProfile(value) {
+function normalizeProfile(value, meadow = false) {
   const colors = Array.isArray(value?.colors)
     ? value.colors
         .slice(0, 8)
@@ -76,25 +82,30 @@ function normalizeProfile(value) {
     cycle: bounded(value?.cycle, 9, 3, 12, 10),
     motion: typeof value?.motion === "boolean" ? value.motion : true,
     glassStrength: bounded(value?.glassStrength, 0.9, 0, 1, 100),
+    ...(meadow ? { scrollSpeed: bounded(value?.scrollSpeed, 24, 8, 60) } : {}),
   };
 }
 export function normalizeIslandAppearance(value) {
   return {
     version: 2,
-    design: value?.design === "flow" ? "flow" : "glass",
+    design: ["flow", "meadow"].includes(value?.design) ? value.design : "glass",
     profiles: {
       glass: normalizeProfile(value?.profiles?.glass),
       flow: normalizeProfile(value?.profiles?.flow),
+      meadow: normalizeProfile(value?.profiles?.meadow, true),
     },
   };
 }
 export function patchIslandAppearance(value, patch) {
   const next = normalizeIslandAppearance({ ...value, ...patch });
   if (patch?.profile)
-    next.profiles[next.design] = normalizeProfile({
-      ...next.profiles[next.design],
-      ...patch.profile,
-    });
+    next.profiles[next.design] = normalizeProfile(
+      {
+        ...next.profiles[next.design],
+        ...patch.profile,
+      },
+      next.design === "meadow",
+    );
   return next;
 }
 export function activeIslandAppearance(value) {
@@ -137,7 +148,9 @@ function readable(colors) {
 }
 export function islandAppearanceStyle(value) {
   const profile = activeIslandAppearance(value);
-  const main = readable(profile.colors),
+  const main = readable(
+      value?.design === "meadow" ? ["#e4edcf"] : profile.colors,
+    ),
     small = readable([profile.smallColor]);
   const colors =
     profile.colors.length > 1

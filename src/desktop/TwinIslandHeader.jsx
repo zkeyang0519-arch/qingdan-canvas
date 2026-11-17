@@ -4,6 +4,7 @@ import { blockText } from "../canvas/model.js";
 import AnimalRunner from "../island/AnimalRunner.jsx";
 import { twinTime } from "../island/twin-presentation.js";
 import IslandColorSurface from "./IslandColorSurface.jsx";
+import IslandMeadowSurface from "./IslandMeadowSurface.jsx";
 import {
   activeIslandAppearance,
   defaultIslandAppearance,
@@ -21,6 +22,7 @@ export default function TwinIslandHeader({
   panelId,
   trigger,
   side,
+  dock,
   peek,
   expanded,
   retained = false,
@@ -74,11 +76,20 @@ export default function TwinIslandHeader({
         data-desktop-drag="true"
         title="拖动轻岛"
       >
-        <IslandColorSurface
-          design={appearance.design}
-          profile={profile}
-          playing={surfacePlaying}
-        />
+        {appearance.design === "meadow" ? (
+          <IslandMeadowSurface
+            playing={surfacePlaying && profile.motion}
+            speed={profile.scrollSpeed}
+            side={side}
+            reverse={dock === "left"}
+          />
+        ) : (
+          <IslandColorSurface
+            design={appearance.design}
+            profile={profile}
+            playing={surfacePlaying}
+          />
+        )}
         {task && !side && (
           <button
             className="island-twin-complete"
@@ -129,12 +140,14 @@ export default function TwinIslandHeader({
         aria-expanded={expanded}
         aria-controls={panelId}
       >
-        <IslandColorSurface
-          design={appearance.design}
-          profile={profile}
-          playing={false}
-          small
-        />
+        {appearance.design !== "meadow" && (
+          <IslandColorSurface
+            design={appearance.design}
+            profile={profile}
+            playing={false}
+            small
+          />
+        )}
         {time.label && <span>{time.label}</span>}
         <strong>{time.value}</strong>
       </button>

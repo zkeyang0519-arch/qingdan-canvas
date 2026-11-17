@@ -604,7 +604,9 @@ export default function DynamicIsland({
           twins
             ? appearance.value.design === "glass"
               ? "clear-glass"
-              : "color-flow"
+              : appearance.value.design === "meadow"
+                ? "seasonal-meadow"
+                : "color-flow"
             : undefined
         }
         data-design={twins ? appearance.value.design : undefined}
@@ -712,6 +714,7 @@ export default function DynamicIsland({
               panelId={panelId}
               trigger={trigger}
               side={side && !desktop?.dragging}
+              dock={desktop?.dragging ? "free" : desktop?.dock}
               peek={peek}
               expanded={shown}
               retained={retained}
