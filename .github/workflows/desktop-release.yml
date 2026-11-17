@@ -97,6 +97,11 @@ jobs:
           } else {
             '此 Windows 安装包尚未进行代码签名，可能显示“未知发布者”或被设备安全策略阻止。请确认下载来自本项目 Releases；无需关闭系统安全保护。' | Set-Content -LiteralPath $notesPath -Encoding utf8
           }
+          $releaseNotes = Join-Path 'docs' "qingdao-release-$($env:GITHUB_REF_NAME.Substring(1)).md"
+          if (Test-Path -LiteralPath $releaseNotes) {
+            "`n" | Add-Content -LiteralPath $notesPath -Encoding utf8
+            Get-Content -LiteralPath $releaseNotes -Raw | Add-Content -LiteralPath $notesPath -Encoding utf8
+          }
           gh release create $env:GITHUB_REF_NAME @($artifacts.FullName) --verify-tag --generate-notes --notes-file $notesPath --title "轻岛 $env:GITHUB_REF_NAME"
           if ($LASTEXITCODE -ne 0) { throw "Desktop release failed." }
 

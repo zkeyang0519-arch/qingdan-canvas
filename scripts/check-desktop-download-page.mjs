@@ -56,6 +56,18 @@ try {
           throw new Error(`线上下载页返回 HTTP ${response.status}。`);
         }
         validateDesktopDownloadPage(await response.text(), version);
+        const installer = await fetchDesktopAsset(release.url, {
+          signal: AbortSignal.timeout(15_000),
+        });
+        try {
+          if (!installer.ok)
+            throw new Error(`正式安装包下载返回 HTTP ${installer.status}。`);
+          const size = installer.headers.get("content-length");
+          if (size !== null && Number(size) !== release.size)
+            throw new Error("正式安装包大小与更新清单不一致。");
+        } finally {
+          await installer.body?.cancel();
+        }
         console.log(`线上下载页与正式更新源 ${version} 一致：${pageUrl}`);
         break;
       } catch (error) {

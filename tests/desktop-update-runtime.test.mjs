@@ -145,6 +145,10 @@ test("bundled assets are restricted to the production origin and stay within the
     bundledAsset("https://todo.zky.lol/island-releases/v0.3.6.jpg", root),
     path.join(root, "island-releases", "v0.3.6.jpg"),
   );
+  assert.equal(
+    bundledAsset("https://todo.zky.lol/island/meadow/spring-v3.webp", root),
+    path.join(root, "island", "meadow", "spring-v3.webp"),
+  );
   for (const url of [
     "https://other.invalid/assets/app.js",
     "http://todo.zky.lol/app",
@@ -154,6 +158,8 @@ test("bundled assets are restricted to the production origin and stay within the
     "https://todo.zky.lol/assets/a%00b",
     "https://todo.zky.lol/assets/%ZZ",
     "https://todo.zky.lol/island-releases/%2e%2e%2f%2e%2e%2fsecret",
+    "https://todo.zky.lol/island/%2e%2e%2f%2e%2e%2fsecret",
+    "https://todo.zky.lol/island-other/meadow/spring-v3.webp",
   ])
     assert.equal(bundledAsset(url, root), null, url);
 });
@@ -235,6 +241,45 @@ test("bundled renderer serves matching static files while API requests retain me
   );
   assert.equal(missing.status, 404);
   assert.equal(forwarded.length, 3);
+});
+
+test("installed seasonal backgrounds load exact WebP bytes with no network, including after a fresh launch", async (t) => {
+  const root = directory(t);
+  const destination = path.join(root, "island", "meadow");
+  fs.mkdirSync(destination, { recursive: true });
+  const seasons = ["spring", "summer", "autumn", "winter"];
+  for (const season of seasons)
+    fs.copyFileSync(
+      new URL(`../public/island/meadow/${season}-v3.webp`, import.meta.url),
+      path.join(destination, `${season}-v3.webp`),
+    );
+  for (let launch = 0; launch < 2; launch++) {
+    let handler;
+    installBundledWeb(
+      {
+        protocol: { handle: (_, next) => (handler = next) },
+        fetch: () => {
+          throw Error("Network unavailable: packaged images must stay local");
+        },
+      },
+      root,
+    );
+    for (const season of seasons) {
+      const response = await handler(
+        new Request(`https://todo.zky.lol/island/meadow/${season}-v3.webp`),
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "image/webp");
+      assert.deepEqual(
+        Buffer.from(await response.arrayBuffer()),
+        fs.readFileSync(path.join(destination, `${season}-v3.webp`)),
+      );
+    }
+    const missing = await handler(
+      new Request("https://todo.zky.lol/island/meadow/missing.webp"),
+    );
+    assert.equal(missing.status, 404);
+  }
 });
 
 test("resume keeps only trusted origin and valid room, never credentials or transient query fields", (t) => {
