@@ -500,3 +500,31 @@ test("关闭模式仅通知宿主，不改共享任务或项目选择", async (t
   assert.equal(controls.disabled, 1);
   assert.strictEqual(controls.state(), before);
 });
+
+test("轻岛切换项目关闭 DDL 编辑器，取消后不把旧日期写到新项目", async (t) => {
+  const { host, controls, boardId, other, note, otherNote } = await mount(t);
+  await click(toggle(host));
+  await click(host.querySelector(".todo-deadline-button"));
+  assert.ok(host.querySelector(".island-deadline-view"));
+  await act(async () =>
+    controls.update((state) => ({
+      ...state,
+      preferences: {
+        ...state.preferences,
+        views: {
+          ...state.preferences.views,
+          [boardId]: { arranged: { pageId: other.id, active: "left" } },
+        },
+      },
+    })),
+  );
+  assert.equal(host.querySelector(".island-deadline-view"), null);
+  assert.ok(
+    host
+      .querySelector(".todo-deadline-button")
+      .getAttribute("aria-label")
+      .includes("另一个项目的待办"),
+  );
+  assert.deepEqual(taskNote(controls, note.id).blocks, note.blocks);
+  assert.deepEqual(taskNote(controls, otherNote.id).blocks, otherNote.blocks);
+});

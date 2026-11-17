@@ -185,6 +185,165 @@ function bridgeFixture() {
   };
   return { bridge, calls };
 }
+
+test("轻岛每条待办末尾可设置、修改、清除 DDL，不触发完成并保留输入", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+    count: 2,
+  });
+  await click(host.querySelector(".island-twin-time"));
+  await type(host.querySelector("textarea"), "未提交输入保留");
+  const triggers = () => [
+    ...host.querySelectorAll(".island-task-row .todo-deadline-button"),
+  ];
+  assert.equal(triggers().length, 2);
+  assert.equal(triggers()[0].closest("label"), null);
+  const first = triggers()[0];
+  const before = controls.state().objects[0];
+  await click(first);
+  const editor = host.querySelector(".island-deadline-view");
+  assert.ok(editor.closest(".island-panel"), "日历留在原生浮窗可点击区域内");
+  assert.equal(host.querySelector(".island-tasks-view").hidden, true);
+  assert.equal(controls.state().objects[0].blocks[0].done, false);
+  const selected = editor.querySelector('.rdp-day_button[tabindex="0"]');
+  assert.equal(document.activeElement, selected);
+  await click(selected);
+  for (const [name, key] of [
+    ["截止小时", "End"],
+    ["截止分钟", "Home"],
+  ])
+    await act(async () =>
+      editor
+        .querySelector(`[aria-label="${name}"]`)
+        .dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })),
+    );
+  await click(button(editor, "确定"));
+  let block = controls.state().objects[0].blocks[0];
+  assert.ok(block.dueAt);
+  assert.equal(new Date(block.dueAt).getHours(), 23);
+  assert.equal(new Date(block.dueAt).getMinutes(), 0);
+  assert.equal(block.done, false);
+  assert.deepEqual(controls.state().objects[0].blocks[1], before.blocks[1]);
+  assert.equal(document.activeElement, first);
+  assert.equal(host.querySelector("textarea").value, "未提交输入保留");
+  await click(first);
+  await act(async () =>
+    host
+      .querySelector('[aria-label="截止小时"]')
+      .dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+      ),
+  );
+  await click(button(host.querySelector(".island-deadline-view"), "确定"));
+  assert.equal(
+    new Date(controls.state().objects[0].blocks[0].dueAt).getHours(),
+    0,
+  );
+  await click(first);
+  await click(button(host.querySelector(".island-deadline-view"), "移除时间"));
+  block = controls.state().objects[0].blocks[0];
+  assert.equal(block.dueAt, null);
+  assert.equal(block.dueStartAt, null);
+  assert.equal(block.done, false);
+  assert.equal(host.querySelector(".island-deadline-view"), null);
+});
+
+test("轻岛选择 DDL 时悬停离开不收起，Escape 只取消日期且归还按钮焦点", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+  });
+  await click(host.querySelector(".island-twin-time"));
+  const before = controls.state().objects;
+  const trigger = host.querySelector(".todo-deadline-button");
+  await click(trigger);
+  await act(async () => {
+    host.querySelector(".dynamic-island").dispatchEvent(
+      new MouseEvent("pointerout", {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 340));
+  });
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
+  await act(async () =>
+    document.activeElement.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  assert.equal(host.querySelector(".island-deadline-view"), null);
+  assert.equal(host.querySelector(".dynamic-island").dataset.open, "true");
+  assert.strictEqual(controls.state().objects, before);
+  assert.equal(document.activeElement, trigger);
+  await click(trigger);
+  await click(button(host.querySelector(".island-deadline-view"), "取消"));
+  assert.strictEqual(controls.state().objects, before);
+});
+
+test("轻岛 DDL 保存重查协作日期和最新锁定，拒绝覆盖并保留编辑器", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+  });
+  await click(host.querySelector(".island-twin-time"));
+  await click(host.querySelector(".todo-deadline-button"));
+  const remoteDue = "2031-05-23T08:30:00.000Z";
+  controls.receiveBeforeRender((state) => ({
+    ...state,
+    objects: state.objects.map((note) => ({
+      ...note,
+      blocks: note.blocks.map((block) => ({ ...block, dueAt: remoteDue })),
+    })),
+  }));
+  await click(button(host.querySelector(".island-deadline-view"), "确定"));
+  assert.equal(controls.state().objects[0].blocks[0].dueAt, remoteDue);
+  assert.match(
+    host.querySelector('.island-deadline-view [role="alert"]').textContent,
+    /协作者修改/,
+  );
+  await click(button(host.querySelector(".island-deadline-view"), "取消"));
+  await click(host.querySelector(".todo-deadline-button"));
+  controls.receiveBeforeRender((state) => ({
+    ...state,
+    objects: state.objects.map((note) => ({ ...note, locked: true })),
+  }));
+  await click(button(host.querySelector(".island-deadline-view"), "移除时间"));
+  assert.equal(controls.state().objects[0].blocks[0].dueAt, remoteDue);
+  assert.match(
+    host.querySelector('.island-deadline-view [role="alert"]').textContent,
+    /锁定/,
+  );
+});
+
+test("轻岛只读禁止设置 DDL，打开后失去编辑权禁用确认与清除", async (t) => {
+  const { host, controls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+    overrides: { readOnly: true },
+  });
+  await click(host.querySelector(".island-twin-time"));
+  assert.equal(host.querySelector(".todo-deadline-button").disabled, true);
+  await act(async () => controls.setPatch({ readOnly: false }));
+  await click(host.querySelector(".todo-deadline-button"));
+  const before = controls.state().objects;
+  await act(async () => controls.setPatch({ readOnly: true }));
+  const editor = host.querySelector(".island-deadline-view");
+  assert.equal(button(editor, "确定").disabled, true);
+  await act(async () =>
+    editor
+      .querySelector("form")
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  assert.strictEqual(controls.state().objects, before);
+  await click(button(editor, "取消"));
+  assert.equal(host.querySelector(".island-deadline-view"), null);
+});
 async function mount(
   t,
   {

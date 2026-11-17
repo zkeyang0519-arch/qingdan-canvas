@@ -218,6 +218,7 @@ function ConnectedWorkspace({
           "data-open",
           "data-peek",
           "data-empty",
+          "data-deadline-editor",
         ],
       });
     window.addEventListener("resize", measure);

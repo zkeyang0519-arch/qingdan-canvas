@@ -1,0 +1,83 @@
+.dynamic-island .island-task-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  align-self: stretch;
+  gap: inherit;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.dynamic-island .island-task-row .todo-deadline-button {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+}
+
+.dynamic-island .island-task-row .todo-deadline-ring {
+  width: 32px;
+  height: 32px;
+}
+
+.dynamic-island[data-appearance="jade"] .island-task-row[data-deadline] {
+  padding-block: 8px;
+}
+
+.dynamic-island .island-tasks-view[hidden] {
+  display: none;
+}
+
+.dynamic-island[data-deadline-editor="true"] .island-panel,
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-deadline-editor="true"]
+  .island-panel {
+  --island-text: #304b43;
+  --island-muted: #698176;
+  --island-accent: #80966d;
+  background: #fafbf6;
+  color: #304b43;
+  color-scheme: light;
+  text-shadow: none;
+}
+
+.island-deadline-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #dfe7d6;
+}
+
+.island-deadline-heading strong {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.island-deadline-heading button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #698176;
+}
+
+.island-deadline-heading button:hover {
+  background: #e8edde;
+}
+
+.island-deadline-view {
+  padding-bottom: 2px;
+}
+
+.island-deadline-view .task-deadline-actions {
+  bottom: 0;
+  background: #fafbf6;
+}

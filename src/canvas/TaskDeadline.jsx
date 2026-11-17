@@ -275,13 +275,13 @@ function TimeWheel({ field, value, disabled, onChange, onMovingChange }) {
   );
 }
 
-function DeadlinePicker({
+export function TaskDeadlinePicker({
   task,
   disabled,
   onClose,
   onSave,
-  showHint,
-  disabledMessage,
+  showHint = true,
+  disabledMessage = "这条待办当前无法编辑，可能已被锁定、收纳或删除。",
 }) {
   const [parts, setParts] = useState(() => deadlineSelection(task.dueAt));
   const [month, setMonth] = useState(() => deadlineCalendarDate(parts));
@@ -571,7 +571,7 @@ export function TaskDeadlinePopover({
               <X size={16} />
             </button>
           </header>
-          <DeadlinePicker
+          <TaskDeadlinePicker
             task={task}
             disabled={disabled}
             onClose={onClose}

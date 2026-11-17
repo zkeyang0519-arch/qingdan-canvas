@@ -21,8 +21,15 @@ import {
   appendPageObjects,
   choosePanePage,
   panePages,
+  setPageDeadline,
   writablePage,
 } from "../canvas/arranged-model.js";
+import { deadlineInfo } from "../../shared/deadline.js";
+import {
+  TaskDeadlineButton,
+  TaskDeadlinePicker,
+  useDeadlineClock,
+} from "../canvas/TaskDeadline.jsx";
 import { getIslandPreferences, setIslandPreferences } from "./preferences.js";
 import {
   IslandDesktopHeader,
@@ -34,6 +41,7 @@ import TwinIslandHeader from "../desktop/TwinIslandHeader.jsx";
 import IslandSettings from "../desktop/IslandSettings.jsx";
 import { useIslandAppearance } from "../desktop/useIslandAppearance.js";
 import { islandAppearanceStyle } from "../desktop/island-appearance.js";
+import "./island-deadline.css";
 
 const syncLabels = {
   loading: "连接中",
@@ -86,6 +94,15 @@ export default function DynamicIsland({
   const [feedback, setFeedback] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deadlineEditor, setDeadlineEditor] = useState(null);
+  const editingDeadline =
+    deadlineEditor?.boardId === boardId && deadlineEditor.pageId === page?.id
+      ? deadlineEditor
+      : null;
+  const deadlineClock = useDeadlineClock(state.objects);
+  const deadlineView = useRef(null),
+    deadlineTrigger = useRef(null),
+    returnDeadlineFocus = useRef(false);
   const [offset, setOffset] = useState(top ?? 76);
   const dock = useRef(null),
     island = useRef(null),
@@ -105,8 +122,8 @@ export default function DynamicIsland({
     keyboard = useRef(false),
     composing = useRef(false),
     clickHeld = useRef(false);
-  const live = useRef({ pinned, expanded, settingsOpen });
-  live.current = { pinned, expanded, settingsOpen };
+  const live = useRef({ pinned, expanded, settingsOpen, editingDeadline });
+  live.current = { pinned, expanded, settingsOpen, editingDeadline };
   const panelId = useId(),
     inputId = useId();
   const tasks = page?.tasks || [];
@@ -186,6 +203,7 @@ export default function DynamicIsland({
       if (
         !live.current.pinned &&
         !live.current.settingsOpen &&
+        !live.current.editingDeadline &&
         !clickHeld.current &&
         !pointerInside.current &&
         !editing &&
@@ -206,6 +224,22 @@ export default function DynamicIsland({
       setShowCompleted(false);
     }
   }, [shown, twins]);
+
+  useLayoutEffect(() => {
+    if (!shown || settingsOpen || !editingDeadline) setDeadlineEditor(null);
+  }, [shown, settingsOpen, editingDeadline]);
+
+  useLayoutEffect(() => {
+    if (editingDeadline) {
+      deadlineView.current
+        ?.querySelector('.rdp-day_button[tabindex="0"]')
+        ?.focus({ preventScroll: true });
+    } else if (returnDeadlineFocus.current) {
+      returnDeadlineFocus.current = false;
+      if (shown && deadlineTrigger.current?.isConnected)
+        deadlineTrigger.current.focus({ preventScroll: true });
+    }
+  }, [editingDeadline, shown]);
 
   useLayoutEffect(() => {
     if (settingsOpen) settingsBack.current?.focus({ preventScroll: true });
@@ -314,7 +348,97 @@ export default function DynamicIsland({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [top, hidden, tasks.length, page?.id, feedback, shown, desktop?.dock]);
+  }, [
+    top,
+    hidden,
+    tasks.length,
+    page?.id,
+    feedback,
+    shown,
+    desktop?.dock,
+    !!editingDeadline,
+  ]);
+
+  const closeDeadline = () => {
+    returnDeadlineFocus.current = true;
+    setDeadlineEditor(null);
+  };
+  const openDeadline = (task, event) => {
+    if (workspace.readOnly || !page) return;
+    beforeAction?.();
+    const latest = writablePage(
+      workspace.current.current,
+      boardId,
+      page.id,
+    )?.tasks.find(
+      (entry) =>
+        entry.note.id === task.note.id &&
+        entry.key === task.key &&
+        !entry.locked,
+    );
+    if (!latest) {
+      setFeedback("这条待办已被锁定、收纳或删除。");
+      return;
+    }
+    clearTimers();
+    deadlineTrigger.current = event.currentTarget;
+    setSettingsOpen(false);
+    setFeedback("");
+    setDeadlineEditor({
+      boardId,
+      pageId: page.id,
+      noteId: latest.note.id,
+      blockId: latest.key,
+      dueAt: latest.block.dueAt ?? null,
+      dueStartAt: latest.block.dueStartAt ?? null,
+      title: blockText(latest.block),
+    });
+  };
+  const saveDeadline = (dueAt, dueStartAt = null) => {
+    if (!editingDeadline) return "截止时间选择已关闭。";
+    if (workspace.readOnly) return "这条待办当前无法编辑。";
+    beforeAction?.();
+    const editor = editingDeadline;
+    workspace.update((current) =>
+      setPageDeadline(
+        current,
+        boardId,
+        editor.pageId,
+        editor.noteId,
+        editor.blockId,
+        dueAt,
+        editor.dueAt,
+        { dueStartAt, expectedDueStartAt: editor.dueStartAt },
+      ),
+    );
+    const latest = writablePage(
+      workspace.current.current,
+      boardId,
+      editor.pageId,
+    )?.tasks.find(
+      (task) =>
+        task.note.id === editor.noteId &&
+        task.key === editor.blockId &&
+        !task.locked,
+    );
+    if (!latest) return "这条待办已被锁定、收纳或删除，请返回后重试。";
+    if (
+      (latest.block.dueAt ?? null) !== dueAt ||
+      (latest.block.dueStartAt ?? null) !== dueStartAt
+    )
+      return "截止时间已被协作者修改，请返回后重新设置。";
+    closeDeadline();
+    return "";
+  };
+  const deadlineWritable =
+    writable &&
+    !!editingDeadline &&
+    tasks.some(
+      (task) =>
+        task.note.id === editingDeadline.noteId &&
+        task.key === editingDeadline.blockId &&
+        !task.locked,
+    );
 
   const changePage = (event) => {
     if (composing.current) return;
@@ -475,6 +599,7 @@ export default function DynamicIsland({
         data-layout={twins ? "twins" : undefined}
         data-retained={retained || undefined}
         data-settings={(twins && settingsOpen) || undefined}
+        data-deadline-editor={!!editingDeadline || undefined}
         data-material={
           twins
             ? appearance.value.design === "glass"
@@ -542,7 +667,8 @@ export default function DynamicIsland({
             !composing.current
           ) {
             event.preventDefault();
-            if (settingsOpen) {
+            if (editingDeadline) closeDeadline();
+            else if (settingsOpen) {
               returnSettingsFocus.current = true;
               setSettingsOpen(false);
             } else close({ focus: true, unpin: true });
@@ -658,12 +784,42 @@ export default function DynamicIsland({
             ref={panel}
             id={panelId}
             className="island-panel"
-            role={twins && settingsOpen ? "dialog" : "region"}
-            aria-label={twins && settingsOpen ? "轻岛设置" : "轻岛待办"}
+            role={
+              editingDeadline || (twins && settingsOpen) ? "dialog" : "region"
+            }
+            aria-label={
+              editingDeadline
+                ? "截止时间"
+                : twins && settingsOpen
+                  ? "轻岛设置"
+                  : "轻岛待办"
+            }
             aria-hidden={!shown}
             inert={!shown}
           >
-            {twins ? (
+            {editingDeadline ? (
+              <header
+                className="island-deadline-heading"
+                data-desktop-drag="true"
+                title={dragHandleTitle}
+              >
+                <button
+                  type="button"
+                  aria-label="返回待办列表"
+                  onClick={closeDeadline}
+                >
+                  <ArrowLeft size={16} />
+                </button>
+                <strong>截止时间</strong>
+                <button
+                  type="button"
+                  aria-label="关闭截止时间选择"
+                  onClick={closeDeadline}
+                >
+                  <X size={16} />
+                </button>
+              </header>
+            ) : twins ? (
               <header
                 className="island-twin-panel-heading"
                 data-desktop-drag="true"
@@ -742,6 +898,18 @@ export default function DynamicIsland({
               </>
             )}
             {panelNotice}
+            {editingDeadline && (
+              <div className="island-deadline-view" ref={deadlineView}>
+                <TaskDeadlinePicker
+                  key={`${editingDeadline.boardId}/${editingDeadline.pageId}/${editingDeadline.noteId}/${editingDeadline.blockId}`}
+                  task={editingDeadline}
+                  disabled={!deadlineWritable}
+                  onClose={closeDeadline}
+                  onSave={saveDeadline}
+                  showHint={false}
+                />
+              </div>
+            )}
             {twins && (
               <div
                 className="island-settings-view"
@@ -757,38 +925,52 @@ export default function DynamicIsland({
             )}
             <div
               className="island-tasks-view"
-              hidden={twins && settingsOpen}
-              inert={twins && settingsOpen}
+              hidden={!!editingDeadline || (twins && settingsOpen)}
+              inert={!!editingDeadline || (twins && settingsOpen)}
             >
               <div className="island-task-list">
                 {visibleTasks.length ? (
                   visibleTasks.map((task) => {
                     const text = blockText(task.block) || "未命名待办";
+                    const deadline = deadlineInfo(task.block, deadlineClock);
                     return (
-                      <label
+                      <div
                         className="island-task-row"
                         data-done={task.block.done}
+                        data-deadline={deadline.status}
                         key={`${task.note.id}/${task.key}`}
                       >
-                        <input
-                          className="island-check"
-                          type="checkbox"
-                          checked={!!task.block.done}
-                          disabled={!writable || task.locked}
-                          aria-label={`${task.block.done ? "恢复" : "完成"}待办：${text}`}
-                          onChange={() => toggleTask(task)}
-                        />
-                        <span className="island-task-text" title={text}>
-                          {text}
-                        </span>
-                        {task.locked && (
-                          <LockKeyhole
-                            size={12}
-                            className="island-task-lock"
-                            aria-label="已锁定"
+                        <label className="island-task-main">
+                          <input
+                            className="island-check"
+                            type="checkbox"
+                            checked={!!task.block.done}
+                            disabled={!writable || task.locked}
+                            aria-label={`${task.block.done ? "恢复" : "完成"}待办：${text}`}
+                            onChange={() => toggleTask(task)}
                           />
-                        )}
-                      </label>
+                          <span className="island-task-text" title={text}>
+                            {text}
+                          </span>
+                          {task.locked && (
+                            <LockKeyhole
+                              size={12}
+                              className="island-task-lock"
+                              aria-label="已锁定"
+                            />
+                          )}
+                        </label>
+                        <TaskDeadlineButton
+                          info={deadline}
+                          dueAt={task.block.dueAt}
+                          dueStartAt={task.block.dueStartAt}
+                          text={text}
+                          disabled={!writable || task.locked}
+                          aria-haspopup="dialog"
+                          aria-controls={panelId}
+                          onClick={(event) => openDeadline(task, event)}
+                        />
+                      </div>
                     );
                   })
                 ) : (
