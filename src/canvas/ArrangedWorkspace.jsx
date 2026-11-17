@@ -46,6 +46,7 @@ import {
   renameChecklistPage,
   appendPageObjects,
   editPageBlock,
+  discardEmptyPageBlock,
   insertPageBlocks,
   deletePageTasks,
   clearCompletedPageTasks,
@@ -524,6 +525,18 @@ function ChecklistPane({
                 onRemove={() =>
                   todoTools?.remove(task.note.id, task.key, frozen)
                 }
+                onEmpty={() => {
+                  if (!workspace.readOnly)
+                    update((s) =>
+                      discardEmptyPageBlock(
+                        s,
+                        boardId,
+                        page.id,
+                        task.note.id,
+                        task.key,
+                      ),
+                    );
+                }}
                 onExit={onExit}
                 onReference={onReference}
                 onReferencePicker={() =>

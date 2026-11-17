@@ -371,6 +371,7 @@ export function EditableBlock({
   onChange,
   onNew,
   onRemove,
+  onEmpty,
   onExit,
   onReference,
   onReferencePicker,
@@ -379,7 +380,9 @@ export function EditableBlock({
 }) {
   const ref = useRef(null),
     composition = useRef(false),
+    finishAfterComposition = useRef(false),
     latest = useRef(block),
+    lastSynced = useRef(block.runs),
     initial = useRef(block.runs);
   latest.current = block;
   useLayoutEffect(() => {
@@ -393,8 +396,31 @@ export function EditableBlock({
       selection.addRange(range);
     }
   }, [autoFocus]);
-  const sync = () =>
-    onChange({ ...latest.current, runs: readRuns(ref.current) });
+  const sync = () => {
+    const next = { ...latest.current, runs: readRuns(ref.current) };
+    lastSynced.current = next.runs;
+    onChange(next);
+    return next;
+  };
+  const finish = () => {
+    if (composition.current) {
+      finishAfterComposition.current = true;
+      return;
+    }
+    // An untouched placeholder must not overwrite a collaborator's new text
+    // before the arranged view checks whether the live task is still empty.
+    if (
+      onEmpty &&
+      JSON.stringify(readRuns(ref.current)) ===
+        JSON.stringify(lastSynced.current) &&
+      JSON.stringify(latest.current.runs) !== JSON.stringify(lastSynced.current)
+    ) {
+      onEmpty();
+      return;
+    }
+    const next = sync();
+    if (!blockText(next).trim()) onEmpty?.();
+  };
   return (
     <div
       ref={ref}
@@ -411,10 +437,13 @@ export function EditableBlock({
       }}
       onCompositionEnd={() => {
         composition.current = false;
-        sync();
+        if (finishAfterComposition.current) {
+          finishAfterComposition.current = false;
+          finish();
+        } else sync();
       }}
       onInput={sync}
-      onBlur={sync}
+      onBlur={finish}
       onKeyDown={(event) => {
         if (
           composition.current ||
@@ -424,11 +453,16 @@ export function EditableBlock({
           return;
         if (event.key === "Escape") {
           event.preventDefault();
-          sync();
+          finish();
           onExit();
         }
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
+          if (onEmpty && !blockText({ runs: readRuns(ref.current) }).trim()) {
+            finish();
+            onExit();
+            return;
+          }
           const sel = getSelection();
           const range = sel.rangeCount ? sel.getRangeAt(0) : null;
           let rest = [];
