@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import {
   CheckCheck,
+  ArrowLeft,
   ChevronDown,
   CornerDownLeft,
   LockKeyhole,
@@ -30,7 +31,7 @@ import {
 import "./dynamic-island.css";
 import { useAnimalRunner } from "./animal-runners.js";
 import TwinIslandHeader from "../desktop/TwinIslandHeader.jsx";
-import IslandAppearanceSettings from "../desktop/IslandAppearanceSettings.jsx";
+import IslandSettings from "../desktop/IslandSettings.jsx";
 import { useIslandAppearance } from "../desktop/useIslandAppearance.js";
 import { islandAppearanceStyle } from "../desktop/island-appearance.js";
 
@@ -53,6 +54,7 @@ export default function DynamicIsland({
   hidden = false,
   panelToolbar,
   panelNotice,
+  updateBridge,
   closeLabel = "隐藏轻岛",
   closeText = "隐藏到托盘",
   closeOnWindowBlur = false,
@@ -83,16 +85,19 @@ export default function DynamicIsland({
   };
   const [feedback, setFeedback] = useState("");
   const [showCompleted, setShowCompleted] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [offset, setOffset] = useState(top ?? 76);
   const dock = useRef(null),
     island = useRef(null),
     panel = useRef(null),
-    twinOptions = useRef(null),
+    settingsTrigger = useRef(null),
+    settingsBack = useRef(null),
     trigger = useRef(null),
     input = useRef(null);
   const enterTimer = useRef(null),
     leaveTimer = useRef(null);
   const returnFocus = useRef(false);
+  const returnSettingsFocus = useRef(false);
   const pointerInside = useRef(false),
     pointerPosition = useRef(null),
     hoverClickOrigin = useRef(null),
@@ -100,8 +105,8 @@ export default function DynamicIsland({
     keyboard = useRef(false),
     composing = useRef(false),
     clickHeld = useRef(false);
-  const live = useRef({ pinned, expanded });
-  live.current = { pinned, expanded };
+  const live = useRef({ pinned, expanded, settingsOpen });
+  live.current = { pinned, expanded, settingsOpen };
   const panelId = useId(),
     inputId = useId();
   const tasks = page?.tasks || [];
@@ -180,6 +185,7 @@ export default function DynamicIsland({
         keyboard.current && (twins ? dock : panel).current?.contains(active);
       if (
         !live.current.pinned &&
+        !live.current.settingsOpen &&
         !clickHeld.current &&
         !pointerInside.current &&
         !editing &&
@@ -196,10 +202,18 @@ export default function DynamicIsland({
     // Collapsing hides (rather than unmounts) the panel. Reset its transient
     // views so entering the small capsule always returns to remaining tasks.
     if (twins && !shown) {
-      if (twinOptions.current) twinOptions.current.open = false;
+      setSettingsOpen(false);
       setShowCompleted(false);
     }
   }, [shown, twins]);
+
+  useLayoutEffect(() => {
+    if (settingsOpen) settingsBack.current?.focus({ preventScroll: true });
+    else if (returnSettingsFocus.current) {
+      returnSettingsFocus.current = false;
+      settingsTrigger.current?.focus({ preventScroll: true });
+    }
+  }, [settingsOpen]);
 
   useLayoutEffect(() => {
     if (!shown && returnFocus.current) {
@@ -460,7 +474,15 @@ export default function DynamicIsland({
         data-appearance={jade ? "jade" : undefined}
         data-layout={twins ? "twins" : undefined}
         data-retained={retained || undefined}
-        data-material={twins ? "glass" : undefined}
+        data-settings={(twins && settingsOpen) || undefined}
+        data-material={
+          twins
+            ? appearance.value.design === "glass"
+              ? "clear-glass"
+              : "color-flow"
+            : undefined
+        }
+        data-design={twins ? appearance.value.design : undefined}
         data-glass-motion={twins && animal.playing}
         data-peek={twins && peek && !shown && !desktop?.dragging}
         data-empty={!nextTask}
@@ -520,7 +542,10 @@ export default function DynamicIsland({
             !composing.current
           ) {
             event.preventDefault();
-            close({ focus: true, unpin: true });
+            if (settingsOpen) {
+              returnSettingsFocus.current = true;
+              setSettingsOpen(false);
+            } else close({ focus: true, unpin: true });
           }
         }}
       >
@@ -549,6 +574,7 @@ export default function DynamicIsland({
               task={nextTask}
               remaining={pendingTasks.length}
               animal={animal}
+              appearance={appearance.value}
               disabled={!writable || nextTask?.locked}
               onComplete={toggleTask}
               toggle={toggle}
@@ -632,8 +658,8 @@ export default function DynamicIsland({
             ref={panel}
             id={panelId}
             className="island-panel"
-            role="region"
-            aria-label="轻岛待办"
+            role={twins && settingsOpen ? "dialog" : "region"}
+            aria-label={twins && settingsOpen ? "轻岛设置" : "轻岛待办"}
             aria-hidden={!shown}
             inert={!shown}
           >
@@ -643,20 +669,41 @@ export default function DynamicIsland({
                 data-desktop-drag="true"
                 title="拖动轻岛"
               >
-                {projectControls}
-                <details ref={twinOptions} className="island-options">
-                  <summary aria-label="轻岛设置" title="外观、画布与桌面操作">
-                    <Settings2 size={15} />
-                  </summary>
-                  <div className="island-options-content">
-                    {panelToolbar}
-                    <IslandAppearanceSettings
-                      value={appearance.value}
-                      onChange={appearance.update}
-                      error={appearance.error}
-                    />
+                {settingsOpen ? (
+                  <div className="island-settings-heading">
+                    <button
+                      ref={settingsBack}
+                      type="button"
+                      aria-label="返回待办列表"
+                      onClick={() => {
+                        returnSettingsFocus.current = true;
+                        setSettingsOpen(false);
+                      }}
+                    >
+                      <ArrowLeft size={16} />
+                    </button>
+                    <strong>轻岛设置</strong>
                   </div>
-                </details>
+                ) : (
+                  projectControls
+                )}
+                <button
+                  ref={settingsTrigger}
+                  className="island-options-trigger"
+                  type="button"
+                  aria-label="轻岛设置"
+                  aria-haspopup="dialog"
+                  aria-expanded={settingsOpen}
+                  aria-controls={panelId}
+                  title="外观、更新与历史版本"
+                  hidden={settingsOpen}
+                  onClick={() => {
+                    clearTimers();
+                    setSettingsOpen(true);
+                  }}
+                >
+                  <Settings2 size={15} />
+                </button>
                 <button
                   className="island-twin-collapse"
                   type="button"
@@ -695,140 +742,159 @@ export default function DynamicIsland({
               </>
             )}
             {panelNotice}
-            <div className="island-task-list">
-              {visibleTasks.length ? (
-                visibleTasks.map((task) => {
-                  const text = blockText(task.block) || "未命名待办";
-                  return (
-                    <label
-                      className="island-task-row"
-                      data-done={task.block.done}
-                      key={`${task.note.id}/${task.key}`}
-                    >
-                      <input
-                        className="island-check"
-                        type="checkbox"
-                        checked={!!task.block.done}
-                        disabled={!writable || task.locked}
-                        aria-label={`${task.block.done ? "恢复" : "完成"}待办：${text}`}
-                        onChange={() => toggleTask(task)}
-                      />
-                      <span className="island-task-text" title={text}>
-                        {text}
-                      </span>
-                      {task.locked && (
-                        <LockKeyhole
-                          size={12}
-                          className="island-task-lock"
-                          aria-label="已锁定"
-                        />
-                      )}
-                    </label>
-                  );
-                })
-              ) : (
-                <div className="island-empty">
-                  {jade && showCompleted
-                    ? "还没有已完成事项。"
-                    : jade && tasks.length
-                      ? "都完成了，休息一下。"
-                      : "还没有待办，记下第一件小事。"}
-                </div>
-              )}
-            </div>
-            <form
-              className="island-compose"
-              onSubmit={(event) => {
-                event.preventDefault();
-                addTask();
-              }}
-            >
-              <Plus size={15} aria-hidden="true" />
-              <label htmlFor={inputId} className="island-sr-only">
-                新增待办
-              </label>
-              <textarea
-                id={inputId}
-                ref={input}
-                aria-label="新增待办"
-                rows={1}
-                value={draft}
-                disabled={!writable}
-                placeholder={jade ? "记下一件事，回车添加…" : "顺手记一件事…"}
-                maxLength={20000}
-                onFocus={() => {
-                  clearTimeout(leaveTimer.current);
-                  open();
-                }}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  changeDrafts({ ...draftValues.current, [page.id]: value });
-                }}
-                onCompositionStart={() => {
-                  composing.current = true;
-                }}
-                onCompositionEnd={() => {
-                  composing.current = false;
-                }}
-                onKeyDown={(event) => {
-                  if (
-                    composing.current ||
-                    event.nativeEvent.isComposing ||
-                    event.keyCode === 229
-                  )
-                    return;
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    addTask();
-                  }
-                }}
-              />
-              <button
-                className="island-add"
-                type="submit"
-                aria-label="添加待办"
-                disabled={!writable || !draft.trim()}
+            {twins && (
+              <div
+                className="island-settings-view"
+                hidden={!settingsOpen}
+                inert={!settingsOpen}
               >
-                <CornerDownLeft size={16} />
-              </button>
-            </form>
-            {feedback && (
-              <div className="island-feedback" role="status">
-                {feedback}
+                <IslandSettings
+                  appearance={appearance}
+                  bridge={updateBridge}
+                  toolbar={panelToolbar}
+                />
               </div>
             )}
-            {jade && (
-              <button
-                className="island-completed-toggle"
-                type="button"
-                aria-pressed={showCompleted}
-                onClick={() => setShowCompleted((value) => !value)}
+            <div
+              className="island-tasks-view"
+              hidden={twins && settingsOpen}
+              inert={twins && settingsOpen}
+            >
+              <div className="island-task-list">
+                {visibleTasks.length ? (
+                  visibleTasks.map((task) => {
+                    const text = blockText(task.block) || "未命名待办";
+                    return (
+                      <label
+                        className="island-task-row"
+                        data-done={task.block.done}
+                        key={`${task.note.id}/${task.key}`}
+                      >
+                        <input
+                          className="island-check"
+                          type="checkbox"
+                          checked={!!task.block.done}
+                          disabled={!writable || task.locked}
+                          aria-label={`${task.block.done ? "恢复" : "完成"}待办：${text}`}
+                          onChange={() => toggleTask(task)}
+                        />
+                        <span className="island-task-text" title={text}>
+                          {text}
+                        </span>
+                        {task.locked && (
+                          <LockKeyhole
+                            size={12}
+                            className="island-task-lock"
+                            aria-label="已锁定"
+                          />
+                        )}
+                      </label>
+                    );
+                  })
+                ) : (
+                  <div className="island-empty">
+                    {jade && showCompleted
+                      ? "还没有已完成事项。"
+                      : jade && tasks.length
+                        ? "都完成了，休息一下。"
+                        : "还没有待办，记下第一件小事。"}
+                  </div>
+                )}
+              </div>
+              <form
+                className="island-compose"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  addTask();
+                }}
               >
-                <CheckCheck size={13} />
-                {showCompleted ? "返回待办" : `已完成 ${completed}`}
-              </button>
-            )}
-            <div className="island-footer">
-              <span className="island-sync" role="status">
-                {readOnly
-                  ? "只读 · 请先处理同步冲突"
-                  : syncLabels[workspace.status] || "待办与画布同步"}
-              </span>
-              <button
-                className="island-close"
-                type="button"
-                aria-label={closeLabel}
-                onClick={onDisable}
-              >
-                <X size={13} />
-                {closeText}
-              </button>
+                <Plus size={15} aria-hidden="true" />
+                <label htmlFor={inputId} className="island-sr-only">
+                  新增待办
+                </label>
+                <textarea
+                  id={inputId}
+                  ref={input}
+                  aria-label="新增待办"
+                  rows={1}
+                  value={draft}
+                  disabled={!writable}
+                  placeholder={jade ? "记下一件事，回车添加…" : "顺手记一件事…"}
+                  maxLength={20000}
+                  onFocus={() => {
+                    clearTimeout(leaveTimer.current);
+                    open();
+                  }}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    changeDrafts({ ...draftValues.current, [page.id]: value });
+                  }}
+                  onCompositionStart={() => {
+                    composing.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    composing.current = false;
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      composing.current ||
+                      event.nativeEvent.isComposing ||
+                      event.keyCode === 229
+                    )
+                      return;
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      addTask();
+                    }
+                  }}
+                />
+                <button
+                  className="island-add"
+                  type="submit"
+                  aria-label="添加待办"
+                  disabled={!writable || !draft.trim()}
+                >
+                  <CornerDownLeft size={16} />
+                </button>
+              </form>
+              {feedback && (
+                <div className="island-feedback" role="status">
+                  {feedback}
+                </div>
+              )}
+              {jade && (
+                <button
+                  className="island-completed-toggle"
+                  type="button"
+                  aria-pressed={showCompleted}
+                  onClick={() => setShowCompleted((value) => !value)}
+                >
+                  <CheckCheck size={13} />
+                  {showCompleted ? "返回待办" : `已完成 ${completed}`}
+                </button>
+              )}
+              <div className="island-footer">
+                <span className="island-sync" role="status">
+                  {readOnly
+                    ? "只读 · 请先处理同步冲突"
+                    : syncLabels[workspace.status] || "待办与画布同步"}
+                </span>
+                <button
+                  className="island-close"
+                  type="button"
+                  aria-label={closeLabel}
+                  onClick={onDisable}
+                >
+                  <X size={13} />
+                  {closeText}
+                </button>
+              </div>
+              {desktop && !jade && (
+                <p className="island-sync">
+                  更新本机代码并重启轻岛，即可使用雾玉双舱和动物奔跑。
+                </p>
+              )}
             </div>
-            {desktop && !jade && (
-              <p className="island-sync">
-                更新本机代码并重启轻岛，即可使用雾玉双舱和动物奔跑。
-              </p>
-            )}
           </div>
         </Surface>
       </section>

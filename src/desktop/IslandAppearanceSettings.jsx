@@ -1,83 +1,227 @@
-import React, { useId } from "react";
-import { Minus, Plus } from "lucide-react";
+import React, { useEffect, useId, useState } from "react";
+import { Plus, X } from "lucide-react";
 import {
+  activeIslandAppearance,
   defaultIslandAppearance,
-  islandAppearanceColors,
+  islandAppearancePalettes,
+  islandAppearanceVersions,
+  normalizeIslandColor,
 } from "./island-appearance.js";
+import "./color-island.css";
+
+function ColorField({ label, value, onChange, onRemove }) {
+  const id = useId();
+  const [draft, setDraft] = useState(value.toUpperCase());
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    setDraft(value.toUpperCase());
+    setInvalid(false);
+  }, [value]);
+  const edit = (event) => {
+    const next = event.target.value;
+    setDraft(next);
+    const color = normalizeIslandColor(
+      next.startsWith("#") ? next : `#${next}`,
+    );
+    setInvalid(false);
+    if (color) onChange(color);
+  };
+  return (
+    <div className="island-palette-field">
+      <label htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        type="color"
+        aria-label={`${label}颜色`}
+        value={value}
+        onInput={(event) => onChange(event.currentTarget.value)}
+      />
+      <input
+        className="island-palette-hex"
+        type="text"
+        aria-label={`${label}色值`}
+        aria-invalid={invalid || undefined}
+        value={draft}
+        maxLength={7}
+        spellCheck={false}
+        onChange={edit}
+        onBlur={() =>
+          setInvalid(
+            !normalizeIslandColor(draft.startsWith("#") ? draft : `#${draft}`),
+          )
+        }
+      />
+      {onRemove && (
+        <button type="button" aria-label={`删除${label}`} onClick={onRemove}>
+          <X size={13} />
+        </button>
+      )}
+      {invalid && <small role="alert">请输入 6 位 HEX 色值</small>}
+    </div>
+  );
+}
 
 export default function IslandAppearanceSettings({ value, onChange, error }) {
-  const colorId = useId(),
-    transparencyId = useId();
+  const presetId = useId(),
+    cycleId = useId(),
+    glassId = useId();
+  const profile = activeIslandAppearance(value);
+  const update = (patch) => onChange({ profile: patch });
+  const preset =
+    islandAppearancePalettes.find(
+      (item) =>
+        item.colors.join() === profile.colors.join() &&
+        item.smallColor === profile.smallColor,
+    )?.id || "custom";
   return (
-    <section className="island-appearance-settings" aria-label="轻岛外观设置">
+    <section
+      className="island-appearance-settings island-palette-settings"
+      aria-label="轻岛外观设置"
+    >
       <div className="island-appearance-title">
         <strong>外观</strong>
-        <button type="button" onClick={() => onChange(defaultIslandAppearance)}>
-          恢复默认外观
+        <button
+          type="button"
+          onClick={() => update(defaultIslandAppearance.profiles[value.design])}
+        >
+          恢复当前外观
         </button>
       </div>
-      <div className="island-appearance-color">
-        <label htmlFor={colorId}>颜色</label>
-        <input
-          id={colorId}
-          type="color"
-          aria-label="轻岛颜色"
-          value={value.color}
-          onInput={(event) => onChange({ color: event.currentTarget.value })}
-        />
-        <output htmlFor={colorId}>{value.color.toUpperCase()}</output>
-      </div>
       <div
-        className="island-appearance-presets"
+        className="island-design-options"
         role="group"
-        aria-label="轻岛预设颜色"
+        aria-label="轻岛外观版本"
       >
-        {islandAppearanceColors.map(({ name, color }) => (
+        {islandAppearanceVersions.map(({ id, name, detail }) => (
           <button
-            key={color}
             type="button"
-            aria-pressed={value.color === color}
-            onClick={() => onChange({ color })}
+            key={id}
+            aria-label={name}
+            aria-pressed={value.design === id}
+            onClick={() => onChange({ design: id })}
           >
-            <span style={{ backgroundColor: color }} aria-hidden="true" />
-            {name}
+            <span
+              className="island-design-swatch"
+              data-design={id}
+              style={{
+                background: `linear-gradient(120deg, ${value.profiles[id].colors.join(", ")}${value.profiles[id].colors.length === 1 ? `, ${value.profiles[id].colors[0]}` : ""})`,
+              }}
+              aria-hidden="true"
+            />
+            <span>
+              <strong>{name}</strong>
+              <small>{detail}</small>
+            </span>
           </button>
         ))}
       </div>
-      <label className="island-appearance-range-label" htmlFor={transparencyId}>
-        透明度 <output htmlFor={transparencyId}>{value.transparency}%</output>
-      </label>
-      <div className="island-appearance-range">
-        <button
-          type="button"
-          aria-label="降低轻岛透明度"
-          disabled={value.transparency === 0}
-          onClick={() => onChange({ transparency: value.transparency - 5 })}
+      <label className="island-palette-preset" htmlFor={presetId}>
+        配色组合
+        <select
+          id={presetId}
+          aria-label="轻岛配色组合"
+          value={preset}
+          onChange={(event) => {
+            const next = islandAppearancePalettes.find(
+              (item) => item.id === event.target.value,
+            );
+            if (next)
+              update({ colors: next.colors, smallColor: next.smallColor });
+          }}
         >
-          <Minus size={13} />
-        </button>
-        <input
-          id={transparencyId}
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          aria-label="轻岛透明度"
-          aria-valuetext={`${value.transparency}% 透明`}
-          value={value.transparency}
-          onChange={(event) =>
-            onChange({ transparency: Number(event.target.value) })
-          }
-        />
+          <option value="custom" disabled>
+            自定义配色
+          </option>
+          {islandAppearancePalettes.map(({ id, name }) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="island-palette-colors">
+        {profile.colors.map((color, index) => (
+          <ColorField
+            key={`${value.design}-${index}`}
+            label={`色块 ${index + 1}`}
+            value={color}
+            onChange={(next) =>
+              update({
+                colors: profile.colors.map((old, i) =>
+                  i === index ? next : old,
+                ),
+              })
+            }
+            onRemove={
+              profile.colors.length > 1
+                ? () =>
+                    update({
+                      colors: profile.colors.filter((_, i) => i !== index),
+                    })
+                : undefined
+            }
+          />
+        ))}
         <button
+          className="island-palette-add"
           type="button"
-          aria-label="提高轻岛透明度"
-          disabled={value.transparency === 100}
-          onClick={() => onChange({ transparency: value.transparency + 5 })}
+          disabled={profile.colors.length >= 8}
+          onClick={() => update({ colors: [...profile.colors, "#bed1a8"] })}
         >
           <Plus size={13} />
+          添加色块
         </button>
       </div>
+      <ColorField
+        key={`${value.design}-small`}
+        label="小舱"
+        value={profile.smallColor}
+        onChange={(smallColor) => update({ smallColor })}
+      />
+      <label className="island-palette-motion">
+        <span>色块流动</span>
+        <input
+          type="checkbox"
+          aria-label="启用色块流动"
+          checked={profile.motion}
+          onChange={(event) => update({ motion: event.target.checked })}
+        />
+      </label>
+      <label className="island-appearance-range-label" htmlFor={cycleId}>
+        流动周期 <output>{profile.cycle} 秒</output>
+      </label>
+      <input
+        id={cycleId}
+        type="range"
+        min="3"
+        max="12"
+        step="0.5"
+        aria-label="流动周期"
+        value={profile.cycle}
+        onChange={(event) => update({ cycle: Number(event.target.value) })}
+      />
+      {value.design === "glass" && (
+        <>
+          <label className="island-appearance-range-label" htmlFor={glassId}>
+            玻璃强度 <output>{Math.round(profile.glassStrength * 100)}%</output>
+          </label>
+          <input
+            id={glassId}
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            aria-label="玻璃强度"
+            value={Math.round(profile.glassStrength * 100)}
+            onChange={(event) =>
+              update({ glassStrength: Number(event.target.value) / 100 })
+            }
+          />
+        </>
+      )}
+      <p className="island-palette-hint">
+        自动保存在本机，每个版本独立记住配色。
+      </p>
       {error && (
         <p className="island-appearance-error" role="alert">
           {error}

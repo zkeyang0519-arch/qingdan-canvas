@@ -1,0 +1,192 @@
+.dynamic-island .island-settings-view[hidden],
+.dynamic-island .island-tasks-view[hidden],
+.dynamic-island .island-options-trigger[hidden] {
+  display: none;
+}
+.dynamic-island .island-options-trigger,
+.dynamic-island .island-settings-heading button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--island-muted);
+  background: transparent;
+}
+.island-settings-heading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+}
+.island-settings-heading strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.island-settings-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.island-settings-view .island-appearance-settings {
+  padding-top: 8px;
+  border: 0;
+}
+.island-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.island-settings-row strong {
+  font-weight: 500;
+}
+.island-settings-row small {
+  color: var(--island-muted);
+  font-size: 10px;
+}
+.island-update-check,
+.island-release-history,
+.island-settings-actions {
+  padding-top: 12px;
+  border-top: 1px solid var(--island-line);
+}
+.island-update-check .island-settings-row > span {
+  display: grid;
+  gap: 3px;
+}
+.dynamic-island .island-update-check button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--island-line);
+  border-radius: 9px;
+  background: #e4ffff0c;
+  color: var(--island-text);
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.island-update-message {
+  margin: 7px 0 0;
+  color: var(--island-muted);
+  font-size: 11px;
+}
+.island-update-message[role="alert"] {
+  color: #ffd3b9;
+}
+.island-release-menu {
+  margin-top: 9px;
+}
+.island-release-menu > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  list-style: none;
+  padding: 6px 9px;
+  border: 1px solid var(--island-line);
+  border-radius: 11px;
+  cursor: pointer;
+  font-size: 12px;
+  background: #e4ffff08;
+}
+.island-release-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.island-release-menu > summary > img {
+  width: 68px;
+  aspect-ratio: 2;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.island-release-menu > summary > span {
+  flex: 1;
+}
+.island-release-menu small {
+  display: block;
+  font-size: 10px;
+  opacity: 0.75;
+}
+.island-release-menu[open] > summary > svg {
+  transform: rotate(180deg);
+}
+.island-release-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 8px;
+}
+.dynamic-island .island-release-options button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid var(--island-line);
+  border-radius: 10px;
+  background: #e4ffff05;
+  color: var(--island-text);
+  font-size: 11px;
+  text-align: left;
+}
+.dynamic-island .island-release-options button[aria-pressed="true"] {
+  border-color: var(--island-accent);
+  background: #e4ffff10;
+}
+.island-release-options img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.island-release-options button > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 2px;
+  width: 100%;
+}
+.island-release-preview {
+  margin: 10px 0 0;
+}
+.island-release-preview > img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2;
+  object-fit: contain;
+  border-radius: 11px;
+  background: #e9eeeb;
+}
+.island-release-preview figcaption {
+  margin-top: 6px;
+  color: var(--island-muted);
+  text-align: center;
+  font-size: 10px;
+}
+.island-release-history:has(.island-release-menu[open])
+  .island-release-preview {
+  display: none;
+}
+.island-settings-actions .desktop-island-toolbar {
+  padding: 0;
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-settings="true"]
+  .island-panel {
+  --island-text: #304b43;
+  --island-muted: #698176;
+  --island-line: #527e7026;
+  --island-accent: hsl(var(--island-glass-hue) 28% 37%);
+  --island-glass-text-shadow: none;
+  background: hsl(var(--island-glass-hue) 24% 97% / 0.94);
+  border-color: #ffffffb3;
+  text-shadow: none;
+  color-scheme: light;
+}
+.dynamic-island[data-settings="true"] .island-appearance-error,
+.dynamic-island[data-settings="true"] .island-update-message[role="alert"] {
+  color: #9c503a;
+}

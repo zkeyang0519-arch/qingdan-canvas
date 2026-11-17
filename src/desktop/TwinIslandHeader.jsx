@@ -3,6 +3,11 @@ import { Check } from "lucide-react";
 import { blockText } from "../canvas/model.js";
 import AnimalRunner from "../island/AnimalRunner.jsx";
 import { twinTime } from "../island/twin-presentation.js";
+import IslandColorSurface from "./IslandColorSurface.jsx";
+import {
+  activeIslandAppearance,
+  defaultIslandAppearance,
+} from "./island-appearance.js";
 
 export default function TwinIslandHeader({
   task,
@@ -20,7 +25,10 @@ export default function TwinIslandHeader({
   expanded,
   retained = false,
   project,
+  appearance = defaultIslandAppearance,
 }) {
+  const profile = activeIslandAppearance(appearance);
+  const surfacePlaying = animal.playing && (!expanded || retained);
   const [leaving, setLeaving] = useState(null);
   const [now, setNow] = useState(() => new Date());
   const timer = useRef(null),
@@ -66,6 +74,11 @@ export default function TwinIslandHeader({
         data-desktop-drag="true"
         title="拖动轻岛"
       >
+        <IslandColorSurface
+          design={appearance.design}
+          profile={profile}
+          playing={surfacePlaying}
+        />
         {task && !side && (
           <button
             className="island-twin-complete"
@@ -116,6 +129,12 @@ export default function TwinIslandHeader({
         aria-expanded={expanded}
         aria-controls={panelId}
       >
+        <IslandColorSurface
+          design={appearance.design}
+          profile={profile}
+          playing={false}
+          small
+        />
         {time.label && <span>{time.label}</span>}
         <strong>{time.value}</strong>
       </button>

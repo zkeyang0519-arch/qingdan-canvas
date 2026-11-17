@@ -13,7 +13,7 @@ function bundledAsset(url, directory) {
     return null;
   }
   if (name === "/app") name = "/index.html";
-  else if (!/^\/(assets|animals)\//.test(name)) return null;
+  else if (!/^\/(assets|animals|island-releases)\//.test(name)) return null;
   const root = path.resolve(directory),
     file = path.resolve(root, "." + name);
   const relative = path.relative(root, file);
@@ -33,6 +33,7 @@ function installBundledWeb(session, directory) {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
     ".svg": "image/svg+xml",
     ".woff2": "font/woff2",
   };

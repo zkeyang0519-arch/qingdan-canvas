@@ -1,65 +1,155 @@
-// Appearance belongs to this desktop, not to a shared board or its task data.
-export const islandAppearanceKey = "qingdan.desktop.island-appearance.v1";
+// Local appearance only: never write shared boards, task data or input drafts.
+export const legacyIslandAppearanceKey = "qingdan.desktop.island-appearance.v1";
+export const islandAppearanceKey = "qingdan.desktop.island-appearance.v2";
+export const islandAppearanceVersions = [
+  { id: "glass", name: "清透玻璃", detail: "边缘折射与高光" },
+  { id: "flow", name: "色块流动", detail: "保留原版配色" },
+];
+export const islandAppearancePalettes = [
+  {
+    id: "moss",
+    name: "林间苔绿",
+    colors: ["#dae5cd", "#aec59a", "#8aaa76"],
+    smallColor: "#cbd9bf",
+  },
+  {
+    id: "spring",
+    name: "春芽微光",
+    colors: ["#dff1cc", "#b9e9a0", "#99bc75"],
+    smallColor: "#d0e1bf",
+  },
+  {
+    id: "sage",
+    name: "雾感鼠尾草",
+    colors: ["#e3e9dc", "#bfceb3", "#9caa91"],
+    smallColor: "#d6dfcf",
+  },
+  {
+    id: "matcha",
+    name: "抹茶奶绿",
+    colors: ["#edf1d8", "#cdd9a6", "#a6bb77"],
+    smallColor: "#dfe5c5",
+  },
+  {
+    id: "original",
+    name: "你调的原色",
+    colors: ["#b9e9a0", "#c1d2a3", "#b2d373"],
+    smallColor: "#c7d8bc",
+  },
+];
+const defaultProfile = Object.freeze({
+  colors: Object.freeze([...islandAppearancePalettes[0].colors]),
+  smallColor: "#cbd9bf",
+  cycle: 9,
+  motion: true,
+  glassStrength: 0.9,
+});
 export const defaultIslandAppearance = Object.freeze({
-  color: "#55b961",
-  transparency: 70,
+  version: 2,
+  design: "glass",
+  profiles: Object.freeze({ glass: defaultProfile, flow: defaultProfile }),
 });
 
-export const islandAppearanceColors = [
-  { name: "青色", color: "#53c7c2" },
-  { name: "青绿", color: "#55b961" },
-  { name: "冰青", color: "#83dce5" },
-  { name: "雾蓝", color: "#7caad4" },
-];
-
-export function normalizeIslandAppearance(value) {
+export function normalizeIslandColor(value, fallback = null) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)
+    ? value.toLowerCase()
+    : fallback;
+}
+function bounded(value, fallback, min, max, scale = 1) {
+  return Number.isFinite(value)
+    ? Math.round(Math.max(min, Math.min(max, value)) * scale) / scale
+    : fallback;
+}
+function normalizeProfile(value) {
+  const colors = Array.isArray(value?.colors)
+    ? value.colors
+        .slice(0, 8)
+        .map((color) => normalizeIslandColor(color))
+        .filter(Boolean)
+    : [];
   return {
-    color:
-      typeof value?.color === "string" && /^#[0-9a-f]{6}$/i.test(value.color)
-        ? value.color.toLowerCase()
-        : defaultIslandAppearance.color,
-    transparency: Number.isFinite(value?.transparency)
-      ? Math.round(Math.max(0, Math.min(100, value.transparency)))
-      : defaultIslandAppearance.transparency,
+    colors: colors.length ? colors : [...defaultProfile.colors],
+    smallColor: normalizeIslandColor(
+      value?.smallColor,
+      defaultProfile.smallColor,
+    ),
+    cycle: bounded(value?.cycle, 9, 3, 12, 10),
+    motion: typeof value?.motion === "boolean" ? value.motion : true,
+    glassStrength: bounded(value?.glassStrength, 0.9, 0, 1, 100),
   };
 }
-
+export function normalizeIslandAppearance(value) {
+  return {
+    version: 2,
+    design: value?.design === "flow" ? "flow" : "glass",
+    profiles: {
+      glass: normalizeProfile(value?.profiles?.glass),
+      flow: normalizeProfile(value?.profiles?.flow),
+    },
+  };
+}
+export function patchIslandAppearance(value, patch) {
+  const next = normalizeIslandAppearance({ ...value, ...patch });
+  if (patch?.profile)
+    next.profiles[next.design] = normalizeProfile({
+      ...next.profiles[next.design],
+      ...patch.profile,
+    });
+  return next;
+}
+export function activeIslandAppearance(value) {
+  const normalized = normalizeIslandAppearance(value);
+  return normalized.profiles[normalized.design];
+}
 export function loadIslandAppearance(storage = window.localStorage) {
   const saved = storage.getItem(islandAppearanceKey);
+  // Leave the earlier single-color appearance intact for older clients.
   return normalizeIslandAppearance(saved === null ? null : JSON.parse(saved));
 }
-
 export function saveIslandAppearance(value, storage = window.localStorage) {
   const appearance = normalizeIslandAppearance(value);
   storage.setItem(islandAppearanceKey, JSON.stringify(appearance));
   return appearance;
 }
-
+function luminance(color) {
+  const channels = [1, 3, 5].map((i) => {
+    const v = parseInt(color.slice(i, i + 2), 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+function readable(colors) {
+  const choices = ["#26352a", "#fcfff6"]
+    .map((color) => {
+      const l = luminance(color);
+      return {
+        color,
+        contrast: Math.min(
+          ...colors.map((c) => {
+            const b = luminance(c);
+            return (Math.max(l, b) + 0.05) / (Math.min(l, b) + 0.05);
+          }),
+        ),
+      };
+    })
+    .sort((a, b) => b.contrast - a.contrast);
+  return choices[0];
+}
 export function islandAppearanceStyle(value) {
-  const appearance = normalizeIslandAppearance(value);
-  const [r, g, b] = [1, 3, 5].map(
-    (offset) => parseInt(appearance.color.slice(offset, offset + 2), 16) / 255,
-  );
-  const max = Math.max(r, g, b),
-    min = Math.min(r, g, b);
-  const delta = max - min,
-    lightness = (max + min) / 2;
-  let hue = 0,
-    saturation = 0;
-  if (delta) {
-    saturation = delta / (1 - Math.abs(2 * lightness - 1));
-    hue =
-      max === r
-        ? ((g - b) / delta) % 6
-        : max === g
-          ? (b - r) / delta + 2
-          : (r - g) / delta + 4;
-    hue = (hue * 60 + 360) % 360;
-  }
+  const profile = activeIslandAppearance(value);
+  const main = readable(profile.colors),
+    small = readable([profile.smallColor]);
+  const colors =
+    profile.colors.length > 1
+      ? profile.colors
+      : [...profile.colors, ...profile.colors];
   return {
-    "--island-glass-color": appearance.color,
-    "--island-glass-hue": hue.toFixed(2),
-    "--island-glass-saturation": `${(saturation * 64).toFixed(2)}%`,
-    "--island-glass-alpha": ((100 - appearance.transparency) / 100).toFixed(2),
+    "--island-field-fill": `linear-gradient(120deg, ${colors.join(", ")})`,
+    "--island-small-color": profile.smallColor,
+    "--island-main-text": main.contrast >= 4.5 ? main.color : "#26352a",
+    "--island-summary-fill": main.contrast >= 4.5 ? "transparent" : "#fcfbf7eb",
+    "--island-small-text": small.color,
+    "--island-glass-strength": profile.glassStrength,
+    "--island-flow-cycle": `${profile.cycle}s`,
   };
 }

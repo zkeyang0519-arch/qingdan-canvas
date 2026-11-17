@@ -141,6 +141,10 @@ test("bundled assets are restricted to the production origin and stay within the
     bundledAsset("https://todo.zky.lol/assets/app.js", root),
     path.join(root, "assets", "app.js"),
   );
+  assert.equal(
+    bundledAsset("https://todo.zky.lol/island-releases/v0.3.6.jpg", root),
+    path.join(root, "island-releases", "v0.3.6.jpg"),
+  );
   for (const url of [
     "https://other.invalid/assets/app.js",
     "http://todo.zky.lol/app",
@@ -149,6 +153,7 @@ test("bundled assets are restricted to the production origin and stay within the
     "https://todo.zky.lol/assets/a%5cb",
     "https://todo.zky.lol/assets/a%00b",
     "https://todo.zky.lol/assets/%ZZ",
+    "https://todo.zky.lol/island-releases/%2e%2e%2f%2e%2e%2fsecret",
   ])
     assert.equal(bundledAsset(url, root), null, url);
 });
@@ -174,6 +179,21 @@ test("bundled renderer serves matching static files while API requests retain me
     },
   };
   installBundledWeb(session, root);
+  fs.mkdirSync(path.join(root, "island-releases"));
+  const thumbnail = fs.readFileSync(
+    new URL("../public/island-releases/v0.3.6.jpg", import.meta.url),
+  );
+  fs.writeFileSync(path.join(root, "island-releases", "v0.3.6.jpg"), thumbnail);
+  const image = await handler(
+    new Request("https://todo.zky.lol/island-releases/v0.3.6.jpg"),
+  );
+  assert.equal(image.headers.get("content-type"), "image/jpeg");
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), thumbnail);
+  assert.equal(
+    forwarded.length,
+    0,
+    "release previews must work from the installed package, including offline",
+  );
   const page = await handler(
     new Request("https://todo.zky.lol/app?room=room-a"),
   );

@@ -4,6 +4,7 @@ import {
   islandAppearanceKey,
   loadIslandAppearance,
   normalizeIslandAppearance,
+  patchIslandAppearance,
   saveIslandAppearance,
 } from "./island-appearance.js";
 
@@ -45,7 +46,7 @@ export function useIslandAppearance(enabled) {
 
   const update = (patch) => {
     if (!enabled) return;
-    const next = normalizeIslandAppearance({ ...latest.current, ...patch });
+    const next = patchIslandAppearance(latest.current, patch);
     latest.current = next;
     setValue(next);
     try {

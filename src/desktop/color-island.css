@@ -1,0 +1,296 @@
+/* Keep all dimensions identical to twins-island.css and native hit regions. */
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-design] {
+  --island-surface: #fcfbf7;
+  --island-text: #303a33;
+  --island-muted: #6c796b;
+  --island-line: #dce3d5;
+  --island-accent: #527247;
+  color: var(--island-text);
+  color-scheme: light;
+  text-shadow: none;
+}
+.dynamic-island[data-appearance="jade"][data-layout="twins"][data-design]
+  :is(.island-twin-main, .island-twin-time) {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-color: #83977540;
+  background: var(--island-field-fill);
+  color: var(--island-main-text);
+  box-shadow: inset 0 1px 0 #ffffff60;
+}
+.dynamic-island[data-appearance="jade"][data-layout="twins"][data-design]
+  .island-twin-time {
+  background: var(--island-small-color);
+  color: var(--island-small-text);
+}
+.island-color-surface,
+.island-color-sheen {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.island-color-surface {
+  z-index: 0;
+  opacity: 0;
+}
+.island-color-surface[data-ready="true"] {
+  opacity: 1;
+}
+.island-color-sheen {
+  z-index: 1;
+  opacity: var(--island-glass-strength);
+  background: linear-gradient(
+    135deg,
+    #ffffff21,
+    transparent 39%,
+    transparent 70%,
+    #ffffff14
+  );
+  box-shadow:
+    inset 0 1.5px 0 #fffffff0,
+    inset 0 -1px 0 #ffffffa6,
+    inset 1px 0 2px #ffffff73,
+    inset -1px 0 1px #ffffff4d;
+}
+.island-color-sheen::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 9px;
+  right: 18px;
+  height: 6px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 38% 0, #ffffffad, transparent 72%);
+}
+.island-color-sheen::after {
+  content: "";
+  position: absolute;
+  inset: 1.5px;
+  border: 1.25px solid #ffffff70;
+  border-radius: inherit;
+}
+/* These are flex items; z-index works without replacing side-dock positioning. */
+.dynamic-island[data-design]
+  :is(.island-twin-complete, .island-twin-summary, .island-twin-pet),
+.dynamic-island[data-design]
+  .island-twin-time
+  > :is(span:not(.island-color-sheen), strong) {
+  z-index: 2;
+}
+.dynamic-island[data-design] .island-twin-copy {
+  border-radius: 8px;
+  background: var(--island-summary-fill);
+}
+.dynamic-island[data-design]
+  :is(.island-twin-current, .island-twin-out, .island-twin-project) {
+  color: var(--island-main-text);
+}
+.dynamic-island[data-design] .island-twin-project {
+  opacity: 0.7;
+}
+.dynamic-island[data-appearance="jade"][data-design] .island-animal-frames {
+  background: var(--island-main-text);
+}
+.dynamic-island[data-design] .island-twin-ring {
+  border-color: currentColor;
+  color: var(--island-main-text);
+}
+.dynamic-island[data-design]
+  .island-twin-header[data-relay="true"]
+  .island-twin-ring {
+  color: #fcfff6;
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-design]
+  .island-panel {
+  --island-accent: #527247;
+  background: #fcfbf7f5;
+  border-color: #dce3d5;
+  box-shadow: inset 0 1px 0 #fff;
+  backdrop-filter: blur(12px);
+  color: var(--island-text);
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-design][data-settings="true"]
+  .island-panel {
+  --island-text: #303a33;
+  --island-muted: #6c796b;
+  --island-line: #dce3d5;
+  --island-accent: #527247;
+  background: #fcfbf7f5;
+}
+.island-palette-settings {
+  gap: 10px;
+}
+.island-palette-settings :is(button, input, select) {
+  font: inherit;
+  color-scheme: light;
+}
+.island-palette-settings button {
+  cursor: pointer;
+}
+.island-palette-settings button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.island-palette-settings :is(button, input, select):focus-visible {
+  outline: 2px solid #6e8c5d;
+  outline-offset: 2px;
+}
+.island-design-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.island-palette-settings .island-design-options button {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dce3d5;
+  border-radius: 12px;
+  background: #f5f5ee;
+  color: #53624d;
+  text-align: left;
+}
+.island-palette-settings .island-design-options button[aria-pressed="true"] {
+  border-color: #829b72;
+  background: #eaf0e3;
+  color: #30432a;
+}
+.island-design-swatch {
+  display: block;
+  height: 24px;
+  border-radius: 20px;
+}
+.island-design-swatch[data-design="glass"] {
+  border: 1px solid #fff9;
+  box-shadow:
+    inset 0 2px 1px #fffd,
+    inset 0 -2px 2px #fff7;
+}
+.island-design-options strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.island-design-options small {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+.island-palette-preset,
+.island-palette-motion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.island-palette-preset select {
+  width: 58%;
+  padding: 6px 8px;
+  border: 1px solid #dce3d5;
+  border-radius: 8px;
+  background: #fffefa;
+  color: #35452e;
+}
+.island-palette-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.island-palette-field {
+  display: grid;
+  grid-template-columns: minmax(42px, 1fr) 30px 79px 24px;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.island-palette-field label {
+  font-size: 11px;
+}
+.island-palette-field input[type="color"] {
+  width: 30px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid #dce3d5;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.island-palette-field input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 1px;
+}
+.island-palette-field input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 4px;
+}
+.island-palette-field .island-palette-hex {
+  min-width: 0;
+  width: 100%;
+  padding: 5px;
+  border: 1px solid #dce3d5;
+  border-radius: 7px;
+  background: #fffefa;
+  color: #35452e;
+  font:
+    11px ui-monospace,
+    Consolas,
+    monospace;
+}
+.island-palette-field input[aria-invalid="true"] {
+  border-color: #a35d45;
+}
+.island-palette-field small {
+  grid-column: 2 / -1;
+  color: #9c503a;
+  font-size: 10px;
+}
+.island-palette-settings .island-palette-field button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #76826e;
+  padding: 0;
+}
+.island-palette-settings .island-palette-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 1px dashed #c6d2bb;
+  border-radius: 8px;
+  color: #5b7350;
+  background: transparent;
+}
+.island-palette-settings input[type="range"] {
+  width: 100%;
+  margin: 0;
+  min-width: 0;
+  accent-color: #789565;
+}
+.island-palette-motion input {
+  accent-color: #789565;
+}
+.island-palette-hint {
+  margin: 0;
+  font-size: 10px;
+  color: #6c796b;
+  line-height: 1.6;
+}
+.island-palette-settings .island-appearance-error {
+  color: #9c503a;
+}
