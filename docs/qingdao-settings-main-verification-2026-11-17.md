@@ -16,7 +16,10 @@
 
 - `node --test tests/desktop-island-ui.test.mjs tests/desktop-update-runtime.test.mjs`：51/51 通过。
 - 新增联动用例把真实设置组件连接到真实更新控制器，仅替换下载事件与最终 OS 安装动作，验证检查、进度、就绪、保存失败、重试、只安装一次，以及待办、草稿和配色不变。
-- 浏览器预览只演示检查、下载和安装状态，不下载软件或重启客户端；演示版号有明确标注。这不能替代已发布安装包之间的真实升级验收。
-- 初次配色全量验证结果见 `qingdao-color-versions-verification-2026-11-17.md`。合并前还需在只包含本次提交的独立工作树运行完整检查。
+- 浏览器已确认同栏出现「重启更新」，点击后显示「正在保存…」并完成演示。预览不下载软件或重启客户端，演示版号有明确标注；截图为 `output/island-colors-20261117/update-ready.jpg`。这不能替代已发布安装包之间的真实升级验收。
+- 在独立工作树 `D:/TODO/qingdan-island-main-check-20261117` 验证功能提交 `f6ea95b`，未带入原工作区的 Agent 安装和聊天恢复测试改动。
+- `npm test`：1701/1701 通过，无失败、跳过或取消。
+- `npm run check` 与 `npm run deploy:check` 均通过，后者仅构建及 dry-run，没有部署。
+- 日志归档于 `output/island-main-verification/`。初次配色验收的旧记录仍见 `qingdao-color-versions-verification-2026-11-17.md`。
 
 合入 `main` 会触发现有 Windows 安装包构建流程；该流程仅在版本标签上发布正式更新。此次不创建新版本标签，也不把源码合并当成已发布客户端升级。
