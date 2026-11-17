@@ -1980,6 +1980,51 @@ test("双岛调色输入保留面板，普通失焦仍收起；保存失败可�
   assert.equal(controls.state(), initial);
 });
 
+test("四季草地在横向与左右侧保留设置，展开待办仍保留草地且不改草稿", async (t) => {
+  localStorage.removeItem(islandAppearanceKey);
+  t.after(() => localStorage.removeItem(islandAppearanceKey));
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+    count: 2,
+  });
+  const initial = controls.state();
+  await click(button(host, "展开轻岛"));
+  await type(host.querySelector("textarea"), "四季设置中的草稿");
+  await click(host.querySelector(".island-options-trigger"));
+  await click(button(host, "四季草地"));
+  assert.equal(
+    host.querySelector(".dynamic-island").dataset.material,
+    "seasonal-meadow",
+  );
+  assert.equal(host.querySelectorAll(".island-meadow-surface").length, 1);
+  await appearanceInput(host, "草地滚动速度", "48");
+  await click(host.querySelector('[aria-label="启用四季动画"]'));
+  for (const dock of ["left", "right", "top"]) {
+    await act(async () => {
+      calls.placement = { ...calls.placement, dock };
+      for (const handler of calls.placementHandlers) handler(calls.placement);
+    });
+    const surface = host.querySelector(".island-meadow-surface");
+    assert.equal(surface.dataset.side, String(dock !== "top"));
+    assert.equal(surface.dataset.reverse, String(dock === "left"));
+    assert.equal(host.querySelector(".island-twin-header").hidden, false);
+  }
+  await act(async () => controls.remount());
+  const saved = JSON.parse(localStorage.getItem(islandAppearanceKey));
+  assert.equal(saved.design, "meadow");
+  assert.equal(saved.profiles.meadow.scrollSpeed, 48);
+  assert.equal(saved.profiles.meadow.motion, false);
+  assert.equal(host.querySelector("textarea").value, "四季设置中的草稿");
+  assert.equal(controls.state(), initial);
+  await click(button(host, "清透玻璃"));
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(islandAppearanceKey)).profiles.glass,
+    defaultIslandAppearance.profiles.glass,
+  );
+});
+
 test("旧桌面布局与普通页面不读取或写入双岛外观设置", async (t) => {
   localStorage.setItem(islandAppearanceKey, "{unreadable");
   t.after(() => localStorage.removeItem(islandAppearanceKey));

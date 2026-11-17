@@ -13,7 +13,7 @@ await build({
   bundle: true,
   format: "esm",
   sourcemap: true,
-  external: ["/fonts/*"],
+  external: ["/fonts/*", "/island/*"],
 });
 await writeFile(
   path.join(output, "index.html"),
@@ -32,6 +32,7 @@ const types = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css",
   ".png": "image/png",
+  ".webp": "image/webp",
   ".woff2": "font/woff2",
   ".map": "application/json",
 };
@@ -41,7 +42,7 @@ createServer(async (req, res) => {
     const pathname = decodeURIComponent(
       new URL(req.url, "http://localhost").pathname,
     );
-    const directory = /^\/(fonts|animals)\//.test(pathname)
+    const directory = /^\/(fonts|animals|island)\//.test(pathname)
       ? path.join(root, "public")
       : output;
     const target = path.resolve(

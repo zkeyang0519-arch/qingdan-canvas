@@ -136,3 +136,33 @@ test("损坏或不可用的外观存储抛出错误供 UI 反馈，不清空旧�
   );
   assert.deepEqual(writes, []);
 });
+
+test("四季草地独立记住速度、动态开关和小舱配色，兼容已保存的两款外观", () => {
+  const old = {
+    version: 2,
+    design: "flow",
+    profiles: { flow: { colors: ["#123456"], cycle: 6 } },
+  };
+  const normalized = normalizeIslandAppearance(old);
+  assert.equal(normalized.design, "flow");
+  assert.deepEqual(normalized.profiles.flow.colors, ["#123456"]);
+  let next = patchIslandAppearance(normalized, {
+    design: "meadow",
+    profile: { scrollSpeed: 48, motion: false, smallColor: "#aabbcc" },
+  });
+  assert.equal(activeIslandAppearance(next).scrollSpeed, 48);
+  assert.equal(activeIslandAppearance(next).motion, false);
+  assert.deepEqual(next.profiles.flow, normalized.profiles.flow);
+  next = patchIslandAppearance(next, { profile: { scrollSpeed: 300 } });
+  assert.equal(activeIslandAppearance(next).scrollSpeed, 60);
+  next = patchIslandAppearance(next, { profile: { scrollSpeed: NaN } });
+  assert.equal(activeIslandAppearance(next).scrollSpeed, 24);
+  next = patchIslandAppearance(next, {
+    profile: defaultIslandAppearance.profiles.meadow,
+  });
+  assert.deepEqual(
+    next.profiles.meadow,
+    defaultIslandAppearance.profiles.meadow,
+  );
+  assert.deepEqual(next.profiles.flow, normalized.profiles.flow);
+});
