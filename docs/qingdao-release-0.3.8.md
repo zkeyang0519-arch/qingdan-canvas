@@ -20,6 +20,14 @@
 
 ## 交付状态
 
-功能与回归已在本地 `feat/qingdan-mcp` 提交。安装器、blockmap、latest.yml、构建检查日志和预览截图保存在 `output/release-0.3.8/`。
+功能发布提交 `87c4a921b31badb2bd5d92f748d9e23f1cf5f7a9` 已合入并推送至 `main` 与 `feat/qingdan-mcp`，`v0.3.8` 指向该提交。
 
-尚未推送本次改动到远程 `main`，尚未发布 `v0.3.8` 标签或 Release。当前实际安装版仍为 0.3.7；等待用户明确授权本次正式发布与升级。升级前已核对原待办数量、同步状态及档案登记，未在实际画布写入测试日期。
+- [标签构建及正式发布](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/44044281543)与 [main 构建](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/44044281456)均成功。
+- [正式 Release](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/v0.3.8)已公开发布，非草稿、非预发布；匿名 `releases/latest/download/latest.yml` 已指向 0.3.8。
+- 正式安装器为 142,807,347 字节，SHA-256 为 `f9a0c6aeda97fbbdfd2dc488b5139f014fb345b618e87323036b9a980f67af1c`。实际自动更新下载的文件与 Release 摘要及 `latest.yml` 的大小、SHA-512 一致；本地预构建安装器与云端正式安装器分开记录。
+- 已在实际安装的 0.3.7 中使用“轻岛设置 → 检查更新”，待显示新版就绪后点击“重启更新”。安装目录原生可执行文件及正在运行的进程均已确认为 0.3.8。
+- 升级前后的档案登记文件哈希一致。原待办、完成状态和同步状态保留；逐条日历按钮已显示，实际日期面板可在轻岛窗口内打开并取消，未向用户待办写入测试日期。
+- 核验结束恢复原有未钉住状态。林间苔绿、玻璃外观及色块流动沿用升级前配置。
+- 下载页源码已更新正式版链接至 0.3.8，`node --test tests/desktop-download-page.test.mjs` 通过。本次未执行 Web 生产部署。
+
+安装器、更新清单、构建日志、浏览器预览、实际安装截图与脱敏升级记录保存在 `output/release-0.3.8/`；其中 `published-latest.yml` 和 `upgrade-result.json` 记录云端正式包及真实升级验证。
