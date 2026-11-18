@@ -138,6 +138,7 @@ function getPlacement() {
     supportsTwinIsland: true,
     supportsRetainedTwinIsland: true,
     supportsFixedTwinFrame: true,
+    supportsIslandResize: true,
   };
 }
 function publishPlacement() {
@@ -159,7 +160,13 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
         mode: "island",
         dock: "free",
         expanded: false,
-        ...compactSize("free", dragSession.layout.appearance),
+        ...compactSize(
+          "free",
+          dragSession.layout.appearance,
+          dragSession.layout.empty,
+          dragSession.layout.size,
+        ),
+        ...(dragSession.layout.size ? { size: dragSession.layout.size } : {}),
         ...(dragSession.layout.appearance === "jade-twins"
           ? {
               empty: dragSession.layout.empty,
@@ -197,6 +204,7 @@ function resize(next, { reset = false, relocate = false, workArea } = {}) {
                 islandPosition.dock,
                 layout.appearance,
                 layout.empty,
+                layout.size,
               ),
               expanded: false,
               ...(layout.appearance === "jade-twins" ? { peek: false } : {}),
@@ -260,12 +268,18 @@ function dragWindow(action, origin) {
     throw new Error("Invalid desktop drag action");
   if (layout.mode !== "island") return getPlacement();
   if (action === "start" && !dragSession) {
+    const floating = compactSize(
+      "free",
+      layout.appearance,
+      layout.empty,
+      layout.size,
+    );
     if (
       origin !== undefined &&
       (!Number.isFinite(origin?.x) ||
         !Number.isFinite(origin?.y) ||
         origin.x < 0 ||
-        origin.x > 600 ||
+        origin.x > Math.max(600, floating.width) ||
         origin.y < 0 ||
         origin.y > 1000)
     )
@@ -280,7 +294,7 @@ function dragWindow(action, origin) {
           24,
           Math.min(
             layout.appearance === "jade-twins"
-              ? 388
+              ? floating.width - 12
               : layout.appearance === "jade"
                 ? 302
                 : 330,
@@ -291,7 +305,7 @@ function dragWindow(action, origin) {
           12,
           Math.min(
             layout.appearance === "jade-twins"
-              ? 60
+              ? floating.height - 12
               : layout.appearance === "jade"
                 ? 52
                 : 64,
@@ -321,6 +335,7 @@ function dragWindow(action, origin) {
         work,
         previous.layout.appearance,
         previous.layout.empty,
+        previous.layout.size,
       );
       rememberPosition(placement);
       resize(
@@ -328,8 +343,13 @@ function dragWindow(action, origin) {
           mode: "island",
           dock: placement.dock,
           expanded: false,
-          width: placement.width,
-          height: placement.height,
+          ...compactSize(
+            placement.dock,
+            previous.layout.appearance,
+            previous.layout.empty,
+            previous.layout.size,
+          ),
+          ...(previous.layout.size ? { size: previous.layout.size } : {}),
           ...(previous.layout.appearance
             ? { appearance: previous.layout.appearance }
             : {}),

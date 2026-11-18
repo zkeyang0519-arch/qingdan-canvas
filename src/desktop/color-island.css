@@ -144,7 +144,7 @@
 }
 .island-design-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .island-palette-settings .island-design-options button {
@@ -337,17 +337,25 @@
     transparent
   );
 }
-.island-meadow-surface[data-side="true"] + .island-meadow-readability {
+:is(.island-meadow-surface, .island-pixel-surface)[data-side="true"]
+  + .island-meadow-readability {
   background: radial-gradient(ellipse at 50% 50%, #f5f8dc70, transparent 72%);
 }
-.dynamic-island[data-design="meadow"][data-dock="left"][data-peek="true"]
+.dynamic-island:is(
+    [data-design="meadow"],
+    [data-design="pixel"]
+  )[data-dock="left"][data-peek="true"]
   .island-meadow-readability {
   background: linear-gradient(90deg, transparent, #f4f7e4de 27%, #f4f7e4e8);
 }
-.dynamic-island[data-design="meadow"][data-dock="right"][data-peek="true"]
+.dynamic-island:is(
+    [data-design="meadow"],
+    [data-design="pixel"]
+  )[data-dock="right"][data-peek="true"]
   .island-meadow-readability {
   background: linear-gradient(270deg, transparent, #f4f7e4de 27%, #f4f7e4e8);
 }
-.dynamic-island[data-design="meadow"] .island-twin-pet {
+.dynamic-island:is([data-design="meadow"], [data-design="pixel"])
+  .island-twin-pet {
   filter: drop-shadow(0 1px 2px #ffffffb3);
 }

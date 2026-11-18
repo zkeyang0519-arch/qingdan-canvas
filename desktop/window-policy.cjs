@@ -1,5 +1,6 @@
 "use strict";
 const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
+const sizeLimits = require("../shared/island-size.json");
 
 function alwaysOnTopLevel(platform) {
   // Electron 45.3.2's Windows "floating" path calls SetWindowPos behind the
@@ -59,6 +60,19 @@ function validateLayout(input) {
   )
     throw new Error("Invalid desktop appearance");
   const twins = input.appearance === "jade-twins";
+  const size = input.size;
+  if (
+    size !== undefined &&
+    (!twins ||
+      !size ||
+      !Number.isInteger(size.extraWidth) ||
+      size.extraWidth < 0 ||
+      size.extraWidth > sizeLimits.maxExtraWidth ||
+      !Number.isInteger(size.extraHeight) ||
+      size.extraHeight < 0 ||
+      size.extraHeight > sizeLimits.maxExtraHeight)
+  )
+    throw new Error("Invalid twin island size");
   if (
     input.retained !== undefined &&
     (!twins || typeof input.retained !== "boolean")
@@ -88,7 +102,7 @@ function validateLayout(input) {
     !Number.isFinite(input.width) ||
     !Number.isFinite(input.height) ||
     input.width < minimumWidth ||
-    input.width > 600 ||
+    input.width > Math.max(600, 436 + (size?.extraWidth ?? 0)) ||
     input.height < 40 ||
     input.height > 1000
   )
@@ -100,6 +114,9 @@ function validateLayout(input) {
     ...(hasDock ? { dock: input.dock, expanded: input.expanded } : {}),
     ...(input.appearance ? { appearance: input.appearance } : {}),
     ...(twins ? { peek: input.peek, empty: input.empty } : {}),
+    ...(size
+      ? { size: { extraWidth: size.extraWidth, extraHeight: size.extraHeight } }
+      : {}),
     ...(twins && input.retained ? { retained: true } : {}),
     ...(input.fixedFrame ? { fixedFrame: true } : {}),
   };

@@ -5,10 +5,12 @@ import {
   defaultIslandAppearance,
   islandAppearancePalettes,
   islandAppearanceVersions,
+  isSeasonalDesign,
   normalizeIslandColor,
 } from "./island-appearance.js";
 import "./color-island.css";
 import { islandMeadowSeasons } from "./island-meadow.js";
+import { IslandPixelSwatch } from "./IslandPixelSurface.jsx";
 
 function ColorField({ label, value, onChange, onRemove }) {
   const id = useId();
@@ -67,7 +69,7 @@ export default function IslandAppearanceSettings({ value, onChange, error }) {
     cycleId = useId(),
     glassId = useId();
   const profile = activeIslandAppearance(value);
-  const meadow = value.design === "meadow";
+  const meadow = isSeasonalDesign(value.design);
   const update = (patch) => onChange({ profile: patch });
   const preset =
     islandAppearancePalettes.find(
@@ -102,17 +104,21 @@ export default function IslandAppearanceSettings({ value, onChange, error }) {
             aria-pressed={value.design === id}
             onClick={() => onChange({ design: id })}
           >
-            <span
-              className="island-design-swatch"
-              data-design={id}
-              style={{
-                background:
-                  id === "meadow"
-                    ? `url("${islandMeadowSeasons[0]}") center 65% / cover`
-                    : `linear-gradient(120deg, ${value.profiles[id].colors.join(", ")}${value.profiles[id].colors.length === 1 ? `, ${value.profiles[id].colors[0]}` : ""})`,
-              }}
-              aria-hidden="true"
-            />
+            {id === "pixel" ? (
+              <IslandPixelSwatch />
+            ) : (
+              <span
+                className="island-design-swatch"
+                data-design={id}
+                style={{
+                  background:
+                    id === "meadow"
+                      ? `url("${islandMeadowSeasons[0]}") center 65% / cover`
+                      : `linear-gradient(120deg, ${value.profiles[id].colors.join(", ")}${value.profiles[id].colors.length === 1 ? `, ${value.profiles[id].colors[0]}` : ""})`,
+                }}
+                aria-hidden="true"
+              />
+            )}
             <span>
               <strong>{name}</strong>
               <small>{detail}</small>
@@ -208,7 +214,13 @@ export default function IslandAppearanceSettings({ value, onChange, error }) {
         min={meadow ? 8 : 3}
         max={meadow ? 60 : 12}
         step={meadow ? 2 : 0.5}
-        aria-label={meadow ? "草地滚动速度" : "流动周期"}
+        aria-label={
+          value.design === "pixel"
+            ? "像素庭院滚动速度"
+            : meadow
+              ? "草地滚动速度"
+              : "流动周期"
+        }
         value={meadow ? profile.scrollSpeed : profile.cycle}
         onChange={(event) =>
           update({

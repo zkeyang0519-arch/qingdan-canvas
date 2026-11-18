@@ -1,0 +1,38 @@
+.island-pixel-surface,
+.island-pixel-season {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.island-pixel-surface {
+  overflow: hidden;
+  contain: layout paint;
+  border-radius: inherit;
+  background: #b7deda;
+}
+.island-pixel-season canvas {
+  position: absolute;
+  top: 0;
+  display: block;
+  height: 100%;
+  max-width: none;
+  image-rendering: auto;
+  will-change: transform;
+}
+.island-pixel-surface + .island-meadow-readability {
+  background: linear-gradient(
+    90deg,
+    #fbf8e8e6 0%,
+    #f7f7e3c9 25%,
+    #f7f8e0af 55%,
+    #f3f6e330 76%,
+    transparent 88%
+  );
+  mask-image: linear-gradient(180deg, #0003, #000 30%, #000 70%, #0004);
+}
+.island-pixel-swatch {
+  width: 100%;
+  object-fit: cover;
+  background: #b7deda;
+  image-rendering: pixelated;
+}

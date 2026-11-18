@@ -11,7 +11,12 @@ module.exports = {
   },
   asar: true,
   npmRebuild: false,
-  files: ["desktop/**/*.cjs", "shared/desktop-origins.cjs", "package.json"],
+  files: [
+    "desktop/**/*.cjs",
+    "shared/desktop-origins.cjs",
+    "shared/island-size.json",
+    "package.json",
+  ],
   extraResources: [{ from: "dist", to: "web" }],
   artifactName: "Qingdao-Setup-${version}-${arch}.${ext}",
   win: {

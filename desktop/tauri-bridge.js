@@ -29,6 +29,7 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
     supportsTwinIsland: true,
     supportsRetainedTwinIsland: true,
     supportsFixedTwinFrame: true,
+    supportsIslandResize: true,
   });
   const geometry = async () => {
     const info = await invoke("geometry", { dragging: !!drag });
@@ -39,7 +40,7 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
   };
   const compact = (current, dock) => ({
     ...current,
-    ...compactSize(dock, current.appearance, current.empty),
+    ...compactSize(dock, current.appearance, current.empty, current.size),
     dock,
     expanded: false,
     ...(current.appearance === "jade-twins" ? { peek: false } : {}),
@@ -110,7 +111,12 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
         const info = await geometry();
         if (layout.mode !== "island") return state();
         if (action === "start" && !drag) {
-          const size = compactSize("free", layout.appearance);
+          const size = compactSize(
+            "free",
+            layout.appearance,
+            layout.empty,
+            layout.size,
+          );
           drag = {
             anchor: { ...anchor },
             layout: { ...layout },
@@ -144,6 +150,7 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
             work,
             previous.layout.appearance,
             previous.layout.empty,
+            previous.layout.size,
           );
           layout = compact(previous.layout, anchor.dock);
           await invoke("save_position", anchor);

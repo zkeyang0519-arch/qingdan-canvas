@@ -3,8 +3,14 @@
   .dynamic-island[data-appearance="jade"][data-layout="twins"] {
   --twin-jade: #edf3e6;
   --twin-forest: #446448;
-  --twin-main-height: 48px;
-  width: min(376px, calc(var(--desktop-max-width, 1920px) - 24px));
+  --twin-compact-width: calc(376px + var(--twin-extra-width, 0px));
+  --twin-peek-width: calc(412px + var(--twin-extra-width, 0px));
+  --twin-frame-width: max(420px, var(--twin-peek-width));
+  --twin-main-height: calc(48px + var(--twin-extra-height, 0px));
+  width: min(
+    var(--twin-compact-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
   height: auto;
   overflow: visible;
   font-family: var(
@@ -17,8 +23,11 @@
 }
 .desktop-island-workspace
   .dynamic-island[data-appearance="jade"][data-layout="twins"][data-peek="true"] {
-  --twin-main-height: 64px;
-  width: min(412px, calc(var(--desktop-max-width, 1920px) - 24px));
+  --twin-main-height: calc(64px + var(--twin-extra-height, 0px));
+  width: min(
+    var(--twin-peek-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
 }
 .desktop-island-workspace
   .dynamic-island[data-appearance="jade"][data-layout="twins"][data-open="true"] {
@@ -205,8 +214,14 @@
     [data-dock="left"],
     [data-dock="right"]
   ) {
-  --twin-main-height: 86px;
-  width: 56px;
+  --twin-compact-width: calc(56px + var(--twin-extra-width, 0px));
+  --twin-peek-width: calc(318px + var(--twin-extra-width, 0px));
+  --twin-frame-width: max(360px, var(--twin-peek-width));
+  --twin-main-height: calc(86px + var(--twin-extra-height, 0px));
+  width: min(
+    var(--twin-compact-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
   height: auto;
   min-height: 0;
 }
@@ -215,14 +230,17 @@
     [data-dock="left"],
     [data-dock="right"]
   )[data-empty="true"] {
-  --twin-main-height: 52px;
+  --twin-main-height: calc(52px + var(--twin-extra-height, 0px));
 }
 .desktop-island-workspace
   .dynamic-island[data-appearance="jade"][data-layout="twins"]:is(
     [data-dock="left"],
     [data-dock="right"]
   )[data-peek="true"] {
-  width: min(318px, calc(var(--desktop-max-width, 1920px) - 24px));
+  width: min(
+    var(--twin-peek-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
 }
 .desktop-island-workspace
   .dynamic-island[data-appearance="jade"][data-layout="twins"]:is(
@@ -290,6 +308,11 @@
     [data-dock="left"],
     [data-dock="right"]
   )[data-peek="true"]
+  .island-twin-summary {
+  visibility: visible;
+}
+[data-layout="twins"][data-wide-side="true"]
+  .island-twin-main
   .island-twin-summary {
   visibility: visible;
 }
@@ -379,7 +402,7 @@
 /* The native retained layout keeps the capsules at their compact anchor and
    adds a separate panel below them. Older shells keep the replacement layout. */
 .dynamic-island[data-layout="twins"][data-retained="true"] {
-  --twin-header-height: 48px;
+  --twin-header-height: var(--twin-main-height);
   --twin-panel-gap: 10px;
   --twin-panel-max-height: min(
     calc(976px - var(--twin-header-height) - var(--twin-panel-gap)),
@@ -392,8 +415,11 @@
 .dynamic-island[data-layout="twins"][data-retained="true"][data-open="true"]
   .island-twin-header {
   flex: none;
-  width: min(376px, 100%);
-  margin-left: var(--twin-header-offset, max(0px, calc((100% - 376px) / 2)));
+  width: min(var(--twin-compact-width), 100%);
+  margin-left: var(
+    --twin-header-offset,
+    max(0px, calc((100% - var(--twin-compact-width)) / 2))
+  );
 }
 .dynamic-island[data-layout="twins"][data-retained="true"]:is(
     [data-dock="left"],
@@ -406,7 +432,7 @@
     [data-dock="right"]
   )
   .island-twin-header {
-  width: 56px;
+  width: min(var(--twin-compact-width), 100%);
   margin-left: 0;
 }
 .dynamic-island[data-layout="twins"][data-retained="true"][data-open="true"][data-dock="right"]
@@ -427,20 +453,23 @@
 /* These widths match the native hit regions. Only the list height changes on hover. */
 .desktop-island-workspace
   .dynamic-island[data-layout="twins"][data-appearance="jade"][data-fixed-frame="true"][data-dock="top"] {
-  width: min(420px, calc(var(--desktop-max-width, 1920px) - 24px));
+  width: min(
+    var(--twin-frame-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
 }
 .dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="top"]
   .island-twin-header {
-  width: min(376px, 100%);
+  width: min(var(--twin-compact-width), 100%);
   margin-left: var(--twin-header-offset, 0px);
 }
 .dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="top"][data-peek="true"]
   .island-twin-header {
-  width: min(412px, 100%);
+  width: min(var(--twin-peek-width), 100%);
   margin-left: clamp(
     0px,
     calc(var(--twin-header-offset, 0px) - 18px),
-    max(0px, calc(100% - 412px))
+    max(0px, calc(100% - var(--twin-peek-width)))
   );
 }
 .desktop-island-workspace
@@ -448,25 +477,111 @@
     [data-dock="left"],
     [data-dock="right"]
   ) {
-  width: min(360px, calc(var(--desktop-max-width, 1920px) - 24px));
+  width: min(
+    var(--twin-frame-width),
+    calc(var(--desktop-max-width, 1920px) - 24px)
+  );
 }
 .dynamic-island[data-layout="twins"][data-fixed-frame="true"]:is(
     [data-dock="left"],
     [data-dock="right"]
   )
   .island-twin-header {
-  width: 56px;
+  width: min(var(--twin-compact-width), 100%);
 }
 .dynamic-island[data-layout="twins"][data-fixed-frame="true"]:is(
     [data-dock="left"],
     [data-dock="right"]
   )[data-peek="true"]
   .island-twin-header {
-  width: min(318px, 100%);
+  width: min(var(--twin-peek-width), 100%);
 }
 .dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="right"]
   .island-twin-header {
   margin-left: auto;
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"] .island-panel {
+  width: min(420px, 100%);
+  align-self: center;
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  )
+  .island-panel {
+  width: min(360px, 100%);
+  align-self: flex-start;
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="right"]
+  .island-panel {
+  align-self: flex-end;
+}
+.dynamic-island .island-resize-handle {
+  position: absolute;
+  right: 8px;
+  bottom: 2px;
+  z-index: 3;
+  width: 20px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--island-main-text);
+  background: #ffffffa6;
+  opacity: 0;
+  touch-action: none;
+  cursor: nwse-resize;
+}
+.island-resize-handle[data-left="true"] {
+  left: 8px;
+  right: auto;
+}
+.island-resize-handle[data-up="true"] {
+  top: 2px;
+  bottom: auto;
+}
+.dynamic-island
+  .island-resize-handle:is(
+    [data-left="true"][data-up="false"],
+    [data-left="false"][data-up="true"]
+  ) {
+  cursor: nesw-resize;
+}
+.island-resize-handle:is(
+    [data-left="true"][data-up="false"],
+    [data-left="false"][data-up="true"]
+  )
+  svg {
+  transform: scaleX(-1);
+}
+.island-twin-main:hover .island-resize-handle,
+.dynamic-island .island-resize-handle:focus-visible,
+.dynamic-island .island-resize-handle:active {
+  opacity: 1;
+}
+@media (pointer: coarse) {
+  .dynamic-island .island-resize-handle {
+    opacity: 1;
+  }
+}
+.island-size-settings,
+.island-size-field {
+  display: grid;
+  gap: 6px;
+}
+.island-size-settings {
+  padding-top: 12px;
+  border-top: 1px solid var(--island-line);
+}
+.island-size-field input {
+  width: 100%;
+  margin: 0;
+  accent-color: #6f8d60;
+}
+.island-size-field output {
+  font-variant-numeric: tabular-nums;
 }
 @keyframes island-retained-open {
   from {

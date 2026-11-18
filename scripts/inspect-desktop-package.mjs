@@ -26,6 +26,7 @@ for (const expected of [
   "/desktop/main.cjs",
   "/desktop/preload.cjs",
   "/shared/desktop-origins.cjs",
+  "/shared/island-size.json",
   "/node_modules/electron-updater/out/main.js",
 ]) {
   if (!files.includes(expected))
@@ -34,6 +35,12 @@ for (const expected of [
 const pkg = JSON.parse(
   asar.extractFile(archive, "package.json").toString("utf8"),
 );
+if (
+  !asar
+    .extractFile(archive, "shared/island-size.json")
+    .equals(await fs.readFile(path.join(root, "shared/island-size.json")))
+)
+  throw Error("Packaged island size limits differ from the renderer build.");
 for (const file of await fs.readdir(path.join(root, "desktop"))) {
   if (!file.endsWith(".cjs")) continue;
   const source = await fs.readFile(path.join(root, "desktop", file));
