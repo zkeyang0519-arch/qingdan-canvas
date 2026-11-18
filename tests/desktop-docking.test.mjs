@@ -350,6 +350,99 @@ test("retained capsules keep their screen position while a separate clickable li
       }
 });
 
+test("resized twin cabins grow inward and keep the time capsule, list and transparent gaps in their hit regions", () => {
+  const size = { extraWidth: 201, extraHeight: 62 };
+  const contains = (rects, x, y) =>
+    rects.some(
+      (r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+    );
+  for (const edge of ["top", "left", "right"])
+    for (const fraction of [0.25, 0.75]) {
+      const side = edge !== "top";
+      const base = dock.compactSize(edge, "jade-twins");
+      const anchor = dock.restorePlacement(
+        {
+          dock: edge,
+          ...base,
+          x: work.x + work.width * fraction - base.width / 2,
+          y: work.y + work.height * fraction - base.height / 2,
+        },
+        work,
+        "jade-twins",
+      );
+      const layout = {
+        mode: "island",
+        appearance: "jade-twins",
+        dock: edge,
+        empty: false,
+        peek: false,
+        retained: true,
+        fixedFrame: true,
+        ...base,
+      };
+      const old = dock.fitDockBounds(anchor, layout, work);
+      const oldOffset = dock.placementState(
+        anchor,
+        old,
+        work,
+        false,
+        layout,
+      ).headerOffset;
+      const next = {
+        ...layout,
+        size,
+        ...dock.compactSize(edge, "jade-twins", false, size),
+      };
+      const bounds = dock.fitDockBounds(anchor, next, work);
+      const state = dock.placementState(anchor, bounds, work, false, next);
+      const width = (side ? 56 : 293) + size.extraWidth,
+        height = (side ? 86 : 48) + size.extraHeight;
+      const x = side
+        ? edge === "left"
+          ? 12
+          : bounds.width - 12 - width
+        : 12 + state.headerOffset;
+      if (!side)
+        assert.equal(
+          bounds.x + x,
+          old.x + 12 + oldOffset - (state.resizeLeft ? size.extraWidth : 0),
+        );
+      if (side)
+        assert.equal(bounds.y, old.y - (state.resizeUp ? size.extraHeight : 0));
+      for (const expanded of [false, true]) {
+        const live = {
+          ...next,
+          expanded,
+          height: next.height + (expanded ? 155 : 0),
+        };
+        const b = dock.fitDockBounds(anchor, live, work);
+        const shapes = dock.dockShape(b, live, anchor, work);
+        assert.ok(contains(shapes, x + width - 14, 12 + height - 8));
+        const sy = side ? 12 + height + 7 + 22 : 12 + height / 2;
+        const sx = side
+          ? edge === "left"
+            ? 40
+            : b.width - 40
+          : x + width + 9 + 37;
+        assert.ok(contains(shapes, sx, sy));
+        assert.equal(
+          contains(
+            shapes,
+            side ? sx : x + width + 4,
+            side ? 12 + height + 3 : sy,
+          ),
+          false,
+        );
+        if (expanded) {
+          const panelY = 12 + height + (side ? 51 : 0) + 10;
+          assert.ok(contains(shapes, b.width / 2, panelY + 28));
+          assert.equal(contains(shapes, b.width / 2, panelY - 5), false);
+          if (!side) assert.equal(contains(shapes, 14, panelY + 28), false);
+        }
+      }
+    }
+});
+
 test("twin hover and peek keep one native horizontal frame with click-through margins", () => {
   for (const edge of ["top", "left", "right"]) {
     const compact = dock.compactSize(edge, "jade-twins");

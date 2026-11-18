@@ -355,6 +355,7 @@ async function mount(
     supportsTwinIsland = false,
     supportsRetainedTwinIsland = false,
     supportsFixedTwinFrame = false,
+    supportsIslandResize = false,
   } = {},
 ) {
   const initial = createWorkspace();
@@ -380,6 +381,7 @@ async function mount(
   calls.placement.supportsTwinIsland = supportsTwinIsland;
   calls.placement.supportsRetainedTwinIsland = supportsRetainedTwinIsland;
   calls.placement.supportsFixedTwinFrame = supportsFixedTwinFrame;
+  calls.placement.supportsIslandResize = supportsIslandResize;
   window.qingdanDesktop = bridge;
   t.after(() => {
     delete window.qingdanDesktop;
@@ -1988,6 +1990,52 @@ test("双岛调色输入保留面板，普通失焦仍收起；保存失败可�
     5,
   );
   assert.equal(controls.state(), initial);
+});
+
+test("像素庭院的尺寸拖动只在放手时保存，取消、换肤和重启保留正确的尺寸", async (t) => {
+  localStorage.removeItem(islandAppearanceKey);
+  t.after(() => localStorage.removeItem(islandAppearanceKey));
+  const { host, controls, calls } = await mount(t, {
+    desktop: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
+    supportsFixedTwinFrame: true,
+    supportsIslandResize: true,
+  });
+  const island = () => host.querySelector(".dynamic-island"),
+    grip = () => host.querySelector(".island-resize-handle");
+  const stored = () => JSON.parse(localStorage.getItem(islandAppearanceKey));
+  await click(grip());
+  await click(button(host, "四季像素庭院"));
+  assert.ok(host.querySelector(".island-twin-main .island-pixel-surface"));
+  assert.equal(
+    host.querySelector(".island-twin-time .island-pixel-surface"),
+    null,
+  );
+  await appearanceInput(host, "像素庭院滚动速度", "38");
+  await pointer(grip(), "pointerdown", 270, 41);
+  await pointer(grip(), "pointermove", 412, 86);
+  assert.equal(island().dataset.extraWidth, "142");
+  assert.equal(island().dataset.extraHeight, "45");
+  assert.equal(stored().size.extraWidth, 0);
+  await pointer(grip(), "pointercancel", 412, 86);
+  assert.equal(island().dataset.extraWidth, "0");
+  await pointer(grip(), "pointerdown", 270, 41);
+  await pointer(grip(), "pointermove", 412, 86);
+  await pointer(grip(), "pointerup", 412, 86);
+  assert.deepEqual(stored().size, { extraWidth: 142, extraHeight: 45 });
+  assert.equal(stored().design, "pixel");
+  assert.equal(stored().profiles.pixel.scrollSpeed, 38);
+  assert.deepEqual(calls.drag, []);
+  await click(button(host, "清透玻璃"));
+  await act(async () => controls.remount());
+  assert.equal(island().dataset.extraWidth, "142");
+  await click(grip());
+  await appearanceInput(host, "大舱高度", "120");
+  assert.equal(stored().size.extraHeight, 72);
+  await click(button(host, "恢复默认尺寸"));
+  assert.deepEqual(stored().size, { extraWidth: 0, extraHeight: 0 });
+  assert.equal(stored().profiles.pixel.scrollSpeed, 38);
 });
 
 test("四季草地在横向与左右侧保留设置，展开待办仍保留草地且不改草稿", async (t) => {

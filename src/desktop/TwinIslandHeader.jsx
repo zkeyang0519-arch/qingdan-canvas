@@ -5,9 +5,11 @@ import AnimalRunner from "../island/AnimalRunner.jsx";
 import { twinTime } from "../island/twin-presentation.js";
 import IslandColorSurface from "./IslandColorSurface.jsx";
 import IslandMeadowSurface from "./IslandMeadowSurface.jsx";
+import IslandPixelSurface from "./IslandPixelSurface.jsx";
 import {
   activeIslandAppearance,
   defaultIslandAppearance,
+  isSeasonalDesign,
 } from "./island-appearance.js";
 
 export default function TwinIslandHeader({
@@ -23,15 +25,20 @@ export default function TwinIslandHeader({
   panelId,
   trigger,
   side,
+  wideSide,
   dock,
   peek,
   expanded,
   retained = false,
   project,
   appearance = defaultIslandAppearance,
+  resizeHandle,
 }) {
   const profile = activeIslandAppearance(appearance);
   const surfacePlaying = animal.playing && (!expanded || retained);
+  const landscape = isSeasonalDesign(appearance.design);
+  const Landscape =
+    appearance.design === "pixel" ? IslandPixelSurface : IslandMeadowSurface;
   const [leaving, setLeaving] = useState(null);
   const [now, setNow] = useState(() => new Date());
   const timer = useRef(null),
@@ -83,8 +90,8 @@ export default function TwinIslandHeader({
         data-desktop-drag="true"
         title="拖动轻岛"
       >
-        {appearance.design === "meadow" ? (
-          <IslandMeadowSurface
+        {landscape ? (
+          <Landscape
             playing={surfacePlaying && profile.motion}
             speed={profile.scrollSpeed}
             side={side}
@@ -113,7 +120,7 @@ export default function TwinIslandHeader({
         )}
         <div
           className="island-twin-summary"
-          aria-hidden={side && !peek}
+          aria-hidden={side && !peek && !wideSide}
           title={label}
         >
           <span className="island-twin-copy">
@@ -134,6 +141,7 @@ export default function TwinIslandHeader({
         <span className="island-twin-pet">
           <AnimalRunner {...animal} size={34} />
         </span>
+        {resizeHandle}
       </div>
       <button
         className="island-twin-time"
@@ -150,7 +158,7 @@ export default function TwinIslandHeader({
         aria-expanded={expanded}
         aria-controls={panelId}
       >
-        {appearance.design !== "meadow" && (
+        {!landscape && (
           <IslandColorSurface
             design={appearance.design}
             profile={profile}

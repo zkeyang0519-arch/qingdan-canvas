@@ -24,7 +24,9 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
       const fixedFrame = island?.dataset.fixedFrame === "true";
       const peek = island?.dataset.peek === "true";
       const empty = island?.dataset.empty === "true";
-      const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}/${fixedFrame}`;
+      const extraWidth = Number(island?.dataset.extraWidth),
+        extraHeight = Number(island?.dataset.extraHeight);
+      const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}/${fixedFrame}/${extraWidth}/${extraHeight}`;
       if (size === previous) return;
       previous = size;
       requestDesktopLayout(bridge, {
@@ -36,6 +38,9 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
           ? { appearance: twins ? "jade-twins" : "jade" }
           : {}),
         ...(twins ? { peek, empty } : {}),
+        ...(twins && Number.isFinite(extraWidth) && Number.isFinite(extraHeight)
+          ? { size: { extraWidth, extraHeight } }
+          : {}),
         ...(retained ? { retained: true } : {}),
         ...(fixedFrame ? { fixedFrame: true } : {}),
       });
@@ -55,6 +60,8 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
         "data-open",
         "data-peek",
         "data-empty",
+        "data-extra-width",
+        "data-extra-height",
         "data-deadline-editor",
       ],
     });

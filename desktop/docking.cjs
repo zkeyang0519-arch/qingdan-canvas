@@ -1,5 +1,6 @@
 "use strict";
 const { fitWindowBounds, islandShape } = require("./window-policy.cjs");
+const twin = require("../shared/island-size.json");
 const clamp = (n, min, max) => Math.max(min, Math.min(n, Math.max(min, max)));
 const side = (dock) => dock === "left" || dock === "right";
 
@@ -12,11 +13,17 @@ function dockAtPoint(point, work) {
   return x < 0 ? "left" : "right";
 }
 
-function compactSize(dock, appearance, empty = false) {
-  if (appearance === "jade-twins")
-    return side(dock)
-      ? { width: 80, height: empty ? 127 : 161 }
-      : { width: 400, height: 72 };
+function compactSize(dock, appearance, empty = false, size) {
+  if (appearance === "jade-twins") {
+    const width = side(dock) ? twin.side.width + 24 : twin.top.width + 107;
+    const height = side(dock)
+      ? (empty ? twin.side.emptyHeight : twin.side.height) + 75
+      : twin.top.height + 24;
+    return {
+      width: width + (size?.extraWidth ?? 0),
+      height: height + (size?.extraHeight ?? 0),
+    };
+  }
   return side(dock)
     ? { width: 64, height: 160 }
     : {
@@ -42,15 +49,35 @@ function restorePlacement(saved, work, appearance, empty = false) {
   return { ...fitDockBounds(anchor, layout, work), dock };
 }
 
-function placementAtPoint(point, offset, work, appearance, empty = false) {
+function placementAtPoint(
+  point,
+  offset,
+  work,
+  appearance,
+  empty = false,
+  size,
+) {
   const dock = dockAtPoint(point, work);
   const { width, height } = compactSize(dock, appearance, empty);
   const requested = { width, height, dock };
   if (appearance) requested.appearance = appearance;
+  const extraWidth = size?.extraWidth ?? 0,
+    extraHeight = size?.extraHeight ?? 0;
+  // Save the original-size anchor. Growing a capsule extends its inward
+  // edge, so moving it or restoring its size cannot accumulate position drift.
+  const towardsLeft =
+    point.x - offset.x + (width + extraWidth) / 2 > work.x + work.width / 2;
+  const towardsTop = point.y > work.y + work.height / 2;
   const anchor = side(dock)
-    ? { x: point.x - width / 2, y: point.y - height / 2, width, height, dock }
+    ? {
+        x: point.x - width / 2,
+        y: point.y - height / 2 + ((towardsTop ? 1 : -1) * extraHeight) / 2,
+        width,
+        height,
+        dock,
+      }
     : {
-        x: point.x - offset.x,
+        x: point.x - offset.x + (towardsLeft ? extraWidth : 0),
         y: point.y - offset.y,
         width,
         height,
@@ -59,26 +86,48 @@ function placementAtPoint(point, offset, work, appearance, empty = false) {
   return { ...fitDockBounds(anchor, requested, work), dock };
 }
 
+function resizeCorner(anchor, dock, work) {
+  return {
+    resizeLeft:
+      dock === "right" ||
+      (dock === "top" &&
+        !!anchor &&
+        anchor.x + anchor.width / 2 > work.x + work.width / 2),
+    resizeUp:
+      side(dock) &&
+      !!anchor &&
+      anchor.y + anchor.height / 2 > work.y + work.height / 2,
+  };
+}
+
 function fitDockBounds(anchor, layout, work) {
   if (!layout.dock) return fitWindowBounds(anchor, layout, work);
   const dock = anchor?.dock || layout.dock;
   // Reserve the list width before hover so an open/close never moves the native window sideways.
+  const extraWidth = layout.size?.extraWidth ?? 0;
+  const extraHeight = layout.size?.extraHeight ?? 0;
+  const corner = resizeCorner(anchor, dock, work);
   const frameWidth =
-    layout.fixedFrame && layout.dock !== "free" ? (side(dock) ? 384 : 444) : 0;
+    layout.fixedFrame && layout.dock !== "free"
+      ? side(dock)
+        ? Math.max(384, 342 + extraWidth)
+        : Math.max(444, 436 + extraWidth)
+      : 0;
   const width = Math.min(
     Math.max(frameWidth, Math.round(layout.width)),
     work.width,
   );
   const height = Math.min(Math.round(layout.height), work.height);
-  const centerX = anchor
-    ? anchor.x + anchor.width / 2
-    : work.x + work.width / 2;
+  const centerX =
+    (anchor ? anchor.x + anchor.width / 2 : work.x + work.width / 2) +
+    (dock === "top" ? ((corner.resizeLeft ? -1 : 1) * extraWidth) / 2 : 0);
   const centerY = anchor
     ? anchor.y + anchor.height / 2
     : work.y + work.height / 2;
-  const anchorHeight = layout.retained
-    ? compactSize(dock, layout.appearance, layout.empty).height
-    : height;
+  const anchorHeight =
+    layout.retained || (side(dock) && layout.size)
+      ? compactSize(dock, layout.appearance, layout.empty).height
+      : height;
   return {
     x: Math.round(
       dock === "left"
@@ -92,7 +141,7 @@ function fitDockBounds(anchor, layout, work) {
         ? work.y - (layout.appearance === "jade" ? 12 : 0)
         : clamp(
             side(dock)
-              ? centerY - anchorHeight / 2
+              ? centerY - anchorHeight / 2 - (corner.resizeUp ? extraHeight : 0)
               : (anchor?.y ?? work.y + 12),
             work.y,
             work.y + work.height - height,
@@ -109,7 +158,9 @@ function retainedCompactBounds(anchor, layout, work) {
     {
       dock: layout.dock,
       appearance: layout.appearance,
-      ...compactSize(layout.dock, layout.appearance, layout.empty),
+      size: layout.size,
+      empty: layout.empty,
+      ...compactSize(layout.dock, layout.appearance, layout.empty, layout.size),
     },
     work,
   );
@@ -126,6 +177,9 @@ function placementState(anchor, bounds, work, dragging = false, layout = {}) {
   return {
     dock: dragging ? "free" : restorePlacement(anchor, work).dock,
     dragging,
+    ...(layout.appearance === "jade-twins"
+      ? resizeCorner(anchor, anchor?.dock ?? layout.dock, work)
+      : {}),
     railOffset: Math.round(
       clamp(
         (anchor ? anchor.y + anchor.height / 2 : bounds.y + bounds.height / 2) -
@@ -203,94 +257,83 @@ function surfaceShape(x, y, width, height, radius) {
 function dockShape(bounds, layout, anchor, work) {
   if (layout.appearance === "jade-twins") {
     const width = Math.max(1, bounds.width - 24);
-    if (layout.expanded && layout.retained) {
-      const vertical = side(layout.dock);
-      const mainHeight = vertical ? (layout.empty ? 52 : 86) : 48;
-      const headerHeight = vertical ? mainHeight + 51 : 48;
-      const headerWidth = vertical ? 56 : Math.min(376, width);
-      const x = vertical
-        ? layout.dock === "right"
-          ? bounds.width - 68
-          : 12
-        : 12 + retainedHeaderOffset(anchor, bounds, layout, work);
-      const panelY = 12 + headerHeight + 10;
-      return surfaceShape(
-        x,
-        12,
-        vertical ? 56 : headerWidth - 83,
-        mainHeight,
-        vertical ? 28 : 24,
-      )
-        .concat(
-          surfaceShape(
-            vertical ? x : x + headerWidth - 74,
-            vertical ? 12 + mainHeight + 7 : 12,
-            vertical ? 56 : 74,
-            vertical ? 44 : 48,
-            vertical ? 22 : 24,
-          ),
-        )
-        .concat(
-          surfaceShape(
-            12,
-            panelY,
-            width,
-            Math.max(1, bounds.height - panelY - 12),
-            25,
-          ),
-        );
-    }
-    if (layout.expanded)
+    if (layout.expanded && !layout.retained)
       return surfaceShape(12, 12, width, Math.max(1, bounds.height - 24), 25);
-    if (side(layout.dock)) {
-      const height = layout.empty ? 52 : 86;
-      const mainWidth = layout.fixedFrame
-        ? Math.min(width, layout.peek ? 318 : 56)
-        : width;
-      const mainX =
-        layout.dock === "right" ? bounds.width - 12 - mainWidth : 12;
-      return surfaceShape(
-        mainX,
-        12,
-        mainWidth,
-        height,
-        layout.peek ? 25 : 28,
-      ).concat(
-        surfaceShape(
-          layout.dock === "left" ? 12 : bounds.width - 68,
-          12 + height + 7,
-          56,
-          44,
-          22,
-        ),
-      );
-    }
-    const height = layout.peek ? 64 : 48;
-    const fixed = layout.fixedFrame && layout.dock === "top";
+    const vertical = side(layout.dock);
+    const right = layout.dock === "right";
+    const peek = layout.peek && !layout.expanded;
+    const baseHeight = vertical
+      ? layout.empty
+        ? twin.side.emptyHeight
+        : twin.side.height
+      : peek
+        ? 64
+        : twin.top.height;
+    const height = baseHeight + (layout.size?.extraHeight ?? 0);
+    const baseWidth = vertical
+      ? peek
+        ? 318
+        : twin.side.width
+      : peek
+        ? 412
+        : 376;
+    const fixed =
+      layout.expanded || (layout.fixedFrame && layout.dock !== "free");
     const headerWidth = fixed
-      ? Math.min(width, layout.peek ? 412 : 376)
+      ? Math.min(width, baseWidth + (layout.size?.extraWidth ?? 0))
       : width;
-    const offset = fixed
-      ? clamp(
-          retainedHeaderOffset(anchor, bounds, layout, work) -
-            (layout.peek ? 18 : 0),
-          0,
-          width - headerWidth,
-        )
-      : 0;
-    return surfaceShape(
+    const offset = vertical
+      ? right
+        ? width - headerWidth
+        : 0
+      : fixed
+        ? clamp(
+            retainedHeaderOffset(anchor, bounds, layout, work) -
+              (peek ? 18 : 0),
+            0,
+            width - headerWidth,
+          )
+        : 0;
+    const smallX = vertical
+      ? right
+        ? bounds.width - 68
+        : 12
+      : 12 + offset + headerWidth - 74;
+    const smallY = vertical
+      ? 12 + height + 7
+      : 12 + Math.floor((height - 48) / 2);
+    const shape = surfaceShape(
       12 + offset,
       12,
-      headerWidth - 83,
+      vertical ? headerWidth : headerWidth - 83,
       height,
-      layout.peek ? 26 : 24,
+      vertical ? (peek ? 25 : 28) : 26,
     ).concat(
       surfaceShape(
-        12 + offset + headerWidth - 74,
-        12 + (height - 48) / 2,
-        74,
-        48,
-        24,
+        smallX,
+        smallY,
+        vertical ? 56 : 74,
+        vertical ? 44 : 48,
+        vertical ? 22 : 24,
+      ),
+    );
+    if (!layout.expanded) return shape;
+    const panelY = 12 + height + (vertical ? 51 : 0) + 10;
+    const panelWidth = Math.min(width, vertical ? 360 : 420);
+    const panelX =
+      12 +
+      (vertical
+        ? right
+          ? width - panelWidth
+          : 0
+        : Math.round((width - panelWidth) / 2));
+    return shape.concat(
+      surfaceShape(
+        panelX,
+        panelY,
+        panelWidth,
+        Math.max(1, bounds.height - panelY - 12),
+        25,
       ),
     );
   }

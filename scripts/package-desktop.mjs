@@ -52,10 +52,11 @@ for (const file of await fs.readdir(path.join(root, "desktop"))) {
       path.join(stage, "desktop", file),
     );
 }
-await fs.copyFile(
-  path.join(root, "shared/desktop-origins.cjs"),
-  path.join(stage, "shared/desktop-origins.cjs"),
-);
+for (const file of ["desktop-origins.cjs", "island-size.json"])
+  await fs.copyFile(
+    path.join(root, "shared", file),
+    path.join(stage, "shared", file),
+  );
 for (const file of ["package.json", "package-lock.json"])
   await fs.copyFile(path.join(root, "desktop", file), path.join(stage, file));
 await run(

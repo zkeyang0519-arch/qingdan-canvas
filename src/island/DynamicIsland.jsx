@@ -40,6 +40,12 @@ import { useAnimalRunner } from "./animal-runners.js";
 import TwinIslandHeader from "../desktop/TwinIslandHeader.jsx";
 import IslandSettings from "../desktop/IslandSettings.jsx";
 import { useIslandAppearance } from "../desktop/useIslandAppearance.js";
+import {
+  fitIslandSize,
+  islandSizeBounds,
+  IslandResizeHandle,
+  IslandSizeSettings,
+} from "../desktop/IslandResize.jsx";
 import { islandAppearanceStyle } from "../desktop/island-appearance.js";
 import "./island-deadline.css";
 
@@ -82,6 +88,10 @@ export default function DynamicIsland({
   const twins = jade && desktop?.supportsTwinIsland === true;
   const retained = twins && desktop?.supportsRetainedTwinIsland === true;
   const appearance = useIslandAppearance(twins);
+  const resizable = twins && desktop.supportsIslandResize === true;
+  const [sizeDraft, setSizeDraft] = useState(null);
+  const sizeInput = useRef(null),
+    focusSize = useRef(false);
   const [peek, setPeek] = useState(false);
   const Surface = dragHandleTitle ? "div" : React.Fragment;
   const [drafts, setDrafts] = useState(initialDrafts);
@@ -130,6 +140,11 @@ export default function DynamicIsland({
   const tasks = page?.tasks || [];
   const completed = tasks.filter((task) => task.block.done).length;
   const nextTask = tasks.find((task) => !task.block.done);
+  const sizeBounds = resizable && islandSizeBounds(desktop, side, !nextTask);
+  const size =
+    resizable && fitIslandSize(sizeDraft ?? appearance.value.size, sizeBounds);
+  const wideSide = side && resizable && size.extraWidth >= 110;
+  const saveSize = (value) => appearance.update({ size: value });
   const pendingTasks = tasks.filter((task) => !task.block.done);
   const animal = useAnimalRunner(
     jade && !hidden && !desktop.dragging && (twins || pendingTasks.length > 0),
@@ -243,7 +258,11 @@ export default function DynamicIsland({
   }, [editingDeadline, shown]);
 
   useLayoutEffect(() => {
-    if (settingsOpen) settingsBack.current?.focus({ preventScroll: true });
+    if (settingsOpen && focusSize.current) {
+      sizeInput.current?.focus();
+      focusSize.current = false;
+    } else if (settingsOpen)
+      settingsBack.current?.focus({ preventScroll: true });
     else if (returnSettingsFocus.current) {
       returnSettingsFocus.current = false;
       settingsTrigger.current?.focus({ preventScroll: true });
@@ -614,10 +633,15 @@ export default function DynamicIsland({
               ? "clear-glass"
               : appearance.value.design === "meadow"
                 ? "seasonal-meadow"
-                : "color-flow"
+                : appearance.value.design === "pixel"
+                  ? "pixel-garden"
+                  : "color-flow"
             : undefined
         }
         data-design={twins ? appearance.value.design : undefined}
+        data-extra-width={resizable ? size.extraWidth : undefined}
+        data-extra-height={resizable ? size.extraHeight : undefined}
+        data-wide-side={wideSide || undefined}
         data-glass-motion={twins && animal.playing}
         data-peek={twins && peek && !shown && !desktop?.dragging}
         data-empty={!nextTask}
@@ -631,6 +655,12 @@ export default function DynamicIsland({
                   ? { "--twin-header-offset": `${desktop.headerOffset}px` }
                   : {}),
                 ...(twins ? islandAppearanceStyle(appearance.value) : {}),
+                ...(resizable
+                  ? {
+                      "--twin-extra-width": size.extraWidth + "px",
+                      "--twin-extra-height": size.extraHeight + "px",
+                    }
+                  : {}),
               }
             : undefined
         }
@@ -665,7 +695,8 @@ export default function DynamicIsland({
             clickHeld.current = false;
           scheduleClose();
         }}
-        onFocus={() => {
+        onFocus={(event) => {
+          if (event.target.closest?.(".island-resize-handle")) return;
           if (twins && keyboard.current && !expanded) setPeek(true);
         }}
         onKeyDown={(event) => {
@@ -723,10 +754,33 @@ export default function DynamicIsland({
               panelId={panelId}
               trigger={trigger}
               side={side && !desktop?.dragging}
+              wideSide={wideSide}
               dock={desktop?.dragging ? "free" : desktop?.dock}
               peek={peek}
               expanded={shown}
               retained={retained}
+              resizeHandle={
+                resizable &&
+                !desktop.dragging && (
+                  <IslandResizeHandle
+                    size={size}
+                    bounds={sizeBounds}
+                    left={desktop.resizeLeft === true}
+                    up={desktop.resizeUp === true}
+                    onPreview={setSizeDraft}
+                    onCommit={saveSize}
+                    onSettings={() => {
+                      if (settingsOpen) {
+                        sizeInput.current?.focus();
+                        return;
+                      }
+                      focusSize.current = true;
+                      open();
+                      setSettingsOpen(true);
+                    }}
+                  />
+                )
+              }
               project={page?.title}
             />
           ) : dragHandleTitle ? (
@@ -930,6 +984,16 @@ export default function DynamicIsland({
               >
                 <IslandSettings
                   appearance={appearance}
+                  sizeControls={
+                    resizable && (
+                      <IslandSizeSettings
+                        size={size}
+                        bounds={sizeBounds}
+                        onChange={saveSize}
+                        focusRef={sizeInput}
+                      />
+                    )
+                  }
                   bridge={updateBridge}
                   toolbar={panelToolbar}
                 />

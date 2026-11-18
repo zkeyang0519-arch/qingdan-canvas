@@ -1,8 +1,8 @@
 # 轻岛 Tauri 验证版
 
-轻岛轻量版当前为 `0.4.0-preview.4`，应用标识为 `cn.zky.qingdao.preview`。鼠标停在时间和数量小舱上会就地展开待办，再点击小舱会用系统默认浏览器打开当前画布。首次打开的本地示例会带你进入在线应用，有已保存的画布时优先打开它。Windows 安装向导支持选择目录或覆盖已有版本，macOS 使用 DMG 拖放安装。
+轻岛轻量版当前为 `0.4.0-preview.5`，应用标识为 `cn.zky.qingdao.preview`。鼠标停在时间和数量小舱上会就地展开待办，再点击小舱会用系统默认浏览器打开当前画布。首次打开的本地示例会带你进入在线应用，有已保存的画布时优先打开它。Windows 安装向导支持选择目录或覆盖已有版本，macOS 使用 DMG 拖放安装。
 
-展开小舱后可以在「轻岛设置」选择「四季草地」。草地在顶部和左右贴边均可滚动，每 72 秒轮播四季，设置里可以调速或暂停。
+在「轻岛设置 → 外观」中可选择「四季草地」或「四季像素庭院」。像素庭院的远山、林木和花草分层平滑后移，每 72 秒轮播四季，可以调速或暂停。顶部和左右贴边时都可拖动大舱角上的箭头调整宽高，点击箭头可以微调或恢复默认尺寸。
 
 第三版在 Windows WebView2 实测了在线画布选择草地、换季、重启后保留外观和输入，以及包内本地画布在顶部和左右两侧播放动画。本地画布连续播放了春、夏、秋、冬并回到春天。Windows x64 安装包为 26.24 MB，Mac Apple Silicon 为 26.79 MB，Mac Intel 为 26.77 MB。两个 DMG 内应用的版本和处理器架构已核对，Mac 桌面实机交互仍待验收。[三平台构建与原生测试](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/44220013356)
 
@@ -49,7 +49,7 @@ Rust `online.rs` 移植既有的本机 challenge/verifier 协议，校验来源�
 
 第二版固定绑定 **8792**，安装配置注册 **`qingdao-preview://open`**；Electron 的 8791 / `qingdao://` 保留。网页通过 `/app?desktop=tauri-preview` 选择测试入口，选择仅在该标签页保留；`?desktop=stable` 切回原版。测试入口失败不会转而打开原版。**`6249214` 已于 2026-11-16 合入 main，并经 Cloudflare 自动构建发布。** 安装协议配置已实现，但浏览器许可弹窗和安装后冷唤起还需验收。
 
-轻量版使用安装包手动更新。退出旧轻量版，从下载页选择 Windows 64 位、Mac Apple Silicon 或 Mac Intel 安装包，安装后在设置中选择外观。[下载轻岛](https://todo.zky.lol/download/#light-title) · [轻量版更新说明与校验文件](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.4)
+轻量版使用安装包手动更新。退出旧轻量版，从下载页选择 Windows 64 位、Mac Apple Silicon 或 Mac Intel 安装包，安装后在设置中选择外观。[下载轻岛](https://todo.zky.lol/download/#light-title) · [轻量版更新说明与校验文件](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.5)
 
 发布前运行 `npm run desktop:download:check -- --preview` 核对轻量版卡片。发布并部署后运行 `npm run desktop:download:check -- --preview --online --wait` 核对线上版本、三个架构的安装包和更新说明。
 

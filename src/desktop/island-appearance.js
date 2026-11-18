@@ -1,7 +1,9 @@
 // Local appearance only: never write shared boards, task data or input drafts.
+import sizeLimits from "../../shared/island-size.json" with { type: "json" };
 export const legacyIslandAppearanceKey = "qingdan.desktop.island-appearance.v1";
 export const islandAppearanceKey = "qingdan.desktop.island-appearance.v2";
 export const islandAppearanceVersions = [
+  { id: "pixel", name: "四季像素庭院", detail: "远山、林木与花草分层后移" },
   { id: "meadow", name: "四季草地", detail: "春花、夏荫、秋叶与冬雪" },
   { id: "glass", name: "清透玻璃", detail: "边缘折射与高光" },
   { id: "flow", name: "色块流动", detail: "保留原版配色" },
@@ -46,13 +48,21 @@ const defaultProfile = Object.freeze({
   glassStrength: 0.9,
 });
 const meadowProfile = Object.freeze({ ...defaultProfile, scrollSpeed: 24 });
+export const defaultIslandSize = Object.freeze({
+  extraWidth: 0,
+  extraHeight: 0,
+});
+export const isSeasonalDesign = (design) =>
+  design === "meadow" || design === "pixel";
 export const defaultIslandAppearance = Object.freeze({
   version: 2,
   design: "glass",
+  size: defaultIslandSize,
   profiles: Object.freeze({
     glass: defaultProfile,
     flow: defaultProfile,
     meadow: meadowProfile,
+    pixel: meadowProfile,
   }),
 });
 
@@ -88,11 +98,28 @@ function normalizeProfile(value, meadow = false) {
 export function normalizeIslandAppearance(value) {
   return {
     version: 2,
-    design: ["flow", "meadow"].includes(value?.design) ? value.design : "glass",
+    design: islandAppearanceVersions.some((v) => v.id === value?.design)
+      ? value.design
+      : "glass",
+    size: {
+      extraWidth: bounded(
+        value?.size?.extraWidth,
+        0,
+        0,
+        sizeLimits.maxExtraWidth,
+      ),
+      extraHeight: bounded(
+        value?.size?.extraHeight,
+        0,
+        0,
+        sizeLimits.maxExtraHeight,
+      ),
+    },
     profiles: {
       glass: normalizeProfile(value?.profiles?.glass),
       flow: normalizeProfile(value?.profiles?.flow),
       meadow: normalizeProfile(value?.profiles?.meadow, true),
+      pixel: normalizeProfile(value?.profiles?.pixel, true),
     },
   };
 }
@@ -104,7 +131,7 @@ export function patchIslandAppearance(value, patch) {
         ...next.profiles[next.design],
         ...patch.profile,
       },
-      next.design === "meadow",
+      isSeasonalDesign(next.design),
     );
   return next;
 }
@@ -149,7 +176,7 @@ function readable(colors) {
 export function islandAppearanceStyle(value) {
   const profile = activeIslandAppearance(value);
   const main = readable(
-      value?.design === "meadow" ? ["#e4edcf"] : profile.colors,
+      isSeasonalDesign(value?.design) ? ["#e4edcf"] : profile.colors,
     ),
     small = readable([profile.smallColor]);
   const colors =
