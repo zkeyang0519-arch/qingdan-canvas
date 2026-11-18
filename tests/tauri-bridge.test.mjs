@@ -81,6 +81,73 @@ test("drag changes dock, persists placement and preserves serialized geometry", 
     "right",
   );
 });
+test("retained twin islands restore old positions and keep both side capsules clickable", async () => {
+  for (const dock of ["left", "right"]) {
+    const f = fixture();
+    const { work } = f.info;
+    f.info.saved = {
+      x: dock === "left" ? -12 : 1868,
+      y: 460,
+      width: 64,
+      height: 160,
+      dock,
+    };
+    const placement = await f.bridge.getPlacement();
+    assert.equal(placement.supportsTwinIsland, true);
+    assert.equal(placement.supportsRetainedTwinIsland, true);
+    const input = {
+      mode: "island",
+      appearance: "jade-twins",
+      dock,
+      expanded: false,
+      retained: true,
+      peek: false,
+      empty: true,
+      width: 80,
+      height: 127,
+    };
+    const initial = await f.bridge.setLayout(input);
+    const expanded = await f.bridge.setLayout({
+      ...input,
+      width: 440,
+      height: 420,
+      expanded: true,
+    });
+    assert.equal(expanded.x, dock === "left" ? -12 : work.width - 440 + 12);
+    const { rects } = f.calls.filter((c) => c.op === "bounds").at(-1).data;
+    const x = dock === "left" ? 40 : 400;
+    const hit = (y) =>
+      rects.some(
+        (r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+      );
+    assert.deepEqual([36, 67, 93, 120, 150].map(hit), [
+      true,
+      false,
+      true,
+      false,
+      true,
+    ]);
+    assert.equal(Number.isFinite(expanded.headerOffset), true);
+    await f.bridge.drag("start", { x: 360, y: 40 });
+    assert.equal(f.info.bounds.width, 400);
+    assert.equal(f.info.bounds.height, 72);
+    assert.equal(f.info.bounds.x, f.info.cursor.x - 360);
+    const canceled = await f.bridge.drag("cancel");
+    assert.equal(canceled.width, expanded.width);
+    assert.equal(canceled.x, expanded.x);
+    await f.bridge.drag("start");
+    f.info.cursor = { x: dock === "left" ? 24 : 1896, y: 650 };
+    const settled = await f.bridge.drag("end");
+    assert.equal(settled.dock, dock);
+    assert.equal(settled.width, initial.width);
+    assert.equal(settled.height, 127);
+    await f.listeners.get("reset-position")();
+    const saved = f.calls.filter((c) => c.op === "save_position").at(-1).data;
+    assert.equal(saved.dock, "top");
+    assert.equal(saved.width, 400);
+    assert.equal(saved.height, 72);
+  }
+});
 test("quit acknowledgement waits for local save and reports failures", async () => {
   const f = fixture();
   f.bridge.onBeforeQuit(async () => ({

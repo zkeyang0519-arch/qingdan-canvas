@@ -49,7 +49,7 @@ pub async fn check(w: &WebviewWindow) -> Result<Value> {
         return Ok(updates.snapshot());
     }
     let Some((endpoint, key)) = channel()? else {
-        return Ok(updates.publish(w, json!({"status":"unsupported","message":"验证版更新流程已接入；发布者尚未配置签名更新源，请使用新版验证安装包。"})));
+        return Ok(updates.publish(w, json!({"status":"unsupported","message":"轻量版目前使用安装包更新。请前往 https://todo.zky.lol/download/ 下载适合这台电脑的轻量版。"})));
     };
     updates.publish(
         w,

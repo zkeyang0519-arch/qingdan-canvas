@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { JSDOM } from "jsdom";
-import { validateDesktopDownloadPage } from "../scripts/lib/desktop-download-page.mjs";
+import {
+  validateDesktopDownloadPage,
+  validatePreviewDownloadPage,
+} from "../scripts/lib/desktop-download-page.mjs";
 
 const html = await readFile(
   new URL("../public/download/index.html", import.meta.url),
@@ -18,6 +21,33 @@ const { version } = JSON.parse(
 
 test("正式版发布时下载页版本、安装包和说明必须与包版本一致", () => {
   assert.equal(validateDesktopDownloadPage(html, version).version, version);
+});
+
+test("轻量版版本、三个架构的安装包和更新说明必须一起更新", async () => {
+  const { version } = JSON.parse(
+    await readFile(
+      new URL("../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.equal(validatePreviewDownloadPage(html, version).installers.length, 3);
+  const dom = new JSDOM(html);
+  try {
+    for (const node of dom.window.document.querySelectorAll(
+      ".lightweight .version-number, .lightweight a",
+    )) {
+      const original = node.outerHTML;
+      if (node.hasAttribute("href")) node.setAttribute("href", "old-release");
+      else node.textContent = "旧验证版";
+      assert.throws(
+        () => validatePreviewDownloadPage(dom.serialize(), version),
+        /未更新/,
+      );
+      node.outerHTML = original;
+    }
+  } finally {
+    dom.window.close();
+  }
 });
 
 test("下载页只更新标签、安装包或说明中的一部分时阻止发布", () => {

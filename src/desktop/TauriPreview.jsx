@@ -8,8 +8,11 @@ import {
   patchObjects,
 } from "../canvas/model.js";
 import { useDesktopPlacement } from "./useDesktopPlacement.js";
+import { observeDesktopIsland } from "./observeDesktopIsland.js";
 import "./desktop.css";
 import "./jade-island.css";
+import "./twins-island.css";
+import "./glass-island.css";
 import "../app.css";
 const bridge = window.qingdanDesktop;
 const key = "qingdao.tauri.preview.workspace.v1";
@@ -69,31 +72,12 @@ function Preview() {
   useLayoutEffect(() => {
     document.documentElement.classList.add("qingdan-desktop");
     document.documentElement.dataset.desktopMode = "island";
-    const target = root.current.querySelector(".dynamic-island");
-    let frame;
-    const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const r = target.getBoundingClientRect();
-        bridge
-          .setLayout({
-            mode: "island",
-            appearance: "jade",
-            dock: desktop.dragging ? "free" : desktop.dock,
-            expanded: target.dataset.open === "true",
-            width: Math.ceil(r.width) + 24,
-            height: Math.ceil(r.height) + 24,
-          })
-          .catch(console.error);
-      });
-    };
-    const observer = new ResizeObserver(measure);
-    observer.observe(target);
-    measure();
-    return () => {
-      observer.disconnect();
-      cancelAnimationFrame(frame);
-    };
+    return observeDesktopIsland(
+      bridge,
+      root.current,
+      desktop.dock,
+      desktop.dragging,
+    );
   }, [desktop.dock, desktop.dragging]);
   return (
     <main ref={root} className="desktop-island-workspace">
@@ -129,6 +113,7 @@ function Preview() {
         boardId={state.boards[0].id}
         top={12}
         desktop={desktop}
+        updateBridge={bridge}
         dragHandleTitle="拖动轻岛"
         closeOnWindowBlur
         onDisable={() => bridge.hide()}

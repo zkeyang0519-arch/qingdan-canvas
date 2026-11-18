@@ -2,6 +2,7 @@
 const { validateLayout } = require("./window-policy.cjs");
 const { exportPortable, importPortable } = require("./portable-state.mjs");
 const {
+  compactSize,
   restorePlacement,
   fitDockBounds,
   placementAtPoint,
@@ -23,38 +24,33 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
   const placements = new Set(),
     updates = new Set();
   const state = () => ({
-    ...placementState(anchor, bounds, work, !!drag),
+    ...placementState(anchor, bounds, work, !!drag, layout),
     supportsJade: true,
+    supportsTwinIsland: true,
+    supportsRetainedTwinIsland: true,
   });
   const geometry = async () => {
     const info = await invoke("geometry", { dragging: !!drag });
     work = info.work;
     bounds = info.bounds;
-    if (!anchor) anchor = restorePlacement(info.saved, work, "jade");
+    if (!anchor) anchor = info.saved || restorePlacement(null, work);
     return info;
   };
-  const resize = async (next) => {
-    const info = await geometry();
-    layout = drag
-      ? {
-          mode: "island",
-          dock: "free",
-          appearance: "jade",
-          width: 314,
-          height: 64,
-          expanded: false,
-        }
-      : next;
+  const compact = (current, dock) => ({
+    ...current,
+    ...compactSize(dock, current.appearance, current.empty),
+    dock,
+    expanded: false,
+    ...(current.appearance === "jade-twins" ? { peek: false } : {}),
+  });
+  const resize = async (next, info) => {
+    info ??= await geometry();
+    work = info.work;
+    layout = drag ? compact(drag.layout, "free") : next;
     if (!drag && layout.mode === "island") {
-      anchor = restorePlacement(anchor, work, layout.appearance);
+      anchor = restorePlacement(anchor, work, layout.appearance, layout.empty);
       if (layout.dock && layout.dock !== anchor.dock)
-        layout = {
-          ...layout,
-          dock: anchor.dock,
-          width: anchor.width,
-          height: anchor.height,
-          expanded: false,
-        };
+        layout = compact(layout, anchor.dock);
     }
     bounds = drag
       ? {
@@ -63,11 +59,17 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
           width: layout.width,
           height: layout.height,
         }
-      : fitDockBounds(
-          layout.mode === "island" ? anchor : bounds,
-          layout.mode === "island" ? { ...layout, dock: anchor.dock } : layout,
-          work,
-        );
+      : layout.mode === "island" && !layout.dock
+        ? fitDockBounds(
+            { ...anchor, dock: "top" },
+            { ...layout, dock: "top" },
+            work,
+          )
+        : fitDockBounds(
+            layout.mode === "island" ? anchor : bounds,
+            layout,
+            work,
+          );
     const rects =
       layout.mode === "island" ? dockShape(bounds, layout, anchor, work) : [];
     await invoke("bounds", {
@@ -105,26 +107,47 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
         if (!["start", "move", "end", "cancel"].includes(action))
           throw Error("Invalid drag");
         const info = await geometry();
+        if (layout.mode !== "island") return state();
         if (action === "start" && !drag) {
+          const size = compactSize("free", layout.appearance);
           drag = {
             anchor: { ...anchor },
             layout: { ...layout },
+            work,
+            scale: info.scale,
             offset: {
-              x: Math.max(24, Math.min(302, origin?.x ?? 157)),
-              y: Math.max(12, Math.min(52, origin?.y ?? 32)),
+              x: Math.max(
+                24,
+                Math.min(
+                  size.width - 12,
+                  origin?.x ?? info.cursor.x - bounds.x,
+                ),
+              ),
+              y: Math.max(12, Math.min(size.height - 12, origin?.y ?? 38)),
             },
           };
         } else if ((action === "end" || action === "cancel") && drag) {
           const previous = drag;
           drag = null;
-          anchor =
-            action === "cancel"
-              ? previous.anchor
-              : placementAtPoint(info.cursor, previous.offset, work, "jade");
-          layout = { ...previous.layout, ...anchor, expanded: false };
+          if (action === "cancel") {
+            anchor = previous.anchor;
+            return resize(previous.layout, {
+              ...info,
+              work: previous.work,
+              scale: previous.scale,
+            });
+          }
+          anchor = placementAtPoint(
+            info.cursor,
+            previous.offset,
+            work,
+            previous.layout.appearance,
+            previous.layout.empty,
+          );
+          layout = compact(previous.layout, anchor.dock);
           await invoke("save_position", anchor);
         }
-        return resize(layout);
+        return resize(layout, info);
       }),
     setContext: (context) => invoke("context", context),
     hide: () => invoke("hide"),
@@ -137,6 +160,7 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
     },
     getUpdateState: () => invoke("update"),
     checkForUpdates: () => invoke("check_update"),
+    openPreviewDownloads: () => invoke("open_preview_downloads"),
     installUpdate: () => invoke("install_update"),
     onUpdateState: (cb) => subscribe(updates, cb),
   });
@@ -194,10 +218,14 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
     });
     window.__TAURI__.event.listen("reset-position", () =>
       serial(async () => {
-        await geometry();
-        anchor = restorePlacement(null, work, "jade");
+        const info = await geometry();
+        drag = null;
+        anchor = restorePlacement(null, work, layout.appearance, layout.empty);
         await invoke("save_position", anchor);
-        await resize(layout);
+        await resize(
+          layout.mode === "island" ? compact(layout, "top") : layout,
+          info,
+        );
       }),
     );
     window.__TAURI__.event.listen("display-changed", () =>

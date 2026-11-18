@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { validateDesktopDownloadPage } from "./lib/desktop-download-page.mjs";
+import {
+  validateDesktopDownloadPage,
+  validatePreviewDownloadPage,
+} from "./lib/desktop-download-page.mjs";
 import {
   fetchDesktopAsset,
   releaseBase,
@@ -9,34 +12,63 @@ import {
 
 const args = process.argv.slice(2);
 const online = args.includes("--online");
+const preview = args.includes("--preview");
 const wait = args.includes("--wait");
 const pageUrl = "https://todo.zky.lol/download/";
 
 try {
   if (
-    args.some((arg) => !["--online", "--wait"].includes(arg)) ||
+    args.some((arg) => !["--preview", "--online", "--wait"].includes(arg)) ||
     (wait && !online)
   ) {
     throw new Error(
-      "用法：npm run desktop:download:check -- [--online [--wait]]",
+      "用法：npm run desktop:download:check -- [--preview] [--online [--wait]]",
     );
   }
   const { version } = JSON.parse(
-    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    await readFile(
+      new URL(
+        preview ? "../src-tauri/tauri.conf.json" : "../package.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
   );
+  const validate = preview
+    ? validatePreviewDownloadPage
+    : validateDesktopDownloadPage;
   if (!online) {
-    validateDesktopDownloadPage(
+    validate(
       await readFile(
         new URL("../public/download/index.html", import.meta.url),
         "utf8",
       ),
       version,
     );
-    console.log(`下载页源码与正式版 ${version} 一致。`);
+    console.log(
+      `下载页源码与${preview ? "轻量版" : "正式版"} ${version} 一致。`,
+    );
   } else {
     const deadline = Date.now() + (wait ? 5 * 60_000 : 0);
     while (true) {
       try {
+        const response = await fetch(pageUrl, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok)
+          throw new Error(`线上下载页返回 HTTP ${response.status}。`);
+        const page = validate(await response.text(), version);
+        if (preview) {
+          for (const url of [...page.installers, page.notes]) {
+            const asset = await fetchDesktopAsset(url, {
+              signal: AbortSignal.timeout(15_000),
+            });
+            await asset.body?.cancel();
+          }
+          console.log(`线上轻量版 ${version} 的三个安装包和更新说明均可访问。`);
+          break;
+        }
         const feed = await fetchDesktopAsset(
           `${releaseBase}/latest/download/latest.yml`,
           { signal: AbortSignal.timeout(15_000) },
@@ -48,14 +80,6 @@ try {
             `最新正式版仍为 ${release.version}，预期 ${version}。`,
           );
         }
-        const response = await fetch(pageUrl, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (!response.ok) {
-          throw new Error(`线上下载页返回 HTTP ${response.status}。`);
-        }
-        validateDesktopDownloadPage(await response.text(), version);
         const installer = await fetchDesktopAsset(release.url, {
           signal: AbortSignal.timeout(15_000),
         });

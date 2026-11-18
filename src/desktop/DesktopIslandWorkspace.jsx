@@ -9,7 +9,8 @@ import { ArrowLeft, ExternalLink, LoaderCircle } from "lucide-react";
 import DynamicIsland from "../island/DynamicIsland.jsx";
 import { useRoomWorkspace } from "../sync/useRoomWorkspace.js";
 import { downloadBlob, exportArchive } from "../canvas/backup.js";
-import { getDesktopBridge, requestDesktopLayout } from "./bridge.js";
+import { getDesktopBridge } from "./bridge.js";
+import { observeDesktopIsland } from "./observeDesktopIsland.js";
 import { DesktopOpeningState } from "./DesktopFrame.jsx";
 import { useDesktopPlacement } from "./useDesktopPlacement.js";
 import {
@@ -166,69 +167,16 @@ function ConnectedWorkspace({
     compactOpening,
   ]);
 
-  useLayoutEffect(() => {
-    if (!bridge) return;
-    const island = root.current?.querySelector(".dynamic-island");
-    const opening = root.current?.querySelector(".desktop-opening-capsule");
-    const target =
-      island || opening || root.current?.querySelector(".desktop-loading-card");
-    if (!target) return;
-    let frame;
-    let previous = "";
-    const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const bounds = target.getBoundingClientRect();
-        const width =
-          Math.ceil(bounds.width || (island || opening ? 330 : 420)) + 24;
-        const height =
-          Math.ceil(bounds.height || (island || opening ? 52 : 176)) + 24;
-        const dock = desktop.dragging ? "free" : desktop.dock;
-        const expanded = island?.dataset.open === "true";
-        const twins = island?.dataset.layout === "twins";
-        const retained = island?.dataset.retained === "true";
-        const peek = island?.dataset.peek === "true";
-        const empty = island?.dataset.empty === "true";
-        const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}`;
-        if (size === previous) return;
-        previous = size;
-        requestDesktopLayout(bridge, {
-          mode: "island",
-          width,
-          height,
-          ...(island ? { dock, expanded } : {}),
-          ...(island?.dataset.appearance === "jade"
-            ? { appearance: twins ? "jade-twins" : "jade" }
-            : {}),
-          ...(twins ? { peek, empty } : {}),
-          ...(retained ? { retained: true } : {}),
-        });
-      });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(target);
-    const attributes = new window.MutationObserver(measure);
-    if (island)
-      attributes.observe(island, {
-        attributes: true,
-        attributeFilter: [
-          "data-layout",
-          "data-retained",
-          "data-open",
-          "data-peek",
-          "data-empty",
-          "data-deadline-editor",
-        ],
-      });
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      attributes.disconnect();
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", measure);
-    };
-  }, [bridge, !!workspace.state, opening, desktop.dock, desktop.dragging]);
+  useLayoutEffect(
+    () =>
+      observeDesktopIsland(
+        bridge,
+        root.current,
+        desktop.dock,
+        desktop.dragging,
+      ),
+    [bridge, !!workspace.state, opening, desktop.dock, desktop.dragging],
+  );
 
   const leave = async () => {
     try {

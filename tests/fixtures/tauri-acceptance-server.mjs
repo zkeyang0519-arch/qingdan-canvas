@@ -76,6 +76,7 @@ const options = convertV4MiniflareOptions({
             ".css": "text/css",
             ".svg": "image/svg+xml",
             ".png": "image/png",
+            ".webp": "image/webp",
           }[path.extname(file)] || "application/octet-stream";
         let contents = await readFile(file);
         if (mime === "text/html") {
