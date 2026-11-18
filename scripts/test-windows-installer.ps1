@@ -82,6 +82,7 @@ public class WizardControl {
   }
   public void SetValue(string text) { SendMessage(Handle,0xC,IntPtr.Zero,text); }
   public void Check(bool value) { SendMessage(Handle,0xF1,(IntPtr)(value?1:0),IntPtr.Zero); }
+  public bool Checked() { return SendMessage(Handle,0xF0,IntPtr.Zero,IntPtr.Zero)!=IntPtr.Zero; }
   public void Click() { PostMessage(GetParent(Handle),0x111,(IntPtr)Id,Handle); }
 }
 '@
@@ -132,8 +133,13 @@ function Test-Wizard([string]$mode, [string]$destination) {
         if ($mode -ne 'replace') { $dir.SetValue($destination) }
         $sawDirectory = $true
       } elseif ($next.Label -match 'Finish|完成') {
+        # NSIS changes the outer Next button before populating the finish page.
+        # Wait for the launch checkbox, including when a shortcut uses Explorer.
+        $launch = $controls | Where-Object { $_.CheckBox -and $_.Label -match 'Run|Launch|启动|运行' } | Select-Object -First 1
+        if (-not $launch) { continue }
         Write-Host 'Reached the finish page.'
         foreach ($control in $controls | Where-Object CheckBox) { $control.Check($false) }
+        if ($launch.Checked()) { throw 'The wizard did not clear the launch checkbox.' }
         $next.Click()
         if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Wizard failed to finish.' }
         if ($mode -ne 'first' -and -not $chosen) { throw 'No maintenance choice appeared.' }
@@ -162,11 +168,30 @@ function Assert-Installed([string]$destination) {
     throw "Installed binary, registered directory or protocol does not match $destination."
   }
 }
+function Close-TestInstance([string]$destination) {
+  # Each manual installation scenario starts with the previous copy exited.
+  # Only this runner's private test executable can belong to the fixture.
+  $exe = Join-Path $destination $binary
+  if (-not $exe.StartsWith($env:RUNNER_TEMP + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Test executable outside runner temp.' }
+  $name = [IO.Path]::GetFileNameWithoutExtension($binary)
+  Start-Sleep -Seconds 2
+  foreach ($app in @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object Path -eq $exe)) {
+    Write-Host "Closing the test copy at $exe"
+    try {
+      if (-not $app.HasExited) {
+        [void]$app.CloseMainWindow()
+        if (-not $app.WaitForExit(1500)) { $app.Kill(); [void]$app.WaitForExit(5000) }
+      }
+    } catch [InvalidOperationException] { if (-not $app.HasExited) { throw } }
+  }
+}
 Test-Wizard 'first' $folder
 Assert-Installed $folder
+Close-TestInstance $folder
 Set-ItemProperty -LiteralPath $uninstall -Name DisplayVersion -Value '0.0.1'
 Test-Wizard 'replace' $folder
 Assert-Installed $folder
+Close-TestInstance $folder
 if ($Channel -eq 'original') {
   Test-Wizard 'move' $moved
   Assert-Installed $moved
