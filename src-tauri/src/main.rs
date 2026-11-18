@@ -373,17 +373,19 @@ async fn desktop(window: WebviewWindow, op: String, data: Value) -> Result<Value
             Ok(json!(true))
         }
         "open_workspace" => {
-            if !online::id(&data) {
-                return Err("Invalid room".into());
-            }
             let mut url = window.url().map_err(err)?;
-            if !online::origin_allowed(&url.origin().ascii_serialization()) {
-                url = url::Url::parse("https://todo.zky.lol/app").unwrap();
+            if data.is_null() && url.path() == "/tauri-preview.html" {
+                url = resume::read(&profile(&window)?)
+                    .unwrap_or_else(|| url::Url::parse("https://todo.zky.lol/app").unwrap());
+            } else {
+                if !online::id(&data) {
+                    return Err("Invalid room".into());
+                }
+                if !online::origin_allowed(&url.origin().ascii_serialization()) {
+                    url = url::Url::parse("https://todo.zky.lol/app").unwrap();
+                }
+                url = resume::canonical(&url, data.as_str())?;
             }
-            url.set_path("/app");
-            url.set_query(None);
-            url.query_pairs_mut()
-                .append_pair("room", data.as_str().unwrap());
             window
                 .opener()
                 .open_url(url.as_str(), None::<&str>)

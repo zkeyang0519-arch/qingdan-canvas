@@ -291,6 +291,7 @@ function ConnectedWorkspace({
           dragHandleTitle="拖动轻岛"
           desktop={desktop}
           updateBridge={bridge}
+          onOpenWorkspace={openWorkspace}
           closeLabel="隐藏轻岛"
           closeText="隐藏到托盘"
           onDisable={() => bridge.hide()}

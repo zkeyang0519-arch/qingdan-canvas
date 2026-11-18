@@ -47,12 +47,14 @@ test("packaged verification canvas completes/restores tasks and preserves restor
   let save,
     downloadCount = 0;
   const layouts = [];
+  const opened = [];
   window.qingdanDesktop = {
     version: 1,
     getUpdateState: async () => ({
       status: "unsupported",
-      currentVersion: "0.4.0-preview.3",
+      currentVersion: "0.4.0-preview.4",
     }),
+    openWorkspace: async (room) => opened.push(room),
     openPreviewDownloads: async () => {
       downloadCount++;
     },
@@ -65,6 +67,7 @@ test("packaged verification canvas completes/restores tasks and preserves restor
       supportsJade: true,
       supportsTwinIsland: true,
       supportsRetainedTwinIsland: true,
+      supportsFixedTwinFrame: true,
       maxHeight: 1040,
       maxWidth: 1920,
     }),
@@ -104,6 +107,11 @@ test("packaged verification canvas completes/restores tasks and preserves restor
   await act(async () =>
     document.querySelector('[aria-label="展开轻岛"]').click(),
   );
+  assert.equal(opened.length, 0);
+  await act(async () =>
+    document.querySelector('.island-twin-time[aria-label="打开画布"]').click(),
+  );
+  assert.deepEqual(opened, [null]);
   await act(async () =>
     document.querySelector('button[aria-label="轻岛设置"]').click(),
   );
@@ -121,6 +129,7 @@ test("packaged verification canvas completes/restores tasks and preserves restor
   await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
   assert.equal(layouts.at(-1).appearance, "jade-twins");
   assert.equal(layouts.at(-1).retained, true);
+  assert.equal(layouts.at(-1).fixedFrame, true);
   assert.equal(layouts.at(-1).expanded, true);
   await act(async () =>
     document.querySelector('[aria-label="返回待办列表"]').click(),

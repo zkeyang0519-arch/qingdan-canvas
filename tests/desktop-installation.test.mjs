@@ -112,6 +112,27 @@ test("an equal or newer installed version opens without downloading, closing or 
     assert.deepEqual(f.events, []);
   }
 });
+
+test("the web launcher follows a registered custom path, including a location changed during setup", async (t) => {
+  const previous = path.resolve("old-folder", "Qingdao.exe");
+  const selected = path.resolve("自选 目录", "Qingdao.exe");
+  const seen = [];
+  let installed = false;
+  const f = await fixture(t, {
+    locate: () => (installed ? selected : previous),
+    inspect: async ({ executable }) => {
+      seen.push(executable);
+      return { version: installed ? "0.3.1" : "0.3.0", running: [] };
+    },
+    install: async () => {
+      installed = true;
+    },
+  });
+  assert.equal((await f.ensure()).executable, selected);
+  assert.equal(seen[0], previous);
+  assert.equal(seen.at(-1), selected);
+  assert.equal((await f.ensure()).executable, selected);
+});
 test("a running old version only exits after the full installer checksum passed", async (t) => {
   const f = await fixture(t, { version: "0.3.0", running: [100] });
   await f.ensure();

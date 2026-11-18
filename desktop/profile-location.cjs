@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
 function settingsDirectory(appData) {
@@ -93,18 +94,55 @@ function resolveDesktopProfile({
   return validateProfile(legacy);
 }
 
-function installedDesktopExecutable({ env = process.env, fsImpl = fs } = {}) {
+function registeredInstallDirectory(env) {
+  const system = env.SystemRoot || env.SYSTEMROOT;
+  if (process.platform !== "win32" || !system || !path.isAbsolute(system))
+    return "";
+  // electron-builder's per-user InstallLocation for the existing cn.zky.qingdao app ID.
+  const command =
+    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Microsoft.Win32.Registry]::GetValue('HKEY_CURRENT_USER\\Software\\ac3646b8-59ba-589d-9c6f-4c69eeeddcf0','InstallLocation','')";
+  try {
+    return execFileSync(
+      path.join(system, "System32/WindowsPowerShell/v1.0/powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", command],
+      {
+        env,
+        windowsHide: true,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function installedDesktopExecutable({
+  env = process.env,
+  fsImpl = fs,
+  readInstallDirectory = registeredInstallDirectory,
+} = {}) {
   if (env.QINGDAN_DESKTOP_SOURCE === "1" || !env.LOCALAPPDATA) return null;
   if (!path.isAbsolute(env.LOCALAPPDATA)) return null;
-  const executable = path.join(
-    env.LOCALAPPDATA,
-    "Programs",
-    "Qingdao",
-    "Qingdao.exe",
-  );
-  return fsImpl.existsSync(executable) && fsImpl.statSync(executable).isFile()
-    ? executable
-    : null;
+  for (const directory of [
+    readInstallDirectory(env),
+    path.join(env.LOCALAPPDATA, "Programs", "Qingdao"),
+  ]) {
+    if (
+      !directory ||
+      !path.isAbsolute(directory) ||
+      directory === path.parse(directory).root
+    )
+      continue;
+    const executable = path.join(directory, "Qingdao.exe");
+    try {
+      if (fsImpl.statSync(executable).isFile()) return executable;
+    } catch {
+      /* A moved or uninstalled copy can leave a stale path. */
+    }
+  }
+  return null;
 }
 
 module.exports = {

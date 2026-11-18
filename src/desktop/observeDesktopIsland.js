@@ -21,9 +21,10 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
       const expanded = island?.dataset.open === "true";
       const twins = island?.dataset.layout === "twins";
       const retained = island?.dataset.retained === "true";
+      const fixedFrame = island?.dataset.fixedFrame === "true";
       const peek = island?.dataset.peek === "true";
       const empty = island?.dataset.empty === "true";
-      const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}`;
+      const size = `${width}/${height}/${dock}/${expanded}/${twins}/${peek}/${empty}/${retained}/${fixedFrame}`;
       if (size === previous) return;
       previous = size;
       requestDesktopLayout(bridge, {
@@ -36,6 +37,7 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
           : {}),
         ...(twins ? { peek, empty } : {}),
         ...(retained ? { retained: true } : {}),
+        ...(fixedFrame ? { fixedFrame: true } : {}),
       });
     });
   };
@@ -49,6 +51,7 @@ export function observeDesktopIsland(bridge, container, placement, dragging) {
       attributeFilter: [
         "data-layout",
         "data-retained",
+        "data-fixed-frame",
         "data-open",
         "data-peek",
         "data-empty",

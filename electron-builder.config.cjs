@@ -29,7 +29,7 @@ module.exports = {
     oneClick: false,
     perMachine: false,
     allowElevation: false,
-    allowToChangeInstallationDirectory: false,
+    // The custom maintenance page offers overwrite or the native directory picker.
     runAfterFinish: true,
     shortcutName: "轻岛",
     uninstallDisplayName: "轻岛 Qingdao",

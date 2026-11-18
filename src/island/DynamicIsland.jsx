@@ -57,6 +57,7 @@ export default function DynamicIsland({
   workspace,
   boardId,
   onDisable,
+  onOpenWorkspace,
   beforeAction,
   top,
   hidden = false,
@@ -598,6 +599,13 @@ export default function DynamicIsland({
         data-appearance={jade ? "jade" : undefined}
         data-layout={twins ? "twins" : undefined}
         data-retained={retained || undefined}
+        data-fixed-frame={
+          (retained &&
+            desktop.supportsFixedTwinFrame &&
+            !desktop.dragging &&
+            desktop.dock !== "free") ||
+          undefined
+        }
         data-settings={(twins && settingsOpen) || undefined}
         data-deadline-editor={!!editingDeadline || undefined}
         data-material={
@@ -706,6 +714,7 @@ export default function DynamicIsland({
               disabled={!writable || nextTask?.locked}
               onComplete={toggleTask}
               toggle={toggle}
+              onOpenWorkspace={onOpenWorkspace}
               onPointerEnter={scheduleOpen}
               onPointerLeave={() => {
                 clearTimeout(enterTimer.current);

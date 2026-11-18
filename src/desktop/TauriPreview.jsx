@@ -39,6 +39,7 @@ function initial() {
 }
 function Preview() {
   const [state, setState] = useState(initial);
+  const [openError, setOpenError] = useState("");
   const [initialDrafts] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(key + ".drafts")) || {};
@@ -114,6 +115,14 @@ function Preview() {
         top={12}
         desktop={desktop}
         updateBridge={bridge}
+        onOpenWorkspace={async () => {
+          try {
+            await bridge.openWorkspace(null);
+            setOpenError("");
+          } catch {
+            setOpenError("暂时无法打开浏览器画布，请重试。");
+          }
+        }}
         dragHandleTitle="拖动轻岛"
         closeOnWindowBlur
         onDisable={() => bridge.hide()}
@@ -124,7 +133,7 @@ function Preview() {
         }}
         panelNotice={
           <p style={{ fontSize: 11, opacity: 0.65 }}>
-            本地验证画布 · 数据仅保存在此验证版
+            {openError || "本地验证画布 · 数据仅保存在此验证版"}
           </p>
         }
       />

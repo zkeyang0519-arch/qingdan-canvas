@@ -137,6 +137,7 @@ function getPlacement() {
     supportsJade: true,
     supportsTwinIsland: true,
     supportsRetainedTwinIsland: true,
+    supportsFixedTwinFrame: true,
   };
 }
 function publishPlacement() {
@@ -337,6 +338,7 @@ function dragWindow(action, origin) {
                 peek: false,
                 empty: previous.layout.empty,
                 ...(previous.layout.retained ? { retained: true } : {}),
+                ...(previous.layout.fixedFrame ? { fixedFrame: true } : {}),
               }
             : {}),
         },

@@ -424,6 +424,50 @@
   .island-panel {
   animation: island-retained-open 220ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
+/* These widths match the native hit regions. Only the list height changes on hover. */
+.desktop-island-workspace
+  .dynamic-island[data-layout="twins"][data-appearance="jade"][data-fixed-frame="true"][data-dock="top"] {
+  width: min(420px, calc(var(--desktop-max-width, 1920px) - 24px));
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="top"]
+  .island-twin-header {
+  width: min(376px, 100%);
+  margin-left: var(--twin-header-offset, 0px);
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="top"][data-peek="true"]
+  .island-twin-header {
+  width: min(412px, 100%);
+  margin-left: clamp(
+    0px,
+    calc(var(--twin-header-offset, 0px) - 18px),
+    max(0px, calc(100% - 412px))
+  );
+}
+.desktop-island-workspace
+  .dynamic-island[data-appearance="jade"][data-layout="twins"][data-fixed-frame="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  ) {
+  width: min(360px, calc(var(--desktop-max-width, 1920px) - 24px));
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  )
+  .island-twin-header {
+  width: 56px;
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"]:is(
+    [data-dock="left"],
+    [data-dock="right"]
+  )[data-peek="true"]
+  .island-twin-header {
+  width: min(318px, 100%);
+}
+.dynamic-island[data-layout="twins"][data-fixed-frame="true"][data-dock="right"]
+  .island-twin-header {
+  margin-left: auto;
+}
 @keyframes island-retained-open {
   from {
     opacity: 0;
