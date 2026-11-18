@@ -94,13 +94,13 @@ function resolveDesktopProfile({
   return validateProfile(legacy);
 }
 
-function registeredInstallDirectory(env) {
+function registeredInstallDirectories(env) {
   const system = env.SystemRoot || env.SYSTEMROOT;
   if (process.platform !== "win32" || !system || !path.isAbsolute(system))
-    return "";
-  // electron-builder's per-user InstallLocation for the existing cn.zky.qingdao app ID.
+    return [];
+  // electron-builder records the install scope selected in the Windows wizard.
   const command =
-    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); [Microsoft.Win32.Registry]::GetValue('HKEY_CURRENT_USER\\Software\\ac3646b8-59ba-589d-9c6f-4c69eeeddcf0','InstallLocation','')";
+    "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); foreach ($hive in 'HKEY_CURRENT_USER','HKEY_LOCAL_MACHINE') { [Microsoft.Win32.Registry]::GetValue(($hive+'\\Software\\ac3646b8-59ba-589d-9c6f-4c69eeeddcf0'),'InstallLocation','') }";
   try {
     return execFileSync(
       path.join(system, "System32/WindowsPowerShell/v1.0/powershell.exe"),
@@ -112,21 +112,24 @@ function registeredInstallDirectory(env) {
         timeout: 5000,
         stdio: ["ignore", "pipe", "ignore"],
       },
-    ).trim();
+    )
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
   } catch {
-    return "";
+    return [];
   }
 }
 
 function installedDesktopExecutable({
   env = process.env,
   fsImpl = fs,
-  readInstallDirectory = registeredInstallDirectory,
+  readInstallDirectories = registeredInstallDirectories,
 } = {}) {
   if (env.QINGDAN_DESKTOP_SOURCE === "1" || !env.LOCALAPPDATA) return null;
   if (!path.isAbsolute(env.LOCALAPPDATA)) return null;
   for (const directory of [
-    readInstallDirectory(env),
+    ...readInstallDirectories(env),
     path.join(env.LOCALAPPDATA, "Programs", "Qingdao"),
   ]) {
     if (

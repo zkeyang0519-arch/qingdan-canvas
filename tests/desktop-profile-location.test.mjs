@@ -143,10 +143,17 @@ test("a registered custom folder takes precedence and a stale registration falls
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "fixture");
   }
-  const locate = (directory) =>
-    installedDesktopExecutable({ env, readInstallDirectory: () => directory });
+  const locate = (...directories) =>
+    installedDesktopExecutable({
+      env,
+      readInstallDirectories: () => directories,
+    });
   assert.equal(locate(custom), path.join(custom, "Qingdao.exe"));
   assert.equal(locate(path.join(f.root, "missing")), fallback);
+  assert.equal(
+    locate(path.join(f.root, "missing"), custom),
+    path.join(custom, "Qingdao.exe"),
+  );
   assert.equal(locate("relative"), fallback);
 });
 
