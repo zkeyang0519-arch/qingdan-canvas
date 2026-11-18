@@ -350,6 +350,51 @@ test("retained capsules keep their screen position while a separate clickable li
       }
 });
 
+test("twin hover and peek keep one native horizontal frame with click-through margins", () => {
+  for (const edge of ["top", "left", "right"]) {
+    const compact = dock.compactSize(edge, "jade-twins");
+    const anchor = dock.restorePlacement(
+      { ...compact, dock: edge, x: work.x + 600, y: 200 },
+      work,
+      "jade-twins",
+    );
+    const layout = {
+      ...compact,
+      dock: edge,
+      appearance: "jade-twins",
+      retained: true,
+      fixedFrame: true,
+    };
+    const closed = dock.fitDockBounds(anchor, layout, work);
+    for (const state of [
+      { ...layout, peek: true, width: edge === "top" ? 436 : 342 },
+      {
+        ...layout,
+        expanded: true,
+        height: 450,
+        width: edge === "top" ? 444 : 384,
+      },
+    ]) {
+      const bounds = dock.fitDockBounds(anchor, state, work);
+      assert.equal(bounds.x, closed.x);
+      assert.equal(bounds.width, closed.width);
+    }
+    const regions = dock.dockShape(closed, layout, anchor, work);
+    const hit = (x, y) =>
+      regions.some(
+        (r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+      );
+    if (edge === "top") {
+      assert.equal(hit(20, 36), false);
+      assert.equal(hit(424, 36), false);
+      assert.equal(hit(380, 36), true);
+    } else {
+      assert.equal(hit(closed.width / 2, 39), false);
+      assert.equal(hit(edge === "left" ? 40 : closed.width - 40, 120), true);
+    }
+  }
+});
+
 test("retained list uses available space below its anchor and stays inside a short display", () => {
   const area = { x: 1920, y: 0, width: 1280, height: 720 };
   const anchor = { x: 1908, y: 540, width: 80, height: 161, dock: "left" };

@@ -62,7 +62,13 @@ function placementAtPoint(point, offset, work, appearance, empty = false) {
 function fitDockBounds(anchor, layout, work) {
   if (!layout.dock) return fitWindowBounds(anchor, layout, work);
   const dock = anchor?.dock || layout.dock;
-  const width = Math.min(Math.round(layout.width), work.width);
+  // Reserve the list width before hover so an open/close never moves the native window sideways.
+  const frameWidth =
+    layout.fixedFrame && layout.dock !== "free" ? (side(dock) ? 384 : 444) : 0;
+  const width = Math.min(
+    Math.max(frameWidth, Math.round(layout.width)),
+    work.width,
+  );
   const height = Math.min(Math.round(layout.height), work.height);
   const centerX = anchor
     ? anchor.x + anchor.width / 2
@@ -238,7 +244,18 @@ function dockShape(bounds, layout, anchor, work) {
       return surfaceShape(12, 12, width, Math.max(1, bounds.height - 24), 25);
     if (side(layout.dock)) {
       const height = layout.empty ? 52 : 86;
-      return surfaceShape(12, 12, width, height, layout.peek ? 25 : 28).concat(
+      const mainWidth = layout.fixedFrame
+        ? Math.min(width, layout.peek ? 318 : 56)
+        : width;
+      const mainX =
+        layout.dock === "right" ? bounds.width - 12 - mainWidth : 12;
+      return surfaceShape(
+        mainX,
+        12,
+        mainWidth,
+        height,
+        layout.peek ? 25 : 28,
+      ).concat(
         surfaceShape(
           layout.dock === "left" ? 12 : bounds.width - 68,
           12 + height + 7,
@@ -249,14 +266,32 @@ function dockShape(bounds, layout, anchor, work) {
       );
     }
     const height = layout.peek ? 64 : 48;
+    const fixed = layout.fixedFrame && layout.dock === "top";
+    const headerWidth = fixed
+      ? Math.min(width, layout.peek ? 412 : 376)
+      : width;
+    const offset = fixed
+      ? clamp(
+          retainedHeaderOffset(anchor, bounds, layout, work) -
+            (layout.peek ? 18 : 0),
+          0,
+          width - headerWidth,
+        )
+      : 0;
     return surfaceShape(
+      12 + offset,
       12,
-      12,
-      width - 83,
+      headerWidth - 83,
       height,
       layout.peek ? 26 : 24,
     ).concat(
-      surfaceShape(bounds.width - 86, 12 + (height - 48) / 2, 74, 48, 24),
+      surfaceShape(
+        12 + offset + headerWidth - 74,
+        12 + (height - 48) / 2,
+        74,
+        48,
+        24,
+      ),
     );
   }
   if (layout.appearance === "jade" && !side(layout.dock)) {

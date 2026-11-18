@@ -15,6 +15,7 @@ on:
       - "package*.json"
       - "electron-builder.config.cjs"
       - "scripts/package-desktop.mjs"
+      - "scripts/test-windows-installer.ps1"
       - "scripts/check-desktop-download-page.mjs"
       - "scripts/lib/desktop-*.mjs"
       - ".github/workflows/desktop-release.yml"
@@ -73,6 +74,9 @@ jobs:
       - run: npm run desktop:package
       - name: Inspect installer payload
         run: npm run desktop:inspect
+      - name: Exercise the Windows installation wizard
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1 -Channel original -Installer (Get-ChildItem output/desktop-release/Qingdao-Setup-*.exe).FullName
       - uses: actions/upload-artifact@v4
         with:
           name: Qingdao-Windows-x64

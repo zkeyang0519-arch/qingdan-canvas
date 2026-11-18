@@ -113,7 +113,7 @@ test("explicit QA profiles never alter the user's profile registration", (t) => 
   assert.equal(fs.existsSync(f.appData), false);
 });
 
-test("installed executable is a fixed per-user file and source mode can opt out", (t) => {
+test("default installation stays discoverable and source mode can opt out", (t) => {
   const f = fixture(t);
   const executable = path.join(f.local, "Programs", "Qingdao", "Qingdao.exe");
   fs.mkdirSync(path.dirname(executable), { recursive: true });
@@ -132,6 +132,29 @@ test("installed executable is a fixed per-user file and source mode can opt out"
     installedDesktopExecutable({ env: { LOCALAPPDATA: "../relative" } }),
     null,
   );
+});
+
+test("a registered custom folder takes precedence and a stale registration falls back to the default", (t) => {
+  const f = fixture(t);
+  const env = { LOCALAPPDATA: f.local };
+  const custom = path.join(f.root, "轻岛 程序");
+  const fallback = path.join(f.local, "Programs", "Qingdao", "Qingdao.exe");
+  for (const file of [path.join(custom, "Qingdao.exe"), fallback]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "fixture");
+  }
+  const locate = (...directories) =>
+    installedDesktopExecutable({
+      env,
+      readInstallDirectories: () => directories,
+    });
+  assert.equal(locate(custom), path.join(custom, "Qingdao.exe"));
+  assert.equal(locate(path.join(f.root, "missing")), fallback);
+  assert.equal(
+    locate(path.join(f.root, "missing"), custom),
+    path.join(custom, "Qingdao.exe"),
+  );
+  assert.equal(locate("relative"), fallback);
 });
 
 test("legacy source bootstrap forwards only descriptor over stdin, while packaged and isolated instances never forward", async (t) => {

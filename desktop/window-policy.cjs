@@ -65,6 +65,11 @@ function validateLayout(input) {
   )
     throw new Error("Invalid retained twin island state");
   if (
+    input.fixedFrame !== undefined &&
+    (!input.retained || typeof input.fixedFrame !== "boolean")
+  )
+    throw new Error("Invalid fixed twin island frame");
+  if (
     twins &&
     (!hasDock ||
       typeof input.peek !== "boolean" ||
@@ -96,6 +101,7 @@ function validateLayout(input) {
     ...(input.appearance ? { appearance: input.appearance } : {}),
     ...(twins ? { peek: input.peek, empty: input.empty } : {}),
     ...(twins && input.retained ? { retained: true } : {}),
+    ...(input.fixedFrame ? { fixedFrame: true } : {}),
   };
 }
 

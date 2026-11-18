@@ -28,6 +28,7 @@ if (window === window.top && trusted && window.__TAURI_INTERNALS__) {
     supportsJade: true,
     supportsTwinIsland: true,
     supportsRetainedTwinIsland: true,
+    supportsFixedTwinFrame: true,
   });
   const geometry = async () => {
     const info = await invoke("geometry", { dragging: !!drag });

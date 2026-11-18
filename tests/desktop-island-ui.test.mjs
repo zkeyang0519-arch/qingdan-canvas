@@ -354,6 +354,7 @@ async function mount(
     supportsJade = true,
     supportsTwinIsland = false,
     supportsRetainedTwinIsland = false,
+    supportsFixedTwinFrame = false,
   } = {},
 ) {
   const initial = createWorkspace();
@@ -378,6 +379,7 @@ async function mount(
   calls.placement.supportsJade = supportsJade;
   calls.placement.supportsTwinIsland = supportsTwinIsland;
   calls.placement.supportsRetainedTwinIsland = supportsRetainedTwinIsland;
+  calls.placement.supportsFixedTwinFrame = supportsFixedTwinFrame;
   window.qingdanDesktop = bridge;
   t.after(() => {
     delete window.qingdanDesktop;
@@ -931,12 +933,13 @@ test("小仓悬停后的原位点击不误完成任务，移动后正常操作�
   assert.equal(controls.state().objects[0].blocks[1].done, false);
 });
 
-test("保留双舱时小仓原位点击可收起，任务更新同步标题，未提交草稿保留", async (t) => {
+test("悬浮小舱展开待办，点击打开当前画布，收起后保留未提交草稿", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const { host, controls, calls } = await mount(t, {
+  const { host, room, controls, calls } = await mount(t, {
     desktop: true,
     supportsTwinIsland: true,
     supportsRetainedTwinIsland: true,
+    supportsFixedTwinFrame: true,
     count: 3,
   });
   const tick = (ms) => act(async () => t.mock.timers.tick(ms));
@@ -944,6 +947,7 @@ test("保留双舱时小仓原位点击可收起，任务更新同步标题，�
   const header = host.querySelector(".island-twin-header");
   const capsule = host.querySelector(".island-twin-time");
   for (const dock of ["top", "left", "right"]) {
+    const previousOpens = calls.opened.length;
     await act(async () => {
       calls.placement = { ...calls.placement, dock };
       for (const callback of calls.placementHandlers) callback(calls.placement);
@@ -953,6 +957,9 @@ test("保留双舱时小仓原位点击可收起，任务更新同步标题，�
     await tick(120);
     assert.equal(header.hidden, false);
     assert.equal(island.dataset.open, "true");
+    assert.equal(island.dataset.fixedFrame, "true");
+    assert.equal(calls.opened.length, previousOpens);
+    assert.equal(capsule.getAttribute("aria-label"), "打开画布");
     const firstTask = host.querySelector(
       '.island-task-row input[type="checkbox"]',
     );
@@ -984,11 +991,14 @@ test("保留双舱时小仓原位点击可收起，任务更新同步标题，�
         }),
       ),
     );
-    assert.equal(
-      island.dataset.open,
-      "false",
-      "retained trigger is never mistaken for a replaced task",
+    await act(async () =>
+      capsule.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, detail: 2 }),
+      ),
     );
+    assert.deepEqual(calls.opened.slice(previousOpens), [room.id]);
+    assert.equal(island.dataset.open, "true");
+    await click(button(host, "收起轻岛"));
     await tick(200);
     assert.equal(
       island.dataset.open,

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+import { installedDesktopExecutable } from "../../desktop/profile-location.cjs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const require = createRequire(import.meta.url);
@@ -205,6 +206,7 @@ export function createDesktopInstallation({
   env = process.env,
   fetchImpl = fetch,
   inspect = inspectWindowsDesktop,
+  locate = installedDesktopExecutable,
   install = runInstaller,
   requestExit = requestDesktopExit,
   wait = delay,
@@ -213,7 +215,7 @@ export function createDesktopInstallation({
 } = {}) {
   if (!path.isAbsolute(env.LOCALAPPDATA || ""))
     throw Error("Missing local application directory");
-  const executable = path.join(
+  const defaultExecutable = path.join(
     env.LOCALAPPDATA,
     "Programs",
     "Qingdao",
@@ -226,7 +228,13 @@ export function createDesktopInstallation({
     "dist",
     "electron.exe",
   );
-  const inspectCurrent = () => inspect({ executable, legacyExecutable, env });
+  const inspectCurrent = async () => {
+    const executable = locate({ env }) || defaultExecutable;
+    return {
+      ...(await inspect({ executable, legacyExecutable, env })),
+      executable,
+    };
+  };
   let pending;
   async function ensureOnce({ profile, signal, onStatus = () => {} }) {
     onStatus("正在检查轻岛安装和版本…");
@@ -259,7 +267,7 @@ export function createDesktopInstallation({
       if (current.version) {
         onStatus("暂时无法检查新版本，正在打开已安装的轻岛…");
         return {
-          executable,
+          executable: current.executable,
           version: current.version,
           warning: "暂时无法检查新版本，已打开本机现有版本。",
         };
@@ -273,7 +281,7 @@ export function createDesktopInstallation({
       compareDesktopVersions(current.version, latest.version) >= 0
     ) {
       onStatus("轻岛版本已就绪，正在打开当前画布…");
-      return { executable, version: current.version };
+      return { executable: current.executable, version: current.version };
     }
     const cache = path.join(env.LOCALAPPDATA, "Qingdao", "installer-cache");
     await fs.mkdir(cache, { recursive: true });
@@ -322,7 +330,7 @@ export function createDesktopInstallation({
         current.version &&
         compareDesktopVersions(current.version, latest.version) >= 0
       )
-        return { executable, version: current.version };
+        return { executable: current.executable, version: current.version };
       let committed = false;
       if (current.running.length) {
         onStatus("正在保存登录状态、待办和输入，并退出旧版轻岛…");
@@ -358,7 +366,11 @@ export function createDesktopInstallation({
           "未能确认轻岛安装成功，请检查 Windows 安装提示后重试。",
         );
       onStatus("轻岛安装完成，正在恢复当前画布…");
-      return { executable, version: installed.version, changed: true };
+      return {
+        executable: installed.executable,
+        version: installed.version,
+        changed: true,
+      };
     } finally {
       await fs.rm(download, { force: true }).catch(() => {});
     }

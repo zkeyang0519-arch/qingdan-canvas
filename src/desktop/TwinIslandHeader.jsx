@@ -17,6 +17,7 @@ export default function TwinIslandHeader({
   disabled,
   onComplete,
   toggle,
+  onOpenWorkspace,
   onPointerEnter,
   onPointerLeave,
   panelId,
@@ -38,6 +39,12 @@ export default function TwinIslandHeader({
     restoreFocus = useRef(false);
   const label = task ? blockText(task.block) || "未命名待办" : "暂无待办";
   const time = twinTime(task, remaining, now);
+  const opensCanvas = expanded && retained && !!onOpenWorkspace;
+  const smallAction = opensCanvas
+    ? "打开画布"
+    : expanded
+      ? "收起待办列表"
+      : "展开轻岛";
   useEffect(() => {
     const clock = setInterval(() => setNow(new Date()), 30000);
     return () => {
@@ -132,11 +139,14 @@ export default function TwinIslandHeader({
         className="island-twin-time"
         type="button"
         ref={trigger}
-        onClick={toggle}
+        onClick={(event) => {
+          if (!opensCanvas) toggle();
+          else if (event.detail <= 1) onOpenWorkspace();
+        }}
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
-        title={`${time.title} · ${expanded ? "收起" : "展开"}轻岛`}
-        aria-label={expanded && retained ? "收起待办列表" : "展开轻岛"}
+        title={`${time.title} · ${smallAction}`}
+        aria-label={smallAction}
         aria-expanded={expanded}
         aria-controls={panelId}
       >
