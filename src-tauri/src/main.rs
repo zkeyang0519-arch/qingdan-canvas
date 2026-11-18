@@ -391,6 +391,13 @@ async fn desktop(window: WebviewWindow, op: String, data: Value) -> Result<Value
             Ok(json!(true))
         }
         "update" => Ok(window.state::<updates::Updates>().snapshot()),
+        "open_preview_downloads" => {
+            window
+                .opener()
+                .open_url("https://todo.zky.lol/download/#light-title", None::<&str>)
+                .map_err(err)?;
+            Ok(json!(true))
+        }
         "check_update" => updates::check(&window).await,
         "install_update" => updates::install(&window).await,
         #[cfg(feature = "test-harness")]

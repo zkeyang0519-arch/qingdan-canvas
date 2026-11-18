@@ -42,6 +42,7 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run check
+      - run: npm run desktop:download:check -- --preview
       - run: node --test tests/tauri-*.test.mjs tests/desktop-island-ui.test.mjs
       - run: npm run tauri:build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
       - run: cargo test --release --locked --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml

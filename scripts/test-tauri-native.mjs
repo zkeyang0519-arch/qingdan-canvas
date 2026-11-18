@@ -12,6 +12,10 @@ const exe = path.resolve(
 const origin = "http://127.0.0.1:18788",
   local = "http://127.0.0.1:8792/api/local-desktop/online/";
 const profile = await fs.mkdtemp(path.resolve(".tmp/tauri-native-profile-"));
+const { version } = JSON.parse(
+  await fs.readFile("src-tauri/tauri.conf.json", "utf8"),
+);
+const output = path.resolve("output", `tauri-${version}`);
 const results = [],
   pause = (ms) => new Promise((r) => setTimeout(r, ms));
 let app, c;
@@ -212,7 +216,47 @@ try {
     "native handoff / verified account and room / HttpOnly cookie / one-use ownership",
   );
   await c.evaluate(
+    `document.querySelector('[aria-label="展开轻岛"]')?.click()`,
+  );
+  await c.evaluate(
     `document.querySelector('[aria-label="钉住轻岛"]')?.click()`,
+  );
+  await c.evaluate(
+    `document.querySelector('button[aria-label="轻岛设置"]').click()`,
+  );
+  await c.evaluate(
+    `document.querySelector('button[aria-label="四季草地"]').click()`,
+  );
+  const surface = "document.querySelector('.island-meadow-surface')";
+  await waitFor(
+    () => c.evaluate(`${surface}?.dataset.ready === 'true'`),
+    "Meadow images did not decode in WebView2",
+  );
+  await waitFor(
+    () =>
+      c.evaluate(
+        "document.querySelector('.island-meadow-strip').getAnimations()[0]?.playState === 'running'",
+      ),
+    "Meadow scroll did not start",
+  );
+  await c.evaluate(
+    `document.querySelector('[aria-label="返回待办列表"]').click()`,
+  );
+  await fs.mkdir(output, { recursive: true });
+  await fs.writeFile(
+    path.join(output, "native-meadow.png"),
+    Buffer.from(
+      (await c.send("Page.captureScreenshot", { format: "png" })).data,
+      "base64",
+    ),
+  );
+  await waitFor(
+    () => c.evaluate(`${surface}.dataset.season === '1'`),
+    "Spring did not change to summer",
+    260,
+  );
+  pass(
+    "meadow opens in settings, decodes all four seasons, scrolls and changes from spring to summer",
   );
   await waitFor(
     () => c.evaluate("!!document.querySelector('textarea')"),
@@ -235,7 +279,9 @@ try {
     "Task not synced to real Worker",
   );
   pass("desktop edit persisted through real WebSocket/DO snapshot");
-  await c.evaluate("document.querySelector('input[type=checkbox]').click()");
+  await c.evaluate(
+    "document.querySelector('.island-task-row input[type=checkbox]').click()",
+  );
   await waitFor(
     async () => (await cloudSnapshot()).includes('"done":true'),
     "Completion not synchronized",
@@ -244,7 +290,7 @@ try {
     "[...document.querySelectorAll('button')].find(b=>b.innerText==='已完成 1').click()",
   );
   await c.evaluate(
-    "document.querySelector('input[type=checkbox]:checked').click()",
+    "document.querySelector('.island-task-row input[type=checkbox]:checked').click()",
   );
   await waitFor(
     async () => !(await cloudSnapshot()).includes('"done":true'),
@@ -299,6 +345,10 @@ try {
   );
   assert.equal(await identity(), "alice");
   assert.ok((await c.evaluate("location.href")).endsWith("room=room-a"));
+  await waitFor(
+    () => c.evaluate(`${surface}?.dataset.ready === 'true'`),
+    "Restart did not restore meadow",
+  );
   pass("saved process exit and restart restores login, room and input");
   const portable = (
     await build({
@@ -377,9 +427,8 @@ try {
   pass(
     "portable native IndexedDB/localStorage import is idempotent and restores input",
   );
-  await fs.mkdir("output/tauri-preview2", { recursive: true });
   await fs.writeFile(
-    "output/tauri-preview2/native-account.png",
+    path.join(output, "native-account.png"),
     Buffer.from(
       (await c.send("Page.captureScreenshot", { format: "png" })).data,
       "base64",
@@ -387,7 +436,7 @@ try {
   );
   await stop();
   await fs.writeFile(
-    "output/tauri-preview2/native-acceptance.json",
+    path.join(output, "native-acceptance.json"),
     JSON.stringify(
       { passed: results, profile, date: new Date().toISOString() },
       null,

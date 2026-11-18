@@ -1,6 +1,8 @@
 # 轻岛 Tauri 验证版
 
-本目录是 **独立验证版本，尚未达到正式替代 Electron 的验收条件**。当前版本 `0.4.0-preview.2`，应用标识 `cn.zky.qingdao.preview`；现有 Electron 打包、更新源、登录与草稿目录不被替换。
+轻岛轻量版当前为 `0.4.0-preview.3`，应用标识为 `cn.zky.qingdao.preview`。展开小舱，打开「轻岛设置」，选择「四季草地」。草地可以在顶部和左右贴边滚动，每 72 秒轮播四季，设置里可以调速或暂停。
+
+第三版在 Windows WebView2 实测了在线画布选择草地、换季、重启后保留外观和输入，以及包内本地画布在顶部和左右两侧播放动画。本地画布连续播放了春、夏、秋、冬并回到春天。Windows x64 安装包为 26.24 MB，Mac Apple Silicon 为 26.79 MB，Mac Intel 为 26.77 MB。两个 DMG 内应用的版本和处理器架构已核对，Mac 桌面实机交互仍待验收。[三平台构建与原生测试](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/44220013356)
 
 第二版已实测 Windows WebView2 的账号交接、真实 Worker / WebSocket 同步、同画布保留输入、重启恢复、跨账号失败回退、断网编辑恢复同步及备份导入。Windows x64、Mac Apple Silicon 和 Intel 构建与原生测试均已通过。Mac 实机、正式签名更新、断网首次加载等门槛仍需完成，不能称为功能体验完全等价。
 
@@ -45,7 +47,9 @@ Rust `online.rs` 移植既有的本机 challenge/verifier 协议，校验来源�
 
 第二版固定绑定 **8792**，安装配置注册 **`qingdao-preview://open`**；Electron 的 8791 / `qingdao://` 保留。网页通过 `/app?desktop=tauri-preview` 选择测试入口，选择仅在该标签页保留；`?desktop=stable` 切回原版。测试入口失败不会转而打开原版。**`6249214` 已于 2026-11-16 合入 main，并经 Cloudflare 自动构建发布。** 安装协议配置已实现，但浏览器许可弹窗和安装后冷唤起还需验收。
 
-统一下载页为 [下载轻岛](https://todo.zky.lol/download/)，无需登录即可查看轻量验证版与原版，并直接下载 Windows / Mac Apple Silicon / Mac Intel 对应安装包。文件继续由 GitHub Releases 分发；轻量版的版本详情见 [0.4.0-preview.2](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.2)。GitHub 预发布不替换正式版的 `/releases/latest`，也不进入 Electron 的正式更新源。
+轻量版使用安装包手动更新。退出旧轻量版，从下载页选择 Windows 64 位、Mac Apple Silicon 或 Mac Intel 安装包，安装后在设置中选择外观。[下载轻岛](https://todo.zky.lol/download/#light-title) · [轻量版更新说明与校验文件](https://github.com/zkeyang0519-arch/qingdan-canvas/releases/tag/qingdao-preview-v0.4.0-preview.3)
+
+发布前运行 `npm run desktop:download:check -- --preview` 核对轻量版卡片。发布并部署后运行 `npm run desktop:download:check -- --preview --online --wait` 核对线上版本、三个架构的安装包和更新说明。
 
 网页未检测到轻岛时提供统一的「下载轻岛（轻量版 / 原版）」入口。新标签页通过随机请求标识对应的同源 BroadcastChannel 把版本选择通知原画布，不传递账号或凭据；原画布保留页面和草稿，安装后连接对应程序。独立访问或浏览器不支持标签页消息时，下载页仍可直接下载，并提供带版本选择的「安装后打开轻单」入口。网页启动时在登录和画布路由改写前保存该选择。
 

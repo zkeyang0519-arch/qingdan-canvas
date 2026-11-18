@@ -44,13 +44,27 @@ test("packaged verification canvas completes/restores tasks and preserves restor
     "qingdao.tauri.preview.workspace.v1.drafts",
     JSON.stringify(drafts),
   );
-  let save;
+  let save,
+    downloadCount = 0;
+  const layouts = [];
   window.qingdanDesktop = {
     version: 1,
-    setLayout: async () => ({}),
+    getUpdateState: async () => ({
+      status: "unsupported",
+      currentVersion: "0.4.0-preview.3",
+    }),
+    openPreviewDownloads: async () => {
+      downloadCount++;
+    },
+    setLayout: async (value) => {
+      layouts.push(value);
+      return {};
+    },
     getPlacement: async () => ({
       dock: "top",
       supportsJade: true,
+      supportsTwinIsland: true,
+      supportsRetainedTwinIsland: true,
       maxHeight: 1040,
       maxWidth: 1920,
     }),
@@ -90,7 +104,30 @@ test("packaged verification canvas completes/restores tasks and preserves restor
   await act(async () =>
     document.querySelector('[aria-label="展开轻岛"]').click(),
   );
-  await act(async () => document.querySelector("input[type=checkbox]").click());
+  await act(async () =>
+    document.querySelector('button[aria-label="轻岛设置"]').click(),
+  );
+  await act(async () =>
+    document.querySelector('button[aria-label="四季草地"]').click(),
+  );
+  assert.ok(document.querySelector(".island-twin-main .island-meadow-surface"));
+  assert.ok(document.querySelector('[aria-label="草地滚动速度"]'));
+  await act(async () =>
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent === "下载轻量版")
+      .click(),
+  );
+  assert.equal(downloadCount, 1);
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  assert.equal(layouts.at(-1).appearance, "jade-twins");
+  assert.equal(layouts.at(-1).retained, true);
+  assert.equal(layouts.at(-1).expanded, true);
+  await act(async () =>
+    document.querySelector('[aria-label="返回待办列表"]').click(),
+  );
+  await act(async () =>
+    document.querySelector(".island-task-row input[type=checkbox]").click(),
+  );
   assert.match(document.body.textContent, /已完成 1/);
   await act(async () =>
     [...document.querySelectorAll("button")]
@@ -98,7 +135,9 @@ test("packaged verification canvas completes/restores tasks and preserves restor
       .click(),
   );
   await act(async () =>
-    document.querySelector("input[type=checkbox]:checked").click(),
+    document
+      .querySelector(".island-task-row input[type=checkbox]:checked")
+      .click(),
   );
   await act(async () =>
     [...document.querySelectorAll("button")]

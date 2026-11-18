@@ -37,7 +37,11 @@ export default function DesktopUpdateCheck({ bridge }) {
 
   const run = async (action) => {
     const current = session.current;
-    const method = action === "install" ? "installUpdate" : "checkForUpdates";
+    const method = {
+      install: "installUpdate",
+      check: "checkForUpdates",
+      download: "openPreviewDownloads",
+    }[action];
     if (!current?.active || current.action || !bridge?.[method]) return;
     current.action = action;
     const revision = ++current.revision;
@@ -56,9 +60,11 @@ export default function DesktopUpdateCheck({ bridge }) {
       if (current.active && current.revision === revision)
         setError(
           cause?.message ||
-            (action === "install"
-              ? "安装更新失败，请稍后重试。"
-              : "检查更新失败，请稍后重试。"),
+            (action === "download"
+              ? "暂时无法打开轻量版下载页。"
+              : action === "install"
+                ? "安装更新失败，请稍后重试。"
+                : "检查更新失败，请稍后重试。"),
         );
     } finally {
       current.action = "";
@@ -70,26 +76,31 @@ export default function DesktopUpdateCheck({ bridge }) {
   const ready = state?.status === "downloaded";
   const unavailable =
     !bridge?.checkForUpdates || state?.status === "unsupported";
+  const manual =
+    state?.status === "unsupported" &&
+    typeof bridge?.openPreviewDownloads === "function";
   const locked = ["available", "downloading"].includes(state?.status);
   const message =
     error ||
     state?.error ||
-    (unavailable
-      ? "此环境暂不支持自动更新"
-      : installing
-        ? "正在保存并重启更新…"
-        : checking
-          ? "正在检查更新…"
-          : state?.status === "downloading"
-            ? `正在下载 ${Math.max(0, Math.min(100, Math.round(state.progress || 0)))}%`
-            : state?.status === "available"
-              ? `发现新版 ${state.version || ""}`
-              : state?.status === "downloaded"
-                ? `新版 ${state.version || ""} 已就绪`
-                : state?.message ||
-                  (state?.status === "error"
-                    ? "检查更新失败，请稍后重试。"
-                    : ""));
+    (manual
+      ? "轻量版使用安装包更新，请选择适合这台电脑的版本。"
+      : unavailable
+        ? "此环境暂不支持自动更新"
+        : installing
+          ? "正在保存并重启更新…"
+          : checking
+            ? "正在检查更新…"
+            : state?.status === "downloading"
+              ? `正在下载 ${Math.max(0, Math.min(100, Math.round(state.progress || 0)))}%`
+              : state?.status === "available"
+                ? `发现新版 ${state.version || ""}`
+                : state?.status === "downloaded"
+                  ? `新版 ${state.version || ""} 已就绪`
+                  : state?.message ||
+                    (state?.status === "error"
+                      ? "检查更新失败，请稍后重试。"
+                      : ""));
   return (
     <section className="island-update-check" aria-label="轻岛版本更新">
       <div className="island-settings-row">
@@ -99,25 +110,29 @@ export default function DesktopUpdateCheck({ bridge }) {
         </span>
         <button
           type="button"
-          onClick={() => run(ready ? "install" : "check")}
+          onClick={() => run(manual ? "download" : ready ? "install" : "check")}
           disabled={
             !!busy ||
             checking ||
             installing ||
-            (ready ? !bridge?.installUpdate : unavailable || locked)
+            (ready
+              ? !bridge?.installUpdate
+              : (unavailable && !manual) || locked)
           }
         >
           <RefreshCw
             size={13}
             className={checking || installing ? "spin" : undefined}
           />
-          {installing
-            ? "正在保存…"
-            : ready
-              ? "重启更新"
-              : checking
-                ? "检查中…"
-                : "检查更新"}
+          {manual
+            ? "下载轻量版"
+            : installing
+              ? "正在保存…"
+              : ready
+                ? "重启更新"
+                : checking
+                  ? "检查中…"
+                  : "检查更新"}
         </button>
       </div>
       {message && (
