@@ -2,6 +2,8 @@
 
 轻岛轻量版当前为 `0.4.0-preview.3`，应用标识为 `cn.zky.qingdao.preview`。展开小舱，打开「轻岛设置」，选择「四季草地」。草地可以在顶部和左右贴边滚动，每 72 秒轮播四季，设置里可以调速或暂停。
 
+第三版在 Windows WebView2 实测了在线画布选择草地、换季、重启后保留外观和输入，以及包内本地画布在顶部和左右两侧播放动画。本地画布连续播放了春、夏、秋、冬并回到春天。Windows x64 安装包为 26.24 MB，Mac Apple Silicon 为 26.79 MB，Mac Intel 为 26.77 MB。两个 DMG 内应用的版本和处理器架构已核对，Mac 桌面实机交互仍待验收。[三平台构建与原生测试](https://github.com/zkeyang0519-arch/qingdan-canvas/actions/runs/44220013356)
+
 第二版已实测 Windows WebView2 的账号交接、真实 Worker / WebSocket 同步、同画布保留输入、重启恢复、跨账号失败回退、断网编辑恢复同步及备份导入。Windows x64、Mac Apple Silicon 和 Intel 构建与原生测试均已通过。Mac 实机、正式签名更新、断网首次加载等门槛仍需完成，不能称为功能体验完全等价。
 
 ## 启动与构建
