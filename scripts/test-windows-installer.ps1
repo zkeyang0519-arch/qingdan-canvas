@@ -91,10 +91,12 @@ function Get-WizardControls($process) {
   [WizardControl]::Read($process)
 }
 function Test-Wizard([string]$mode, [string]$destination) {
+  Write-Host "Testing $mode installation at $destination"
   $process = Start-Process -FilePath $setup -PassThru -WindowStyle Hidden
   $chosen = $false
   $sawDirectory = $false
   $sawProgress = $false
+  $lastPage = ''
   $deadline = [datetime]::UtcNow.AddMinutes(3)
   try {
     while ([datetime]::UtcNow -lt $deadline) {
@@ -102,6 +104,7 @@ function Test-Wizard([string]$mode, [string]$destination) {
       $controls = @(Get-WizardControls $process)
       $next = $controls | Where-Object { $_.Id -eq 1 -and $_.ClassName -eq 'Button' } | Select-Object -First 1
       if ($controls | Where-Object ClassName -eq 'msctls_progress32') {
+        if (-not $sawProgress) { Write-Host 'Reached the installation progress page.' }
         $sawProgress = $true
       }
       if (-not $next -or -not $next.Enabled) { continue }
@@ -110,9 +113,12 @@ function Test-Wizard([string]$mode, [string]$destination) {
       $change = $radios | Where-Object Label -match 'Move Qingdao|Remove the old program|更换安装位置' | Select-Object -First 1
       $currentUser = $radios | Where-Object { $_.Id -eq 1202 -and $_.Label -match 'Only for me|just for me|仅为我' } | Select-Object -First 1
       $dir = $controls | Where-Object { $_.Id -eq 1019 -and $_.ClassName -eq 'Edit' } | Select-Object -First 1
+      $page = "$($next.Label)/$($replace.Handle)/$($dir.Handle)/$(($controls | Where-Object ClassName -eq '#32770').Handle -join ',')"
+      if ($lastPage -eq $page) { continue }
       if ($replace) {
         if ($mode -eq 'first' -or -not $change) { throw 'Unexpected maintenance choices.' }
         $option = if ($mode -eq 'move') { $change } else { $replace }
+        Write-Host "Choosing $($option.Label)"
         foreach ($radio in $radios) { $radio.Check($radio.Handle -eq $option.Handle) }
         $option.Click()
         Start-Sleep -Milliseconds 100
@@ -121,10 +127,12 @@ function Test-Wizard([string]$mode, [string]$destination) {
         foreach ($radio in $radios) { $radio.Check($radio.Handle -eq $currentUser.Handle) }
         $currentUser.Click()
       } elseif ($dir) {
+        Write-Host "Directory picker opened at $($dir.Label)"
         if ($mode -eq 'replace' -and $dir.Label -ne $destination) { throw "Overwrite lost its original directory: $($dir.Label)" }
         if ($mode -ne 'replace') { $dir.SetValue($destination) }
         $sawDirectory = $true
       } elseif ($next.Label -match 'Finish|完成') {
+        Write-Host 'Reached the finish page.'
         foreach ($control in $controls | Where-Object CheckBox) { $control.Check($false) }
         $next.Click()
         if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Wizard failed to finish.' }
@@ -135,6 +143,7 @@ function Test-Wizard([string]$mode, [string]$destination) {
       } elseif ($next.Label -notmatch 'Next|Install|下一步|安装') {
         continue
       }
+      $lastPage = $page
       $next.Click()
       Start-Sleep -Milliseconds 180
     }

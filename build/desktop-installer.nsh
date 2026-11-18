@@ -63,6 +63,7 @@
   FunctionEnd
   Function qdDirectoryLeave
     ${NSD_GetText} $mui.DirectoryPage.Directory $0
+    StrCmp $0 "" qdInvalidFolder
     GetFullPathName $0 "$0"
     ${If} $qdPreviousDir != ""
     ${AndIf} $0 == $qdPreviousDir
@@ -70,19 +71,13 @@
     ${EndIf}
     ; The stock uninstaller owns its application folder. Accept a dedicated
     ; empty/new destination so unrelated files cannot become uninstall targets.
-    ${GetRoot} "$0" $1
-    StrCmp "$0" "$1\" qdInvalidFolder
-    StrCmp "$0" "$1" qdInvalidFolder
-    FindFirst $1 $2 "$0\*"
-    ${DoWhile} $2 != ""
-      ${If} $2 != "."
-      ${AndIf} $2 != ".."
-        FindClose $1
-        Goto qdInvalidFolder
-      ${EndIf}
-      FindNext $1 $2
-    ${Loop}
-    FindClose $1
+    System::Call 'shlwapi::PathIsRootW(w r0)i.r1'
+    StrCmp $1 1 qdInvalidFolder
+    System::Call 'kernel32::GetFileAttributesW(w r0)i.r1'
+    StrCmp $1 -1 qdValidFolder
+    System::Call 'shlwapi::PathIsDirectoryEmptyW(w r0)i.r1'
+    StrCmp $1 0 qdInvalidFolder
+    qdValidFolder:
     Return
     qdInvalidFolder:
     ${If} $LANGUAGE == 2052
