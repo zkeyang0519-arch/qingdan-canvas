@@ -106,6 +106,60 @@ async function fixture(t, legacyJobs = false) {
   };
 }
 
+test("模型切换逐轮固定，失败重试复用原消息并拒绝重复或跨聊天重试", async (t) => {
+  const f = await fixture(t);
+  const first = f.store.beginMessage({
+    requestId: "first",
+    bindingId: "p",
+    text: "原消息",
+    modelProfileId: "xingchi",
+  });
+  const other = f.store.createThread({
+    bindingId: "p",
+    requestId: "other",
+    defaultProfileId: "backup",
+  });
+  const job = f.claim(first);
+  f.store.selectModel("p", first.thread.id, "backup");
+  assert.equal(f.store.getJob(job.id).modelProfileId, "xingchi");
+  f.store.failJob({
+    jobId: job.id,
+    expectedRevision: job.revision,
+    error: "503",
+  });
+  const input = {
+    requestId: "retry",
+    bindingId: "p",
+    chatId: first.thread.id,
+    retryOf: job.id,
+    modelProfileId: "backup",
+  };
+  assert.throws(
+    () => f.store.beginMessage({ ...input, chatId: other.id }),
+    /已处理或聊天已更新/,
+  );
+  const retry = f.store.beginMessage(input);
+  assert.equal(retry.message.id, first.message.id);
+  assert.deepEqual(f.store.beginMessage(input), retry);
+  assert.equal(f.reload().getJob(retry.job.id).modelProfileId, "backup");
+  assert.throws(
+    () => f.store.beginMessage({ ...input, requestId: "double" }),
+    /正在处理/,
+  );
+  f.finish(retry);
+  assert.throws(
+    () => f.store.beginMessage({ ...input, requestId: "late" }),
+    /已处理或聊天已更新/,
+  );
+  const { messages, thread } = f.store.readThread("p", retry.thread.id);
+  assert.deepEqual(
+    messages.map((m) => m.role),
+    ["user", "assistant"],
+  );
+  assert.equal(messages[1].replyTo, first.message.id);
+  assert.equal(thread.modelProfileId, "backup");
+});
+
 test("project summaries create a persistent chat message once per source and revision", async (t) => {
   const f = await fixture(t);
   assert.equal(typeof f.store.publishProjectSummary, "function");
@@ -115,9 +169,10 @@ test("project summaries create a persistent chat message once per source and rev
   assert.equal(first.messages.length, 1);
   assert.equal(first.messages[0].role, "assistant");
   assert.equal(first.messages[0].provenance.kind, "project_summary");
-  assert.match(first.messages[0].text, /登录已完成/);
-  assert.match(first.messages[0].text, /下一步待办/);
-  assert.match(first.messages[0].text, /Codex.*任务总结/);
+  assert.match(first.messages[0].text, /项目已有登录功能/);
+  assert.match(first.messages[0].text, /项目资料/);
+  assert.match(first.messages[0].text, /历史记录/);
+  assert.doesNotMatch(first.messages[0].text, /下一步待办/);
   assert.equal(first.job, null);
   assert.equal(
     f.store.publishProjectSummary("p", project).message.id,

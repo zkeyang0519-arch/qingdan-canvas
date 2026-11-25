@@ -14,6 +14,12 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
 const { createUpdateController } = require("./updates.cjs");
+const {
+  createManagedLocalService,
+  atomicJson,
+} = require("./local-service.cjs");
+const { channelDetails } = require("./channel.cjs");
+const channel = channelDetails(app.getVersion());
 const { installBundledWeb } = require("./bundled-web.cjs");
 const { readResume, saveResume } = require("./resume-state.cjs");
 const { desktopOnlineOrigins } = require("../shared/desktop-origins.cjs");
@@ -50,7 +56,8 @@ const root = path.resolve(__dirname, "..");
 // A legacy broker without an explicit origin always belongs to the local
 // service, even when the packaged app starts on the production website.
 const legacyHandoffApplication = parseAppUrl(
-  process.env.QINGDAN_DESKTOP_URL,
+  process.env.QINGDAN_DESKTOP_URL ||
+    "http://" + channel.publicHost + ":" + channel.ports.app + "/app",
 ).href;
 const localApplication = parseAppUrl(
   process.env.QINGDAN_DESKTOP_URL ||
@@ -63,6 +70,7 @@ const profile = app.getPath
       projectRoot: root,
       appData: app.getPath("appData"),
       env: process.env,
+      channel: channel.id,
     })
   : path.resolve(
       process.env.QINGDAN_DESKTOP_PROFILE ||
@@ -70,7 +78,12 @@ const profile = app.getPath
     );
 fs.mkdirSync(profile, { recursive: true });
 app.setPath("userData", profile);
-app.setName("轻岛");
+app.setName(channel.title);
+const updateQa = require("./qa-mode.cjs").configureUpdateQa({
+  app,
+  profile,
+  channel: channel.id,
+});
 if (!process.env.QINGDAN_DESKTOP_URL)
   application = readResume(profile) || application;
 let updates,
@@ -93,6 +106,25 @@ let rendererContext = null,
   handoffNavigation = false;
 let dragSession = null,
   lastPlacement = "";
+const localService = createManagedLocalService({
+  root:
+    app.isPackaged && process.resourcesPath
+      ? path.join(process.resourcesPath, "local-service")
+      : path.join(root, ".tmp/local-service-package"),
+  dataDir: path.join(profile, "local-service"),
+  version: app.getVersion(),
+  ports: channel.ports,
+  publicHost: channel.publicHost,
+  onHandoff: (descriptor) => requestHandoff(descriptor),
+  changed: (state) => {
+    if (window && !window.isDestroyed())
+      window.webContents.send("qingdan-desktop:local-service-state", state);
+  },
+});
+const updateBusy = () =>
+  ["preparing", "saving", "stopping", "installing"].includes(
+    updates?.state().status,
+  );
 
 function trusted(event) {
   return (
@@ -407,8 +439,7 @@ function saveBeforeQuit() {
   });
 }
 function requestSavedAction(kind) {
-  if (externalUpdating || updates?.state().status === "installing")
-    return Promise.resolve();
+  if (externalUpdating || updateBusy()) return Promise.resolve();
   if (quitting) return Promise.resolve();
   if (actionPromise) return actionPromise;
   if (!window || window.isDestroyed()) {
@@ -656,8 +687,7 @@ async function activateHandoff(
   }
 }
 function requestHandoff(input) {
-  if (externalUpdating || updates?.state().status === "installing")
-    return Promise.resolve();
+  if (externalUpdating || updateBusy()) return Promise.resolve();
   let descriptor;
   try {
     descriptor = validateDescriptor(input);
@@ -805,7 +835,7 @@ async function createWindow({ handoff = false } = {}) {
   previous = islandPosition = restorePlacement(previous, work);
   window = new BrowserWindow({
     ...fitWindowBounds(previous, layout, work),
-    title: "轻岛",
+    title: channel.title,
     icon: icon(),
     frame: false,
     transparent: true,
@@ -924,67 +954,92 @@ async function createWindow({ handoff = false } = {}) {
     window.hide();
   });
   tray = new Tray(icon());
-  tray.setToolTip("轻岛");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "显示轻岛", click: show },
-      { label: "隐藏轻岛", click: () => window.hide() },
-      {
-        label: "恢复到屏幕顶部",
-        click: () => {
-          resize(layout, { reset: true });
-          show();
+  tray.setToolTip(channel.title);
+  const refreshTray = () =>
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: "显示轻岛", click: show },
+        { label: "隐藏轻岛", click: () => window.hide() },
+        {
+          label: "恢复到屏幕顶部",
+          click: () => {
+            resize(layout, { reset: true });
+            show();
+          },
         },
-      },
-      {
-        label: "重新连接轻单",
-        click: () => {
-          void requestSavedAction("reload");
+        {
+          label: "重新连接轻单",
+          click: () => {
+            void requestSavedAction("reload");
+          },
         },
-      },
-      { type: "separator" },
-      {
-        label: "检查更新",
-        click: () => {
-          show();
-          void updates?.check();
+        { type: "separator" },
+        {
+          label: "检查更新",
+          click: () => {
+            show();
+            void updates?.check();
+          },
         },
-      },
-      {
-        label: "重启并安装已下载更新",
-        click: () => {
-          void updates?.install().catch((error) =>
-            dialog.showMessageBox(window, {
-              type: "warning",
-              message: error.message,
-            }),
-          );
+        {
+          label:
+            updates?.state().status === "waiting"
+              ? "取消预约更新"
+              : updates?.state().tasks?.some((task) => !task.checkpointedRemote)
+                ? "任务结束后更新"
+                : "重启并更新",
+          enabled: !!updates?.state().hasUpdate && !updateBusy(),
+          click: () => {
+            const action =
+              updates?.state().status === "waiting"
+                ? updates.cancel()
+                : updates?.install();
+            void action?.catch((error) =>
+              dialog.showMessageBox(window, {
+                type: "warning",
+                message: error.message,
+              }),
+            );
+          },
         },
-      },
-      {
-        label: "关于轻岛",
-        click: () => {
-          void dialog.showMessageBox(window, {
-            title: "关于轻岛",
-            message: `轻岛 ${app.getVersion()}`,
-            detail:
-              "自动下载更新；点击重启更新后安装。登录与草稿保存在本机独立数据目录。",
-          });
+        {
+          label: "关于轻岛",
+          click: () => {
+            void dialog.showMessageBox(window, {
+              title: "关于轻岛",
+              message: `轻岛 ${app.getVersion()}`,
+              detail:
+                "自动下载更新；点击重启更新后安装。登录与草稿保存在本机独立数据目录。",
+            });
+          },
         },
-      },
-      { type: "separator" },
-      {
-        label: "退出轻岛",
-        click: () => {
-          void requestQuit();
+        { type: "separator" },
+        {
+          label: "退出轻岛",
+          click: () => {
+            void requestQuit();
+          },
         },
-      },
-    ]),
-  );
+      ]),
+    );
+  refreshTray();
   tray.on("click", show);
+  const nativeUpdater = app.isPackaged
+    ? require("electron-updater").autoUpdater
+    : null;
+  if (updateQa && nativeUpdater)
+    nativeUpdater.setFeedURL({ provider: "generic", url: updateQa.feed });
   updates = createUpdateController({
-    updater: app.isPackaged ? require("electron-updater").autoUpdater : null,
+    updater: nativeUpdater,
     version: app.getVersion(),
+    runtime: localService,
+    channel: channel.id,
+    persist: (state) =>
+      atomicJson(path.join(profile, "update-state.json"), {
+        ...state,
+        previousVersion: app.getVersion(),
+        at: new Date().toISOString(),
+      }),
     changed: (state) => {
       if (state.status === "error") {
         quitting = false;
@@ -992,8 +1047,19 @@ async function createWindow({ handoff = false } = {}) {
       }
       if (!window.isDestroyed())
         window.webContents.send("qingdan-desktop:update-state", state);
+      refreshTray();
     },
-    prepare: saveBeforeQuit,
+    prepare: async () => {
+      if (actionPromise || handoffNavigation || dragSession || pendingSave)
+        throw Error("轻岛正在切换或保存，请稍后再试。");
+      const result = await saveBeforeQuit();
+      if (!result?.ok) return result;
+      if (islandPosition) await atomicJson(positionFile, islandPosition);
+      saveResume(profile, window.webContents.getURL());
+      await window.webContents.session.flushStorageData();
+      await window.webContents.session.cookies.flushStore();
+      return result;
+    },
     install: async (run) => {
       if (actionPromise || handoffNavigation || dragSession)
         throw Error("轻岛正在切换或保存，请稍后再试。");
@@ -1012,44 +1078,17 @@ async function createWindow({ handoff = false } = {}) {
       }
     },
   });
+  const localServiceReady = localService.initialize().catch(() => {});
+  app.once("will-quit", () => updates.close());
   if (app.isPackaged) {
     const control = await require("./launch-control.cjs").createLaunchControl({
       profile,
       version: app.getVersion(),
       prepareExit: async () => {
-        if (
-          externalUpdating ||
-          quitting ||
-          actionPromise ||
-          handoffNavigation ||
-          dragSession ||
-          updates.state().status === "installing"
-        )
-          throw Error("轻岛正在切换或保存，请稍后重试。");
-        externalUpdating = true;
-        const previous = updates.state();
-        window.webContents.send("qingdan-desktop:update-state", {
-          status: "installing",
-          currentVersion: app.getVersion(),
-        });
-        try {
-          const saved = await saveBeforeQuit();
-          if (!saved?.ok || (saved.hasDraft && !saved.draftsPersisted))
-            throw Error("未提交输入尚未保存。");
-          saveResume(profile, window.webContents.getURL());
-          await window.webContents.session.flushStorageData();
-          await window.webContents.session.cookies.flushStore();
-          return () => {
-            quitting = true;
-            allowSavedNavigation = true;
-            clearTimeout(positionTimer);
-          };
-        } catch (error) {
-          externalUpdating = false;
-          if (!window.isDestroyed())
-            window.webContents.send("qingdan-desktop:update-state", previous);
-          throw error;
-        }
+        show();
+        throw Error(
+          "请在轻岛设置或托盘中选择“重启并更新”，网页启动器不能绕过任务保存与服务退出流程。",
+        );
       },
       quit: () => app.quit(),
     });
@@ -1064,7 +1103,7 @@ async function createWindow({ handoff = false } = {}) {
           requestHandoff,
           port: process.env.QINGDAN_DESKTOP_WEB_LAUNCH_PORT
             ? Number(process.env.QINGDAN_DESKTOP_WEB_LAUNCH_PORT)
-            : 8791,
+            : channel.webLaunchPort,
           onError: (message) => {
             if (!window.isDestroyed())
               void dialog.showMessageBox(window, {
@@ -1097,7 +1136,15 @@ async function createWindow({ handoff = false } = {}) {
     resize(layout, { relocate: true }),
   );
   if (handoff) await handoffStatus();
-  else void loadApplication();
+  else {
+    if (
+      new URL(application).origin === new URL(localService.state().url).origin
+    ) {
+      await handoffStatus("正在恢复本地工作区…");
+      await localServiceReady;
+    }
+    void loadApplication();
+  }
 }
 
 ipcMain.handle("qingdan-desktop:layout", (event, input) => {
@@ -1179,6 +1226,60 @@ ipcMain.handle("qingdan-desktop:install-update", (event) => {
   guard(event);
   return updates?.install();
 });
+ipcMain.handle("qingdan-desktop:cancel-update", (event) => {
+  guard(event);
+  return updates?.cancel();
+});
+ipcMain.handle("qingdan-desktop:recover-update", (event) => {
+  guard(event);
+  return updates?.recover();
+});
+ipcMain.handle("qingdan-desktop:local-service", async (event, action) => {
+  guard(event);
+  if (action === "status") return localService.state();
+  if (updateBusy() || updates?.state().scheduled)
+    throw Error("更新流程进行中，请先完成或取消预约。");
+  if (action === "start") return localService.start();
+  if (action === "retry") return localService.start({ retry: true });
+  if (action === "stop") return localService.disable();
+  if (action === "open") {
+    if (localService.state().status === "external") {
+      await shell.openExternal(localService.state().url);
+      return localService.state();
+    }
+    const source = new URL(window.webContents.getURL());
+    if (!isTrustedPage(source.href, application))
+      throw Error("请先在轻岛登录当前账号。");
+    const cookie = (
+      await window.webContents.session.cookies.get({ url: source.origin })
+    ).find((value) => value.name === "qd_session" && value.path === "/");
+    if (!cookie || !/^[a-f0-9]{64}$/.test(cookie.value))
+      throw Error("请先在轻岛登录当前账号。");
+    const response = await fetch(source.origin + "/api/session", {
+      headers: { Cookie: "qd_session=" + cookie.value },
+      redirect: "error",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw Error("暂时无法核验轻岛登录，请恢复连接后再试。");
+    const session = await response.json();
+    guard(event);
+    if (
+      !session.user?.id ||
+      (rendererContext?.accountId &&
+        rendererContext.accountId !== session.user.id)
+    )
+      throw Error("登录账号已变化，请刷新后重试。");
+    const target = await localService.openWorkspace({
+      origin: source.origin,
+      accountId: session.user.id,
+      name: session.user.name,
+      expiresAt: session.sessionExpiresAt,
+    });
+    await shell.openExternal(target.url);
+    return localService.state();
+  }
+  throw Error("不支持的本地服务操作。");
+});
 
 async function start() {
   // Electron 45's Windows GUI process exposes an empty process.stdin even
@@ -1190,7 +1291,7 @@ async function start() {
     : null;
   if (
     await require("./forward-installed.cjs").forwardInstalledDesktop({
-      packaged: app.isPackaged,
+      packaged: app.isPackaged && channel.id === "stable",
       descriptor,
       profile,
       env: process.env,

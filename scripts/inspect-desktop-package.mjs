@@ -7,10 +7,11 @@ import { createHash } from "node:crypto";
 const require = createRequire(import.meta.url);
 const asar = require("@electron/asar");
 const root = fileURLToPath(new URL("..", import.meta.url));
-const resources = path.join(
+const output = path.resolve(
   root,
-  "output/desktop-release/win-unpacked/resources",
+  process.env.QINGDAO_OUTPUT_DIR || "output/desktop-release",
 );
+const resources = path.join(output, "win-unpacked/resources");
 const archive = path.join(resources, "app.asar");
 const files = asar.listPackage(archive).map((p) => p.replaceAll("\\", "/"));
 const forbidden = files.filter((p) =>
@@ -53,8 +54,61 @@ if (Object.keys(pkg.dependencies || {}).join() !== "electron-updater")
 const sourcePackage = JSON.parse(
   await fs.readFile(path.join(root, "package.json"), "utf8"),
 );
-if (pkg.version !== sourcePackage.version)
+if (
+  pkg.version !== (process.env.QINGDAO_BUILD_VERSION || sourcePackage.version)
+)
   throw Error("Packaged version differs from the release source.");
+const serviceRoot = path.join(resources, "local-service");
+const service = JSON.parse(
+  await fs.readFile(path.join(serviceRoot, "runtime.json"), "utf8"),
+);
+if (
+  service.version !== pkg.version ||
+  service.protocol !== 1 ||
+  service.dataSchema !== 1
+)
+  throw Error(
+    "Bundled service version or compatibility contract does not match desktop.",
+  );
+const worker = await fs.readFile(path.join(serviceRoot, "worker.mjs"));
+if (createHash("sha256").update(worker).digest("hex") !== service.workerDigest)
+  throw Error("Bundled worker digest is invalid.");
+for (const file of [
+  "node.exe",
+  "runner/dist/index.js",
+  "scripts/desktop-service.mjs",
+  "scripts/pi-main/server.mjs",
+  "node_modules/wrangler/package.json",
+  "node_modules/qingdan-pi-cli/package.json",
+])
+  await fs.access(path.join(serviceRoot, file));
+for (const file of [
+  "scripts/desktop-service.mjs",
+  "scripts/pi-main/server.mjs",
+  "scripts/pi-local/mcp-connections.mjs",
+])
+  if (
+    !(await fs.readFile(path.join(serviceRoot, file))).equals(
+      await fs.readFile(path.join(root, file)),
+    )
+  )
+    throw Error("Bundled service source is stale: " + file);
+for (const file of [
+  ".dev.vars",
+  ".dev.vars.pi",
+  ".env",
+  ".wrangler",
+  ".tmp",
+  "runner-device",
+  "desktop-profile",
+])
+  if (
+    await fs.access(path.join(serviceRoot, file)).then(
+      () => true,
+      () => false,
+    )
+  )
+    throw Error("Private runtime state was packaged: " + file);
 let webFiles = 0;
 async function verifyWebDirectory(relative = "") {
   const directory = path.join(root, "dist", relative);
@@ -74,6 +128,10 @@ async function verifyWebDirectory(relative = "") {
 }
 await verifyWebDirectory();
 const html = await fs.readFile(path.join(resources, "web/index.html"), "utf8");
+if (
+  !html.includes('name="qingdan-build-version" content="' + pkg.version + '"')
+)
+  throw Error("Bundled renderer version marker is stale.");
 for (const asset of html.matchAll(/(?:src|href)="(\/assets\/[^"?#]+)"/g))
   await fs.access(path.join(resources, "web", asset[1]));
 for (const animal of [
@@ -112,14 +170,15 @@ for (const season of ["spring", "summer", "autumn", "winter"]) {
       `Packaged seasonal background is unavailable or stale: ${season}`,
     );
 }
-const feedFile = path.join(root, "output/desktop-release/latest.yml");
+const feedFile = path.join(
+  output,
+  pkg.version.includes("-beta.") ? "beta.yml" : "latest.yml",
+);
 try {
   const feed = require("js-yaml").load(await fs.readFile(feedFile, "utf8"));
   if (feed.version !== pkg.version || path.basename(feed.path) !== feed.path)
     throw Error("Unexpected installer feed version or path.");
-  const bytes = await fs.readFile(
-    path.join(root, "output/desktop-release", feed.path),
-  );
+  const bytes = await fs.readFile(path.join(output, feed.path));
   const checksum = createHash("sha512").update(bytes).digest("base64");
   if (
     checksum !== feed.sha512 ||

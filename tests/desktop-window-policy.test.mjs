@@ -264,18 +264,26 @@ test("preload grants the narrow bridge only to the app main frame", async () => 
   }
   const { bridge } = await preloadFixture();
   assert.deepEqual(Object.keys(bridge).sort(), [
+    "cancelUpdate",
     "checkForUpdates",
     "drag",
+    "getLocalService",
     "getPlacement",
     "getUpdateState",
     "hide",
     "installUpdate",
     "onBeforeQuit",
+    "onLocalServiceState",
     "onPlacement",
     "onUpdateState",
+    "openLocalWorkspace",
     "openWorkspace",
+    "recoverUpdate",
+    "retryLocalService",
     "setContext",
     "setLayout",
+    "startLocalService",
+    "stopLocalService",
     "version",
   ]);
   assert.equal(bridge.version, 1);
@@ -433,6 +441,7 @@ async function mainFixture() {
   const listeners = new Map();
   const electron = {
     app: {
+      getVersion: () => "0.3.12",
       setPath() {},
       setName() {},
       requestSingleInstanceLock: () => false,

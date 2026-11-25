@@ -206,7 +206,7 @@ function fixture({ running = true, chatJob = null } = {}) {
     },
   };
 }
-async function mount(f) {
+async function mount(f, detailHost = null) {
   await act(async () =>
     root.render(
       React.createElement(ChatPanel, {
@@ -216,7 +216,7 @@ async function mount(f) {
         embedded: true,
         requestCloud: f.requestCloud,
         requestLocal: f.requestLocal,
-        execution: { page: { id: "section", title: "轻单" } },
+        execution: { page: { id: "section", title: "轻单" }, detailHost },
       }),
     ),
   );
@@ -345,6 +345,37 @@ test("old composer execution requests remain recoverable with their original mod
   assert.deepEqual(starts[0], starts[1]);
 });
 
+test("chat and execution history remain usable when the batch list arrives before its detail", async (t) => {
+  const f = fixture();
+  const read = f.requestCloud;
+  const gate = Promise.withResolvers();
+  const history = document.createElement("section");
+  document.body.append(history);
+  t.after(() => history.remove());
+  f.requestCloud = async (path, options = {}) => {
+    const result = await read(path, options);
+    if (options.body?.name === "codex_get_run") await gate.promise;
+    return result;
+  };
+
+  await mount(f);
+  assert.ok(f.calls.some((call) => call.body?.name === "codex_get_run"));
+  assert.match(
+    document.querySelector('[aria-label="聊天消息记录"]').textContent,
+    /修复导航/,
+  );
+  await mount(f, history);
+  assert.match(history.textContent, /正在读取批次/);
+  assert.equal(history.querySelector(".agent-execution-run"), null);
+
+  await act(async () => gate.resolve());
+  assert.match(
+    history.querySelector(".agent-execution-run").textContent,
+    /正在检查导航/,
+  );
+  assert.doesNotMatch(history.textContent, /正在读取批次/);
+});
+
 test("project submission and Codex output share the chat timeline with a scoped stop control", async () => {
   const f = fixture();
   await mount(f);
@@ -404,27 +435,79 @@ test("a completed run displays its directly delivered result without paging thou
 });
 
 test("skipping completed logs preserves next-turn events that arrived before their state report", async () => {
-  const f = fixture(), cloud = f.requestCloud, cursors = [];
-  f.patchRun({ terminal: true, stopConfirmed: true, status: "verifying", output: "旧轮结果", resultReadComplete: true, resultSeq: 30000, lastSeq: 30002, reportRevision: 1 });
+  const f = fixture(),
+    cloud = f.requestCloud,
+    cursors = [];
+  f.patchRun({
+    terminal: true,
+    stopConfirmed: true,
+    status: "verifying",
+    output: "旧轮结果",
+    resultReadComplete: true,
+    resultSeq: 30000,
+    lastSeq: 30002,
+    reportRevision: 1,
+  });
   const incoming = [
-    { eventId: "future-message", seq: 30001, turnId: "next-turn", type: "output.delta", payload: { channel: "assistant", itemId: "future", text: "正在执行下一轮修改。" } },
-    { eventId: "future-command", seq: 30002, turnId: "next-turn", type: "output.delta", payload: { channel: "command", itemId: "future-command", text: "next turn output" } },
+    {
+      eventId: "future-message",
+      seq: 30001,
+      turnId: "next-turn",
+      type: "output.delta",
+      payload: {
+        channel: "assistant",
+        itemId: "future",
+        text: "正在执行下一轮修改。",
+      },
+    },
+    {
+      eventId: "future-command",
+      seq: 30002,
+      turnId: "next-turn",
+      type: "output.delta",
+      payload: {
+        channel: "command",
+        itemId: "future-command",
+        text: "next turn output",
+      },
+    },
   ];
   f.requestCloud = async (path, options = {}) => {
     const response = await cloud(path, options);
     if (options.body?.name === "codex_get_run") {
       const cursor = options.body.arguments.afterSeq || 0;
       cursors.push(cursor);
-      response.result = { ...response.result, events: cursor === 0 ? [] : incoming.filter(event => event.seq > cursor), nextAfterSeq: cursor === 0 ? 50 : 30002, hasMore: cursor === 0 };
+      response.result = {
+        ...response.result,
+        events:
+          cursor === 0 ? [] : incoming.filter((event) => event.seq > cursor),
+        nextAfterSeq: cursor === 0 ? 50 : 30002,
+        hasMore: cursor === 0,
+      };
     }
     return response;
   };
   await mount(f);
-  f.patchRun({ terminal: false, stopConfirmed: false, status: "running", turnId: "next-turn", reportRevision: 2, output: undefined, resultReadComplete: undefined, resultSeq: undefined });
-  await act(async () => new Promise(resolve => setTimeout(resolve, 800)));
+  f.patchRun({
+    terminal: false,
+    stopConfirmed: false,
+    status: "running",
+    turnId: "next-turn",
+    reportRevision: 2,
+    output: undefined,
+    resultReadComplete: undefined,
+    resultSeq: undefined,
+  });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 800)));
   assert.equal(cursors[1], 30000);
-  assert.match(document.querySelector(".agent-chat-execution").textContent, /正在执行下一轮修改/);
-  assert.match(document.querySelector(".agent-execution-program-line").textContent, /next turn output/);
+  assert.match(
+    document.querySelector(".agent-chat-execution").textContent,
+    /正在执行下一轮修改/,
+  );
+  assert.match(
+    document.querySelector(".agent-execution-program-line").textContent,
+    /next turn output/,
+  );
 });
 test("chat streaming text remains visible when the user cancels a reply", async () => {
   const f = fixture({

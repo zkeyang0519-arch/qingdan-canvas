@@ -1,551 +1,1067 @@
-/* The same Luma palette as the canvas. Project actions retain their original handlers. */
-.cloud-canvas .agent-workspace,
+/* Agent surfaces use the canvas's rounded typeface and the same controls on both entry points. */
+.studio-workspace,
 .agent-workspace-drawer {
-  --agent-ink: #262725;
-  --agent-text: #55574f;
-  --agent-muted: #858581;
-  --agent-line: #e9e9e6;
-  --agent-accent: #646d5c;
+  color-scheme: only light;
+  --studio-shell: #edf5ef;
+  --studio-panel: #fbfdfb;
+  --studio-paper: #f4f9f5;
+  --studio-mist: #e6f2e9;
+  --studio-active: #d8ecdf;
+  --studio-border: #a8c9b3;
+  --studio-shadow: #244f3410;
+  --studio-on: #ffffff;
+  --agent-ink: #253d2e;
+  --agent-text: #405a48;
+  --agent-muted: #526c5b;
+  --agent-line: #d5e6da;
+  --agent-accent: #356b48;
+  --agent-surface: var(--studio-panel);
+  --agent-font: "Qingdan Rounded", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --studio-gutter: clamp(18px, 3vw, 42px);
   --agent-body-weight: 400;
   --agent-emphasis-weight: 500;
-  --agent-font: var(
-    --font-sans,
-    "Qingdan Rounded",
-    "Microsoft YaHei",
-    sans-serif
-  );
   font-family: var(--agent-font);
   color: var(--agent-text);
 }
-.cloud-canvas .agent-workspace {
+.studio-workspace [hidden] {
+  display: none !important;
+}
+.cloud-canvas .studio-workspace {
   display: grid;
-  grid-template-columns: 212px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  grid-template-areas: "projects main" "tools main";
-  gap: 0;
-  background: #fff;
-}
-.cloud-canvas .agent-workspace-sidebar {
-  grid-area: projects;
-  width: auto;
-  flex-basis: auto;
-  min-height: 0;
-  padding: 24px 12px 12px;
-  border-right: 1px solid var(--agent-line);
-  background: #f7f7f6;
-}
-.cloud-canvas .agent-sidebar-heading {
-  padding: 0 9px 18px;
-  color: #56584f;
-  font-size: 12px;
-}
-.cloud-canvas .agent-sidebar-heading small {
-  background: #edeee9;
-  color: #909488;
-  font-size: 10px;
-  font-weight: 400;
-}
-.cloud-canvas .agent-project-item {
-  min-height: 49px;
-  margin: 4px 0;
-  padding: 12px 11px;
-  border: 1px solid transparent;
-  border-radius: 13px;
-  font-size: 12px;
-  color: #74776d;
-  gap: 9px;
-}
-.cloud-canvas .agent-project-item > svg {
-  box-sizing: content-box;
-  width: 14px;
-  height: 14px;
-  padding: 6px;
-  border-radius: 9px;
-  color: #8a927d;
-  background: #e3e8dc;
-  opacity: 1;
-}
-.cloud-canvas .agent-project-item:nth-child(3n + 1) > svg {
-  color: #998967;
-  background: #ece4d4;
-}
-.cloud-canvas .agent-project-item:nth-child(3n) > svg {
-  color: #8d829d;
-  background: #e5e1ed;
-}
-.cloud-canvas .agent-project-item:hover {
-  background: #eeefe9;
-}
-.cloud-canvas .agent-project-item[aria-current="page"] {
-  background: #fff;
-  border-color: #e6e7df;
-  color: var(--agent-ink);
-  box-shadow: 0 2px 5px #00000002;
-  font-weight: 400;
-}
-.cloud-canvas .agent-project-item > small {
-  font-size: 10px;
-  color: #93988a;
-}
-.cloud-canvas .agent-project-item[aria-current="page"] > small {
-  color: #858b7c;
-  background: #f4f5f0;
-}
-.cloud-canvas .agent-workspace-utilities {
-  grid-area: tools;
+  grid-template-columns: clamp(173px, 16vw, 216px) minmax(0, 1fr);
+  gap: 7px;
+  padding: 8px;
   min-width: 0;
-  padding: 12px 15px 20px;
-  border-right: 1px solid var(--agent-line);
-  background: #f7f7f6;
+  min-height: 0;
+  flex: 1;
+  position: relative;
+  background: var(--studio-shell);
+  overflow: hidden;
+  font-size: 15px;
+}
+.studio-rail {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  min-height: 0;
+  padding: 18px 8px 8px;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 13px;
+  gap: 16px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
-.cloud-canvas .agent-workspace-utilities .agent-project-tools {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
+.studio-identity,
+.studio-device,
+.studio-link,
+.studio-inbox,
+.studio-project-switch > summary,
+.studio-next,
+.studio-brief,
+.studio-page-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.cloud-canvas .agent-workspace-utilities .agent-project-tools > button {
-  padding: 10px 9px;
-  background: #fff;
-  border: 1px solid var(--agent-line);
-  border-radius: 11px;
-  justify-content: flex-start;
-  gap: 7px;
-  font-size: 11px;
-  color: #6c7163;
+.studio-identity {
+  padding: 0 9px;
+  color: var(--agent-muted);
+  font-size: 14px;
 }
-.cloud-canvas
-  .agent-workspace-utilities
-  .agent-project-tools
-  > button:first-child {
-  grid-column: 1/-1;
-  min-height: 43px;
+.studio-identity b {
+  font-size: 20px;
   color: var(--agent-ink);
+  font-weight: 500;
 }
-.cloud-canvas .agent-workspace-utilities .agent-project-tools > button:hover {
-  background: #f0f2eb;
+.studio-identity .brand-mark {
+  background: var(--agent-accent);
+  width: 25px;
+  height: 28px;
+  border-radius: 8px;
 }
-.cloud-canvas .agent-workspace-utilities .agent-device-tools {
-  border: 0;
-  padding: 0 3px;
-  justify-content: center;
+.studio-identity .brand-mark::before,
+.studio-identity .brand-mark::after {
+  background: var(--studio-on);
 }
-.cloud-canvas .agent-workspace-utilities .agent-connection-chip {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: #8e9485;
-  font-size: 10px;
+.studio-more > summary {
+  color: var(--agent-text);
 }
-.cloud-canvas .agent-workspace-main {
-  grid-area: main;
+.studio-project-switch,
+.studio-more {
+  position: relative;
+  min-width: 0;
+}
+.studio-project-switch summary,
+.studio-more summary {
+  list-style: none;
+  cursor: pointer;
+}
+.studio-project-switch summary::-webkit-details-marker,
+.studio-more summary::-webkit-details-marker {
+  display: none;
+}
+.studio-workspace .studio-project-switch > summary {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 14px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 66px;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--studio-paper);
+  color: var(--agent-ink);
+  box-shadow: 0 1px 4px var(--studio-shadow);
+}
+.studio-project-switch > summary > svg {
+  flex-shrink: 0;
+  justify-self: center;
+}
+.studio-project-switch > summary > span {
+  gap: 3px;
+  text-align: left;
+}
+.studio-project-switch summary > span,
+.studio-device > span {
+  min-width: 0;
+  display: grid;
+  flex: 1;
+}
+.studio-project-switch summary b {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+.studio-project-switch small,
+.studio-group-name,
+.studio-page-heading small,
+.studio-next small,
+.studio-brief small {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--agent-muted);
+}
+.studio-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(280px, 85vw);
+  max-height: 44dvh;
+  overflow: auto;
+  z-index: 15;
+  box-shadow: 0 6px 24px var(--studio-shadow);
+  border: 1px solid var(--agent-line);
+  border-radius: 16px;
+  padding: 5px;
+  background: var(--studio-panel);
+}
+.studio-project-switch > .studio-menu {
+  width: 100%;
+}
+.studio-workspace .studio-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-height: 36px;
+  height: auto;
+  margin: 0;
+  padding: 8px 10px;
+  background: transparent;
+  color: var(--agent-text);
+  border: 0;
+  border-radius: 11px;
+  text-align: start;
+  box-shadow: none;
+}
+.studio-workspace .studio-menu .agent-project-item span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.studio-workspace .studio-menu button[aria-current="page"] {
+  background: var(--studio-active);
+}
+.studio-nav {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  gap: 2px;
+}
+.studio-group-name {
+  margin: 0;
+  padding: 4px 10px;
+  font-weight: 500;
+}
+.studio-desktop-links {
+  display: contents;
+}
+.studio-desktop-links .studio-group-name {
+  margin-top: 15px;
+}
+.studio-nav-marker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  border-radius: 999px;
+  background: var(--studio-active);
+}
+.studio-workspace button.studio-link,
+.studio-workspace button.studio-inbox,
+.studio-workspace button.studio-device {
+  width: 100%;
+  min-width: 0;
+  min-height: 41px;
+  padding: 9px 12px;
+  text-align: start;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: none;
+  background: transparent;
+  color: var(--agent-text);
+  font-size: 14px;
+}
+.studio-nav > .studio-link,
+.studio-desktop-links > .studio-link {
+  position: relative;
+  z-index: 1;
+}
+.studio-workspace .studio-link[aria-current="page"] {
+  font-weight: 500;
+  color: var(--agent-accent);
+}
+.studio-rail-foot .studio-link[aria-current="page"] {
+  background: var(--studio-active);
+}
+.studio-workspace .studio-link small,
+.studio-workspace .studio-inbox small {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.studio-rail-foot {
+  display: grid;
+  gap: 7px;
+  margin-top: auto;
+}
+.studio-workspace .studio-inbox[data-pending="true"] {
+  background: light-dark(#f5eedb, #433e2e);
+  color: light-dark(#78551b, #e1cfa8);
+}
+.studio-device .agent-connection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--agent-muted);
+  font-size: 11px;
+}
+.studio-device .agent-connection-chip i {
+  width: 6px;
+  height: 6px;
+}
+.studio-more,
+.studio-mobile-alert,
+.studio-compact-label {
+  display: none;
+}
+.cloud-canvas .studio-workspace .studio-main {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 26px;
+  background: var(--studio-panel);
+  box-shadow: 0 4px 17px var(--studio-shadow);
+  overflow: hidden;
+}
+.studio-workspace .agent-workspace-columns {
+  display: grid;
+  flex: 1;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  gap: 0;
+}
+.studio-workspace
+  .agent-workspace-columns[data-pane]
+  > .agent-workspace-chat-pane:not([hidden]) {
+  display: flex;
+}
+.studio-workspace
+  .agent-workspace-columns[data-pane]
+  > .agent-workspace-task-pane:not([hidden]) {
+  display: block;
+}
+.studio-workspace :is(.agent-workspace-chat-pane, .agent-workspace-task-pane) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   min-width: 0;
   min-height: 0;
 }
-.cloud-canvas .agent-workspace-columns {
-  grid-template-columns: minmax(0, 1fr) 330px;
-  gap: 0;
+.studio-workspace .agent-chat-panel.is-embedded {
+  flex: 1;
+  min-height: 0;
   padding: 0;
+  overflow: auto;
 }
-.cloud-canvas .agent-workspace-chat-pane {
+.studio-chat-surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+  padding: 0 var(--studio-gutter) 18px;
+}
+.studio-workspace .studio-chat-surface > .agent-chat-conversation {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
   border: 0;
-  border-radius: 0;
-  background: #fff;
-}
-.cloud-canvas .agent-workspace-task-pane {
-  border: 0;
-  border-left: 1px solid var(--agent-line);
-  border-radius: 0;
-  background: #f7f7f6;
-}
-.cloud-canvas .agent-pane-title {
-  min-height: 64px;
-  padding: 20px 22px;
-  border-bottom: 1px solid var(--agent-line);
-}
-.cloud-canvas .agent-pane-title h2 {
-  font-size: 13px;
-  font-weight: 500;
-}
-.cloud-canvas .agent-pane-title svg {
-  color: #8a927d;
-}
-.cloud-canvas .agent-pane-title .agent-pane-count {
-  color: #92988a;
+  box-shadow: none;
   background: transparent;
-  font-size: 10px;
 }
-.cloud-canvas .agent-workspace-checklist {
-  padding: 18px 20px 24px;
+.studio-page-heading {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 20px 0 0;
+  flex-shrink: 0;
 }
-.cloud-canvas .agent-workspace .agent-chat-panel.is-embedded {
-  padding: 20px 34px 24px;
+.studio-page-heading > div {
+  min-width: 0;
 }
-.cloud-canvas .agent-workspace .agent-chat-context-bar {
-  padding: 11px 13px;
-  margin-bottom: 13px;
-  border: 1px solid var(--agent-line);
-  border-radius: 12px;
-  background: #f7f7f4;
-  color: #7b8170;
-  font-size: 11px;
+.studio-workspace .studio-page-heading h2,
+.studio-workspace .agent-pane-title h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  font: 500 clamp(21px, 2.6vw, 29px)/1.4 var(--agent-font);
+  color: var(--agent-ink);
+  overflow-wrap: anywhere;
 }
-.cloud-canvas .agent-workspace .agent-chat-context-bar button {
-  background: #fff;
-  color: #555e4c;
-  border: 1px solid #e0e4d8;
-  border-radius: 9px;
+.studio-workspace .agent-chat-toolbar {
+  justify-content: flex-end;
+  gap: 5px;
 }
-.cloud-canvas .agent-workspace .agent-chat-toolbar {
-  color: #8f9487;
+.studio-workspace .agent-chat-messages {
+  padding: 10px 4px 16px;
+  gap: 18px;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
-.cloud-canvas .agent-workspace .agent-chat-toolbar > button {
-  border-radius: 9px;
-  color: #7e8474;
-}
-.cloud-canvas .agent-workspace .agent-chat-toolbar select {
-  border-color: var(--agent-line);
-  border-radius: 9px;
-  font-size: 11px;
-}
-.cloud-canvas .agent-workspace .agent-chat-messages {
-  gap: 27px;
-  padding: 16px 0 25px;
-}
-.cloud-canvas .agent-workspace .agent-chat-message {
+.studio-workspace .agent-chat-message {
   width: 100%;
   max-width: 100%;
   margin-inline: 0;
-  font-size: 14px;
-  font-weight: 400;
+  font-size: 15px;
 }
-.cloud-canvas .agent-workspace .agent-chat-user {
-  width: fit-content;
-  max-width: 85%;
-  margin-left: auto;
-  background: #f3f3f1;
-  border-radius: 17px 5px 17px 17px;
-  padding: 12px 17px;
-  color: var(--agent-ink);
-}
-.cloud-canvas .agent-workspace .agent-chat-message > .agent-message-author {
-  color: #7f8774;
-  font-weight: 400;
-  font-size: 11px;
-  margin-bottom: 12px;
-}
-.cloud-canvas .agent-workspace .agent-message-author svg {
-  padding: 5px;
-  box-sizing: content-box;
-  color: #fff;
-  background: #30342b;
-  border-radius: 8px;
-}
-.cloud-canvas .agent-workspace .agent-chat-markdown {
-  font: 400 14px/1.9 var(--agent-font);
-  color: #53574a;
-}
-.cloud-canvas
-  .agent-workspace
-  .agent-chat-markdown
-  :is(h1, h2, h3, h4, h5, h6, strong) {
-  font-weight: 500;
-  color: #292e22;
-}
-.cloud-canvas .agent-workspace .agent-chat-markdown blockquote {
-  background: #f6f7f2;
-  border-left-color: #bdc7ad;
-}
-.cloud-canvas .agent-workspace .agent-chat-proposal {
-  background: #f8f9f5;
-  border: 1px solid var(--agent-line);
-  border-radius: 14px;
-  padding: 15px;
-}
-.cloud-canvas .agent-workspace .agent-chat-composer {
-  border: 1px solid #e4e7dd;
-  border-radius: 20px;
-  box-shadow: 0 2px 8px #00000002;
-  background: #fafaf8;
-  padding: 16px;
-}
-.cloud-canvas .agent-workspace .agent-chat-composer:focus-within {
-  border-color: #bfc8b2;
-  box-shadow: 0 0 0 2px #e4e9dc;
-}
-.cloud-canvas .agent-workspace .agent-chat-composer textarea {
-  font-family: var(--agent-font);
-  color: #383e2e;
-  font-size: 14px;
+.studio-workspace .agent-chat-assistant {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
   background: transparent;
-}
-.cloud-canvas .agent-workspace .agent-chat-composer > button {
-  border-radius: 50%;
-  background: var(--agent-ink);
-  color: white;
   box-shadow: none;
-  border-color: var(--agent-ink);
 }
-.cloud-canvas .agent-workspace .agent-composer-context button {
-  border-radius: 9px;
-  border-color: #e2e6d9;
-  background: #f4f6ef;
-  color: #7c866e;
+/* Keep message attribution available to screen readers without a bot header. */
+.studio-workspace .agent-chat-assistant > .agent-message-author {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
-.cloud-canvas .agent-workspace .agent-composer-assistant {
-  color: #8a947d;
-  font-size: 11px;
+.studio-workspace .agent-chat-user {
+  width: fit-content;
+  max-width: 90%;
+  margin-left: auto;
+  border: 0;
+  border-radius: 20px 20px 8px 20px;
+  background: var(--studio-mist);
+  color: var(--agent-ink);
+  padding: 10px 16px;
 }
-.cloud-canvas .agent-workspace .agent-chat-welcome {
-  width: min(100%, 540px);
-  padding-inline: 0;
+.studio-workspace .agent-chat-message .agent-message-author {
+  color: var(--agent-muted);
+  font-size: 12px;
+  margin-bottom: 6px;
 }
-.cloud-canvas .agent-workspace .agent-chat-welcome-icon {
-  background: #f1f3eb;
-  color: #7d8a6b;
-  border-radius: 15px;
+.studio-workspace .agent-chat-markdown {
+  font-family: var(--agent-font);
+  color: var(--agent-text);
+  font-size: 15px;
+  line-height: 1.72;
+  min-width: 0;
 }
-.cloud-canvas .agent-workspace .agent-chat-welcome h3 {
-  font-size: 21px;
+.studio-workspace .agent-chat-markdown .agent-chat-timeline-heading {
+  font-family: var(--agent-font);
+}
+.studio-workspace .agent-chat-welcome {
+  width: 100%;
+  max-width: 580px;
+  margin: auto;
+  align-self: center;
+}
+.studio-workspace .agent-chat-welcome :is(button, .agent-chat-welcome-icon) {
+  background: var(--studio-mist);
+  color: var(--agent-accent);
+  border-radius: 16px;
+}
+.studio-workspace .agent-chat-composer {
+  width: 100%;
+  max-width: none;
+  margin: 8px 0 0;
+  padding: 12px 15px;
+  border: 1px solid var(--agent-line);
+  border-radius: 24px;
+  background: var(--studio-paper);
+  box-shadow: 0 3px 14px var(--studio-shadow);
+}
+.studio-workspace .agent-chat-composer textarea {
+  background: transparent;
+  color: var(--agent-ink);
+  font: 400 15px/1.6 var(--agent-font);
+}
+.studio-workspace .agent-composer-assistant {
+  color: var(--agent-muted);
+}
+.studio-workspace .agent-chat-composer > .primary {
+  border-radius: 999px;
+}
+.studio-workspace .agent-composer-context:empty {
+  display: none;
+}
+.studio-workspace .agent-message-media {
+  gap: 4px;
+  border-radius: 20px;
+  overflow: hidden;
+}
+.studio-workspace .agent-message-media button img {
+  object-fit: cover;
+}
+.studio-inbox-page,
+.studio-resource,
+.studio-film-page,
+.studio-workspace .agent-workspace-task-pane {
+  padding: 0 var(--studio-gutter) 22px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.studio-resource,
+.studio-film-page,
+.studio-inbox-page {
+  width: 100%;
+  max-width: 1120px;
+  margin-inline: auto;
+}
+.studio-film-surface {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.studio-workspace .agent-workspace-task-pane > .agent-pane-title {
+  display: flex;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 24px 0 14px;
+  border: 0;
+}
+.studio-workspace .agent-workspace-checklist {
+  padding: 12px 0 0;
+}
+.studio-workspace .agent-checklist-row {
+  background: var(--studio-paper);
+  border-radius: 13px;
+  color: var(--agent-ink);
+  min-width: 0;
+}
+.studio-workspace .agent-checklist-row label {
+  font-size: 14px;
+  line-height: 1.65;
+}
+.studio-history {
+  padding: 14px 0;
+}
+.studio-empty {
+  padding: 20px 0;
+  color: var(--agent-muted);
+}
+.studio-workspace .agent-pending-notice {
+  padding: 14px 16px;
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  border-radius: 18px;
+  background: var(--studio-mist);
+  margin: 8px 0;
+}
+.studio-workspace .agent-pending-notice p {
+  margin: 0;
+}
+.studio-workspace .studio-resource .agent-device-card {
+  border-radius: 19px;
+  padding: 16px;
+  background: var(--studio-paper);
+  color: var(--agent-text);
+  border-color: var(--agent-line);
+}
+.studio-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 18px;
+  background: var(--studio-mist);
+}
+.studio-workspace .studio-tabs button {
+  padding: 7px 12px;
+  border: 0;
+  min-height: 33px;
+  border-radius: 14px;
+  font: 400 14px/1.4 var(--agent-font);
+  background: transparent;
+  color: var(--agent-muted);
+}
+.studio-workspace .studio-tabs button[aria-pressed="true"] {
+  color: var(--agent-accent);
+  background: var(--studio-panel);
+  box-shadow: 0 1px 4px var(--studio-shadow);
   font-weight: 500;
 }
-.cloud-canvas .agent-workspace .agent-chat-welcome button {
-  border-color: #e5e8df;
-  border-radius: 13px;
-  background: #fff;
-  color: #7f8970;
+.studio-workspace .studio-film-page .film-studio {
+  gap: 16px;
 }
-.cloud-canvas .agent-workspace .agent-chat-welcome button:hover:not(:disabled) {
-  background: #f7f8f4;
+.studio-workspace .studio-film-page .film-fields {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
 }
-.cloud-canvas .agent-workspace .agent-checklist-tasks > li {
-  border-color: #e7e9e2;
-  border-radius: 11px;
-  background: transparent;
+.studio-workspace .studio-film-page .film-editor {
+  width: 100%;
+  gap: 16px;
 }
-.cloud-canvas .agent-workspace .agent-checklist-row label {
-  font-size: 13px;
-  font-weight: 400;
+.studio-handoff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.studio-handoff a {
+  text-decoration: none;
+  padding: 8px 14px;
+  color: var(--studio-on);
+  background: var(--agent-accent);
+  border-radius: 999px;
+}
+.studio-film-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.studio-version-history {
+  display: grid;
+  gap: 8px;
+  max-width: 100%;
+}
+.studio-version-history:has(.studio-surface) {
+  width: 100%;
+}
+.studio-surface,
+.studio-workspace .film-block,
+.studio-next {
+  min-width: 0;
+  padding: 15px 17px;
+  border: 0;
+  border-radius: 20px;
+  background: var(--studio-paper);
+}
+.studio-workspace .film-studio :is(h3, h4, p, pre) {
+  margin: 0;
+  font-family: var(--agent-font);
   color: var(--agent-ink);
 }
-.cloud-canvas .agent-workspace .agent-checklist-row input {
-  accent-color: #7e8b6d;
+.studio-workspace .film-studio h3 {
+  font-size: 17px;
+  margin: 0 0 9px;
 }
-.cloud-canvas .agent-workspace .agent-task-actions button {
-  color: #838d75;
-  border-radius: 8px;
+.studio-workspace .film-studio p {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
-.cloud-canvas .agent-workspace .agent-task-actions .agent-task-delete {
-  color: #a18978;
+.studio-film-section,
+.studio-surface {
+  display: grid;
+  gap: 10px;
 }
-.cloud-canvas .agent-workspace .agent-checklist-selection {
-  border-color: #e6e9de;
-  background: #f2f5eb;
-  border-radius: 11px;
-}
-.cloud-canvas .agent-workspace .agent-checklist-editor {
-  border-color: #e1e6d9;
+.studio-workspace
+  .film-editor
+  :is(input:not([type="checkbox"]):not([type="range"]), select, textarea),
+.studio-workspace .film-filters :is(input, select) {
   border-radius: 13px;
-  background: #fff;
+  border: 1px solid var(--studio-border);
+  background: var(--studio-panel);
+  color: var(--agent-ink);
+  padding: 8px 11px;
+  font-family: var(--agent-font);
 }
-.cloud-canvas .agent-workspace .agent-completed-tasks {
-  border-color: #e3e7dc;
-  border-radius: 13px;
+.studio-workspace
+  :is(.film-row, .film-asset, .film-order, .agent-memory-list > li) {
+  padding: 11px 13px;
+  background: var(--studio-paper);
+  border: 0;
+  border-radius: 16px;
+  color: var(--agent-ink);
+  overflow-wrap: anywhere;
 }
-.cloud-canvas .agent-workspace .agent-card-heading {
-  color: #79836d;
+.studio-workspace .film-asset img {
+  width: clamp(68px, 12vw, 140px);
+  height: 68px;
+  border-radius: 12px;
+  object-fit: cover;
 }
-.cloud-canvas .agent-workspace .agent-note {
-  color: #8a9380;
-  font-size: 11px;
+.studio-version-history figure {
+  margin: 0;
 }
-.cloud-canvas .agent-workspace .agent-success {
-  border-radius: 10px;
-  background: #eef3e7;
-  color: #667b4e;
+.studio-delivery > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-block: 6px;
+  border-bottom: 1px solid var(--agent-line);
 }
-.cloud-canvas .agent-workspace .agent-add-task {
-  border-color: #dfe5d6;
-  border-radius: 10px;
-  background: #fff;
+.studio-delivery > div:last-child {
+  border-bottom: 0;
 }
-.cloud-canvas .agent-workspace .primary {
-  background: var(--agent-ink);
-  color: white;
-  border-color: var(--agent-ink);
-  border-radius: 11px;
+.studio-delivery > div > span,
+.studio-draft-indicator {
+  color: var(--agent-muted);
+  font-size: 13px;
+}
+.studio-delivery strong {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.studio-brief,
+.studio-next {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.studio-brief > div {
+  flex: 1 1 200px;
+}
+.studio-next {
+  background: var(--studio-mist);
+}
+.studio-next strong,
+.studio-next small {
+  display: block;
+}
+.studio-workspace
+  :is(
+    .studio-page-heading,
+    .studio-brief,
+    .studio-next,
+    .studio-version-history,
+    .film-studio .agent-actions,
+    .studio-history,
+    .agent-memory-tabs
+  )
+  button,
+.agent-workspace-drawer :is(.film-actions, .agent-actions) button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--studio-mist);
+  color: var(--agent-ink);
+  font-size: 13px;
+  padding: 6px 12px;
+}
+.studio-workspace button.primary,
+.agent-workspace-drawer button.primary {
+  border-radius: 999px;
+  background: var(--agent-accent);
+  color: var(--studio-on);
+}
+.studio-workspace .film-actions button.primary,
+.studio-workspace .studio-next button.primary {
+  background: var(--agent-accent);
+  color: var(--studio-on);
+}
+.studio-storyboard {
+  overflow: hidden;
+  border-radius: 22px;
+  background: var(--studio-mist);
+}
+.studio-storyboard-frame {
+  position: relative;
+  isolation: isolate;
+}
+.studio-storyboard-frame img {
+  display: block;
+  width: 100%;
+  height: clamp(125px, 18vw, 220px);
+  object-fit: cover;
+}
+.studio-storyboard[data-expanded="true"] .studio-storyboard-frame {
+  display: grid;
+  place-items: center;
+  background: #202922;
+}
+.studio-storyboard[data-expanded="true"] .studio-storyboard-frame img {
+  height: auto;
+  aspect-ratio: var(--frame-ratio);
+  width: min(
+    100%,
+    calc(38dvh * var(--frame-scale)),
+    calc(300px * var(--frame-scale))
+  );
+  object-fit: cover;
+}
+.studio-storyboard-bar {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 27px 14px 10px;
+  color: #fff;
+  background: linear-gradient(0deg, #15261bd9, #15261b00);
+}
+.studio-storyboard-bar span,
+.studio-storyboard-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.studio-workspace .studio-storyboard-bar button {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: #fffef4ec;
+  color: #25382b;
+}
+.studio-storyboard-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 13px;
+  font-variant-numeric: tabular-nums;
+}
+.studio-storyboard-controls input {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--agent-accent);
+}
+.studio-storyboard-controls p {
+  flex-basis: 100%;
 }
 .agent-workspace-drawer {
-  border-radius: 20px;
-  border-color: #e3e7dd;
-  box-shadow: 0 20px 65px #29312018;
+  border-radius: 24px 0 0 24px;
+  background: var(--studio-panel);
+  color: var(--agent-text);
 }
-.agent-workspace-drawer :is(button, input, select, textarea) {
-  font-family: var(--agent-font);
+.studio-workspace :is(input, select, textarea) {
+  accent-color: var(--agent-accent);
 }
-.agent-workspace-drawer .primary {
-  color: #fff;
-  background: #2b3025;
-  border-color: #2b3025;
+.studio-workspace :is(button, summary):focus-visible,
+.agent-workspace-drawer :is(button, summary):focus-visible {
+  outline: 2px solid var(--agent-accent);
+  outline-offset: 2px;
 }
-.agent-workspace-drawer button {
-  border-radius: 10px;
+/* The editable area stays seamless while typing. */
+.studio-workspace .agent-chat-composer textarea:is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
+  border: 0;
+  background: transparent;
 }
-.agent-workspace-drawer-backdrop {
-  background: #272a2426;
+.studio-workspace
+  :is(
+    .agent-device-card,
+    .agent-chat-context-bar,
+    .agent-chat-proposal,
+    .agent-checklist-editor,
+    .agent-memory-panel,
+    .agent-project-overview,
+    .agent-summary-source,
+    .agent-native-request,
+    .agent-execution-settings
+  ),
+.agent-workspace-drawer :is(.agent-device-card, .film-block) {
+  background: var(--studio-paper);
+  color: var(--agent-text);
+  border-color: var(--agent-line);
 }
-
-@media (min-width: 1500px) {
-  .cloud-canvas .agent-workspace {
-    grid-template-columns: 230px minmax(0, 1fr);
-  }
-  .cloud-canvas .agent-workspace-columns {
-    grid-template-columns: minmax(0, 1fr) 350px;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-panel.is-embedded {
-    padding-inline: 48px;
+.studio-workspace :is(input:not([type="checkbox"]), textarea, select),
+.agent-workspace-drawer :is(input:not([type="checkbox"]), textarea, select) {
+  background: var(--studio-panel);
+  color: var(--agent-ink);
+}
+.studio-workspace .agent-chat-composer textarea {
+  background: transparent;
+}
+.studio-workspace
+  :is(
+    .agent-note,
+    .film-editor small,
+    .agent-project-overview,
+    .agent-chat-markdown p
+  ) {
+  color: var(--agent-text);
+}
+@media (hover: hover) {
+  .studio-workspace
+    :is(
+      .studio-link,
+      .studio-menu button,
+      .studio-more summary,
+      .studio-device,
+      .studio-inbox
+    ):hover:not([aria-current="page"]) {
+    background: var(--studio-mist);
   }
 }
-@media (max-width: 1180px) and (min-width: 881px) {
-  .cloud-canvas .agent-workspace {
-    grid-template-columns: 185px minmax(0, 1fr);
+@media (prefers-reduced-motion: no-preference) {
+  .studio-nav-marker {
+    transition:
+      transform 210ms cubic-bezier(0.22, 0.75, 0.25, 1),
+      width 180ms,
+      height 180ms;
   }
-  .cloud-canvas .agent-workspace-columns {
-    grid-template-columns: minmax(0, 1fr) 300px;
+  .studio-workspace
+    :is(
+      .studio-link,
+      .studio-tabs button,
+      .studio-next button,
+      .film-actions button
+    ) {
+    transition:
+      background-color 150ms,
+      color 150ms,
+      box-shadow 150ms;
   }
-  .cloud-canvas .agent-workspace .agent-chat-panel.is-embedded {
-    padding: 18px 22px 21px;
+  .studio-workspace
+    :is(
+      .studio-film-page,
+      .studio-resource,
+      .studio-inbox-page,
+      .agent-workspace-task-pane,
+      .studio-chat-surface
+    ):not([hidden]) {
+    animation: studio-enter 180ms cubic-bezier(0.22, 0.75, 0.25, 1);
   }
-  .cloud-canvas .agent-workspace-checklist {
-    padding-inline: 16px;
-  }
-  .cloud-canvas .agent-workspace-utilities {
-    padding: 12px;
-  }
-  .cloud-canvas .agent-workspace-utilities .agent-project-tools > button {
-    font-size: 10px;
-    padding: 9px 7px;
-    gap: 5px;
+  @keyframes studio-enter {
+    from {
+      opacity: 0.8;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 }
-@media (max-width: 880px) {
-  .cloud-canvas .agent-workspace {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas: "main" "tools";
+@media (max-width: 760px) {
+  .cloud-canvas .studio-workspace {
+    grid-template: minmax(0, auto) minmax(0, 1fr) / minmax(0, 1fr);
+    padding: 4px;
+    gap: 4px;
+    --studio-gutter: 14px;
   }
-  .cloud-canvas .agent-workspace-sidebar {
-    display: none;
-  }
-  .cloud-canvas .agent-workspace-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .cloud-canvas .agent-workspace-task-pane {
-    border-left: 0;
-  }
-  .cloud-canvas .agent-workspace-utilities {
-    flex-direction: row;
+  .studio-rail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
     align-items: center;
-    padding: 8px 14px;
-    border-top: 1px solid var(--agent-line);
-    border-right: 0;
-    gap: 12px;
-    overflow-x: auto;
+    gap: 4px;
+    padding: 2px 5px;
+    overflow: visible;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-project-tools {
-    display: flex;
+  .studio-identity {
+    padding: 0 4px;
     gap: 6px;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-project-tools > button,
-  .cloud-canvas
-    .agent-workspace-utilities
-    .agent-project-tools
-    > button:first-child {
-    min-height: 35px;
-    padding: 7px 9px;
-    font-size: 10px;
+  .studio-identity b {
+    font-size: 17px;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-device-tools {
-    margin-left: auto;
-    flex-shrink: 0;
+  .studio-project-switch {
+    justify-self: end;
+    max-width: 100%;
+    width: fit-content;
+    min-width: 0;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-connection-chip {
-    font-size: 9px;
-  }
-  .cloud-canvas .agent-mobile-navigation {
-    border-bottom: 1px solid var(--agent-line);
-    background: #fff;
-    padding: 12px 17px;
-  }
-  .cloud-canvas .agent-mobile-navigation select {
-    background: #f7f8f4;
-    border-color: var(--agent-line);
-    border-radius: 9px;
-    color: #59614f;
-    font-family: var(--agent-font);
-  }
-  .cloud-canvas .agent-mobile-tabs {
-    border-radius: 18px;
-    padding: 3px;
-    background: #f3f5ee;
-  }
-  .cloud-canvas .agent-mobile-tabs > button {
-    border-radius: 15px;
-    color: #838e75;
-  }
-  .cloud-canvas .agent-mobile-tabs > button[aria-selected="true"] {
-    background: #fff;
-    color: #303a25;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-panel.is-embedded {
-    padding: 17px 23px 20px;
-  }
-}
-@media (max-width: 600px) {
-  .cloud-canvas .agent-workspace .agent-chat-panel.is-embedded {
-    padding: 13px 16px 17px;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-user {
-    max-width: 94%;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-markdown {
-    font-size: 13px;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-composer {
-    padding: 13px;
-    border-radius: 18px;
-  }
-  .cloud-canvas .agent-workspace .agent-chat-composer textarea {
-    font-size: 13px;
-  }
-  .cloud-canvas .agent-workspace-utilities {
-    padding: 7px 10px;
+  .studio-workspace .studio-project-switch > summary {
+    padding: 10px 12px;
+    min-height: 44px;
+    border-radius: 13px;
     gap: 8px;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-project-tools > button {
-    padding: 7px 8px;
-    gap: 5px;
+  .studio-project-switch summary small {
+    display: none;
   }
-  .cloud-canvas
-    .agent-workspace-utilities
-    .agent-project-tools
-    > button
-    > span {
+  .studio-project-switch .studio-menu,
+  .studio-more .studio-menu {
+    left: auto;
+    right: 0;
+  }
+  .studio-nav {
+    grid-column: 1/-1;
+    display: grid;
+    grid-template-columns:
+      minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr)
+      minmax(46px, 0.72fr);
+    align-items: center;
+    gap: 2px;
+  }
+  .studio-nav > .studio-link .studio-wide-label,
+  .studio-version-label {
+    display: none;
+  }
+  .studio-nav > .studio-link .studio-compact-label {
     display: inline;
   }
-  .cloud-canvas .agent-workspace-utilities .agent-connection-chip {
-    max-width: 82px;
-    white-space: normal;
+  .studio-film-bar {
+    gap: 4px;
   }
-  .cloud-canvas .agent-workspace-checklist {
-    padding: 14px 17px 24px;
+  .studio-film-bar .studio-tabs {
+    gap: 0;
+    padding: 3px;
   }
-  .cloud-canvas .agent-pane-title {
-    min-height: 55px;
-    padding: 17px;
+  .studio-film-bar .studio-tabs button {
+    padding-inline: 6px;
+  }
+  .studio-workspace .studio-version-history > button {
+    gap: 4px;
+    padding-inline: 8px;
+  }
+  .studio-nav > .studio-link {
+    white-space: nowrap;
+    justify-content: center;
+    min-height: 36px;
+    padding: 6px 3px;
+    gap: 3px;
+    font-size: 13px;
+  }
+  .studio-nav > .studio-link svg,
+  .studio-nav > .studio-link small,
+  .studio-group-name,
+  .studio-desktop-links,
+  .studio-rail-foot {
+    display: none;
+  }
+  .studio-more {
+    display: block;
+  }
+  .studio-project-switch[open] {
+    z-index: 5;
+  }
+  .studio-more summary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 36px;
+    font-size: 13px;
+  }
+  .studio-more .studio-menu {
+    min-width: 150px;
+  }
+  .studio-project-switch > .studio-menu {
+    min-width: min(220px, 85vw);
+  }
+  .studio-mobile-alert {
+    display: block;
+    grid-column: 1/-1;
+  }
+  .studio-mobile-alert .studio-inbox {
+    min-height: 30px;
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  .cloud-canvas .studio-workspace .studio-main {
+    grid-column: 1;
+    grid-row: 2;
+    border-radius: 20px;
+  }
+  .studio-workspace .studio-chat-surface {
+    padding-bottom: 9px;
+  }
+  .studio-page-heading {
+    padding-top: 13px;
+    margin-bottom: 8px;
+  }
+  .studio-workspace .agent-workspace-task-pane > .agent-pane-title {
+    padding: 14px 0 10px;
+  }
+  .studio-workspace .studio-tabs button {
+    font-size: 13px;
+    padding: 6px 9px;
+  }
+  .studio-workspace .agent-chat-composer {
+    padding: 9px 11px;
+    border-radius: 20px;
+  }
+  .studio-workspace .agent-chat-welcome {
+    margin-block: auto;
+  }
+  .studio-workspace .studio-film-section,
+  .studio-surface {
+    padding: 12px;
+  }
+  .agent-workspace-drawer {
+    border-radius: 20px 20px 0 0;
+  }
+}
+@media (pointer: coarse) {
+  .studio-workspace
+    :is(
+      .studio-link,
+      .studio-inbox,
+      .studio-mobile-alert .studio-inbox,
+      .studio-more summary,
+      .studio-tabs button,
+      .studio-project-switch summary,
+      .studio-menu button,
+      .film-actions button,
+      .studio-version-history button
+    ) {
+    min-height: 44px;
+  }
+  .studio-workspace :is(input, select, textarea),
+  .agent-workspace-drawer :is(input, select, textarea) {
+    font-size: 16px;
   }
 }

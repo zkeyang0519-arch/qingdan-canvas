@@ -1,0 +1,151 @@
+.qd-mcp-panel {
+  display: grid;
+  gap: 12px;
+  padding-block: 16px;
+}
+.qd-mcp-heading,
+.qd-mcp-buttons,
+.qd-mcp-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.qd-mcp-heading {
+  justify-content: space-between;
+}
+.qd-mcp-heading h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.qd-mcp-panel button,
+.qd-mcp-receipts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.qd-mcp-panel button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--agent-line, #dce4d7);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--agent-ink, #253d2e);
+  font: inherit;
+  font-size: 12px;
+}
+.qd-mcp-panel button:hover:not(:disabled) {
+  background: #f2f6ef;
+}
+.qd-mcp-panel button:disabled {
+  opacity: 0.55;
+}
+.qd-mcp-panel :is(input:not([type="checkbox"]), select) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid #dce4d7;
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+.qd-mcp-panel :is(button, input, select):focus-visible {
+  outline: 2px solid #64836b;
+  outline-offset: 2px;
+}
+.qd-mcp-service,
+.qd-mcp-add {
+  border: 1px solid #dce4d7;
+  border-radius: 12px;
+}
+.qd-mcp-add,
+.qd-mcp-body {
+  padding: 14px;
+}
+.qd-mcp-add,
+.qd-mcp-body,
+.qd-mcp-panel fieldset {
+  display: grid;
+  gap: 12px;
+}
+.qd-mcp-panel label:not(.qd-mcp-choice) {
+  display: grid;
+  gap: 5px;
+}
+.qd-mcp-panel .qd-mcp-row {
+  width: 100%;
+  padding: 12px 14px;
+  gap: 10px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+.qd-mcp-row span {
+  flex: 1;
+  min-width: 0;
+}
+.qd-mcp-panel small,
+.qd-mcp-receipts small {
+  display: block;
+  color: #62705d;
+  font-weight: 400;
+}
+.qd-mcp-panel strong,
+.qd-mcp-panel small,
+.qd-mcp-receipts {
+  overflow-wrap: anywhere;
+}
+.qd-mcp-panel fieldset {
+  margin: 0;
+  min-width: 0;
+  padding: 10px 0;
+  border: 0;
+}
+.qd-mcp-panel legend {
+  font-size: 13px;
+  font-weight: 600;
+}
+.qd-mcp-buttons a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #416344;
+  font-size: 13px;
+}
+.qd-mcp-panel label.qd-mcp-choice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  font-size: 13px;
+}
+.qd-mcp-choice small {
+  line-height: 1.45;
+  margin-top: 3px;
+}
+.qd-mcp-panel .qd-mcp-choice input {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  accent-color: #4c7043;
+}
+.qd-mcp-panel .qd-mcp-remove {
+  justify-self: start;
+  color: #814646;
+}
+.qd-mcp-receipts {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.qd-mcp-receipts summary {
+  cursor: pointer;
+}
+.qd-mcp-receipts small {
+  display: inline;
+}
+.qd-mcp-receipts p {
+  white-space: pre-wrap;
+}

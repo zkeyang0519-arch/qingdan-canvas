@@ -141,13 +141,12 @@
 .agent-workspace button.primary:hover:not(:disabled) {
   background: #2c523e;
 }
-.agent-workspace input:focus-visible,
-.agent-workspace select:focus-visible,
-.agent-workspace-drawer input:focus-visible,
-.agent-workspace-drawer select:focus-visible,
-.agent-workspace-drawer textarea:focus-visible {
-  outline: 2px solid #507c61;
-  outline-offset: 2px;
+/* Typing keeps the field's resting appearance, including inside drawers. */
+.agent-workspace :is(input, textarea, select):is(:focus, :focus-visible),
+.agent-workspace-drawer
+  :is(input, textarea, select):is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
 }
 .agent-workspace h1,
 .agent-workspace h2,
@@ -591,7 +590,6 @@
   align-items: flex-start;
   gap: 8px;
   padding: 8px 0;
-  border-bottom: 1px solid #a9b999;
 }
 .agent-task-composer-circle {
   flex: 0 0 14px;
@@ -617,9 +615,6 @@
   color: #4d5943;
   box-shadow: none;
   outline: none;
-}
-.agent-task-composer-row:focus-within {
-  border-bottom-color: #6b805c;
 }
 .agent-task-composer-row > button {
   display: inline-flex;
@@ -1065,10 +1060,6 @@
 .agent-chat-composer textarea:focus {
   outline: none;
   box-shadow: none;
-}
-.agent-chat-composer:focus-within {
-  border-color: #92ac80;
-  box-shadow: 0 0 0 2px #92ac8015;
 }
 .agent-chat-composer > button {
   grid-column: 2;

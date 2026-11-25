@@ -2,6 +2,9 @@ import { mcpRoute } from "./mcp/router";
 import { runnerRoute } from "./execution/router";
 import { executionRoute } from "./execution/execution-router";
 import { chatRoute } from "./agent/chat-route";
+import { piRoute } from "./agent/pi-route";
+import { runtimeMaintenanceRoute } from "./runtime-maintenance";
+import { filmRoute } from "./agent/film-route";
 import { projectSummaryRoute } from "./execution/project-summary-route";
 import type { Env, Room } from "./types";
 import { body, check, failure, json, sameOrigin, validId } from "./http";
@@ -35,6 +38,8 @@ export default {
     ctx: ExecutionContext,
   ): Promise<Response> {
     try {
+      const maintenance = await runtimeMaintenanceRoute(request, env);
+      if (maintenance) return maintenance;
       const desktop = await desktopHandoffRoute(request, env);
       if (desktop) return desktop;
       if (
@@ -42,6 +47,10 @@ export default {
         isAgentRoute(new URL(request.url).pathname)
       )
         return agentUnavailable();
+      const pi = await piRoute(request, env);
+      if (pi) return pi;
+      const film = await filmRoute(request, env);
+      if (film) return film;
       const project = await projectSummaryRoute(request, env);
       if (project) return project;
       const chat = await chatRoute(request, env);

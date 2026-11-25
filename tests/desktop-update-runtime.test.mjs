@@ -10,6 +10,7 @@ import { bundledAsset, installBundledWeb } from "../desktop/bundled-web.cjs";
 function updateFixture({
   prepare = async () => ({ ok: true, draftsPersisted: true }),
   install,
+  runtime,
 } = {}) {
   const updater = new EventEmitter();
   const events = [];
@@ -26,6 +27,7 @@ function updateFixture({
     updater,
     version: "0.3.0",
     prepare,
+    runtime,
     install: install || (async (run) => run()),
     changed: (state) => events.push(state),
   });
@@ -72,7 +74,8 @@ test("failed saves and older renderers with volatile input block update without 
     f.downloaded();
     await assert.rejects(f.controller.install(), /保存|重启/);
     assert.equal(f.installs(), 0);
-    assert.equal(f.controller.state().status, "downloaded");
+    assert.equal(f.controller.state().status, "error");
+    assert.equal(f.controller.state().hasUpdate, true);
   }
   const f = updateFixture({
     prepare: async () => {
@@ -103,10 +106,11 @@ test("update waits for durable draft acknowledgment and storage flush, coalesces
   const first = f.controller.install(),
     duplicate = f.controller.install();
   assert.equal(first, duplicate);
-  assert.equal(f.controller.state().status, "installing");
-  assert.equal(f.events.at(-1).status, "installing");
+  assert.equal(f.controller.state().status, "preparing");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.events.at(-1).status, "saving");
   assert.equal(f.installs(), 0);
-  assert.equal(f.controller.state().status, "installing");
+  assert.equal(f.controller.state().status, "saving");
   save({ ok: true, hasDraft: true, draftsPersisted: true, unsynced: true });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(f.installs(), 0);
@@ -129,6 +133,151 @@ test("installation error allows retry without downloading again", async () => {
   fail = false;
   await f.controller.install();
   assert.equal(f.installs(), 1);
+});
+
+test("scheduled update pauses admissions, waits without interrupting tasks, and cancellation resumes dispatch", async (t) => {
+  const log = [];
+  let tasks = [{ id: "run-1", label: "正在修改文件" }];
+  const f = updateFixture({
+    runtime: {
+      status: async () => ({ tasks, unknown: [] }),
+      pause: async () => {
+        log.push("pause");
+        return { paused: true };
+      },
+      resume: async () => {
+        log.push("resume");
+      },
+      checkpoint: async () => {
+        log.push("checkpoint");
+        return { ok: true };
+      },
+      stop: async () => {
+        log.push("stop");
+        return { stopped: true };
+      },
+    },
+    prepare: async () => {
+      log.push("save");
+      return { ok: true, draftsPersisted: true };
+    },
+  });
+  t.after(() => f.controller.close());
+  f.downloaded();
+  assert.deepEqual(await f.controller.install(), { scheduled: true });
+  assert.equal(f.controller.state().status, "waiting");
+  assert.deepEqual(log, ["pause"]);
+  await f.controller.cancel();
+  assert.equal(f.controller.state().scheduled, false);
+  assert.deepEqual(log, ["pause", "resume"]);
+  await f.controller.install();
+  tasks = [];
+  await f.controller.refreshActivity();
+  assert.deepEqual(log, [
+    "pause",
+    "resume",
+    "pause",
+    "save",
+    "checkpoint",
+    "stop",
+  ]);
+  assert.equal(f.installs(), 1);
+  await f.controller.install();
+  assert.equal(
+    f.installs(),
+    1,
+    "a committed installation cannot be dispatched twice",
+  );
+});
+
+test("a saved remote receipt can survive update but unknown operations cannot be replayed or force-stopped", async (t) => {
+  for (const unknown of [[], ["未知远端投递结果"]]) {
+    let stopped = 0;
+    const f = updateFixture({
+      runtime: {
+        status: async () => ({
+          tasks: [{ id: "waao-receipt", checkpointedRemote: true }],
+          unknown,
+        }),
+        pause: async () => ({ paused: true }),
+        resume: async () => {},
+        checkpoint: async () => ({ ok: true }),
+        stop: async () => {
+          stopped++;
+          return { stopped: true };
+        },
+      },
+    });
+    t.after(() => f.controller.close());
+    f.downloaded();
+    if (unknown.length) {
+      await assert.rejects(f.controller.install(), /未知|核对/);
+      assert.equal(stopped, 0);
+      assert.equal(f.installs(), 0);
+    } else {
+      await f.controller.install();
+      assert.equal(f.installs(), 1);
+    }
+  }
+});
+
+test("unconfirmed drain, checkpoint and process exit all keep the current app and verified update package", async (t) => {
+  for (const phase of ["pause", "checkpoint", "stop"]) {
+    let resumed = 0;
+    const runtime = {
+      status: async () => ({ tasks: [], unknown: [] }),
+      pause: async () => ({ paused: true }),
+      checkpoint: async () => ({ ok: true }),
+      stop: async () => ({ stopped: true }),
+      resume: async () => {
+        resumed++;
+      },
+    };
+    runtime[phase] = async () => undefined;
+    const f = updateFixture({ runtime });
+    t.after(() => f.controller.close());
+    f.downloaded();
+    await assert.rejects(f.controller.install(), /确认|中止/);
+    assert.equal(f.installs(), 0);
+    assert.equal(f.controller.state().hasUpdate, true);
+    assert.ok(resumed > 0);
+  }
+});
+
+test("cancel while pausing fences the late pause acknowledgment before any save or install", async (t) => {
+  let release;
+  const f = updateFixture({
+    runtime: {
+      status: async () => ({ tasks: [], unknown: [] }),
+      pause: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      resume: async () => {},
+    },
+  });
+  t.after(() => f.controller.close());
+  f.downloaded();
+  const install = f.controller.install();
+  await new Promise((resolve) => setImmediate(resolve));
+  const cancel = f.controller.cancel();
+  release({ paused: true });
+  await Promise.all([install, cancel]);
+  assert.equal(f.controller.state().status, "downloaded");
+  assert.equal(f.installs(), 0);
+});
+
+test("download progress comes from the updater; missing totals stay indeterminate", (t) => {
+  const f = updateFixture();
+  t.after(() => f.controller.close());
+  f.updater.emit("download-progress", {
+    percent: 42.7,
+    total: 100,
+    transferred: 42,
+  });
+  assert.equal(f.controller.state().progress, 42.7);
+  f.updater.emit("download-progress", { percent: NaN });
+  assert.equal(f.controller.state().progress, null);
 });
 
 test("bundled assets are restricted to the production origin and stay within the package web directory", (t) => {

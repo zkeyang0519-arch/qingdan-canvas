@@ -57,7 +57,7 @@
   font-size: 13px;
   color: var(--agent-ink);
 }
-.agent-workspace-drawer
+:is(.agent-workspace-drawer, .agent-settings-page)
   .agent-execution-settings-form
   .agent-model-picker-trigger {
   display: flex;
@@ -96,7 +96,7 @@
   border-bottom: 1px solid #e7ebe5;
   color: #819185;
 }
-.agent-workspace-drawer
+:is(.agent-workspace-drawer, .agent-settings-page)
   .agent-execution-settings-form
   .agent-model-picker-search
   input {
@@ -108,16 +108,15 @@
   box-shadow: none;
   outline: none;
 }
-.agent-model-picker-search:focus-within {
-  box-shadow: inset 0 0 0 2px #739780;
-}
 .agent-model-picker-panel [role="listbox"] {
   max-height: 248px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px;
 }
-.agent-workspace-drawer .agent-model-picker-panel button[role="option"] {
+:is(.agent-workspace-drawer, .agent-settings-page)
+  .agent-model-picker-panel
+  button[role="option"] {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -154,7 +153,9 @@
 .agent-model-picker-panel [role="option"] > svg {
   flex-shrink: 0;
 }
-.agent-workspace-drawer .agent-model-picker-panel button[aria-selected="true"] {
+:is(.agent-workspace-drawer, .agent-settings-page)
+  .agent-model-picker-panel
+  button[aria-selected="true"] {
   background: #edf3e8;
   color: #36583e;
 }
@@ -197,7 +198,7 @@
   color: #748077;
   margin-top: 5px;
 }
-.agent-workspace-drawer .agent-default-fast-switch {
+:is(.agent-workspace-drawer, .agent-settings-page) .agent-default-fast-switch {
   flex: 0 0 40px;
   width: 40px;
   height: 24px;
@@ -216,13 +217,15 @@
   box-shadow: 0 1px 3px #243b2722;
   transition: transform 0.16s;
 }
-.agent-workspace-drawer .agent-default-fast-switch[aria-checked="true"] {
+:is(.agent-workspace-drawer, .agent-settings-page)
+  .agent-default-fast-switch[aria-checked="true"] {
   background: #456b50;
 }
-.agent-workspace-drawer .agent-default-fast-switch:hover:not(:disabled) {
+:is(.agent-workspace-drawer, .agent-settings-page)
+  .agent-default-fast-switch:hover:not(:disabled) {
   background: #cbd7c7;
 }
-.agent-workspace-drawer
+:is(.agent-workspace-drawer, .agent-settings-page)
   .agent-default-fast-switch[aria-checked="true"]:hover:not(:disabled) {
   background: #3a5d44;
 }

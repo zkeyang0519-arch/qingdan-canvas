@@ -1,0 +1,72 @@
+.agent-workspace .agent-checklist-tasks > li[data-editing="true"] {
+  background: #f4f8f2;
+  box-shadow: inset 0 0 0 1px #b8cdbb;
+  border-radius: 10px;
+}
+.agent-workspace.studio-workspace
+  .agent-checklist-tasks
+  > li[data-editing="true"] {
+  background: #f4f8f2;
+}
+.agent-task-composer.is-editing,
+.agent-workspace .agent-task-composer.is-editing,
+.agent-workspace.studio-workspace .agent-task-composer.is-editing {
+  flex: 1 1 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.agent-workspace .agent-task-composer.is-editing .agent-task-input {
+  min-height: 32px;
+  max-height: 160px;
+  margin: 0;
+  overflow-y: auto;
+}
+.agent-task-composer.is-editing .agent-task-composer-row {
+  align-items: flex-start;
+  padding: 0;
+}
+.agent-task-composer.is-editing .agent-task-composer-circle {
+  margin-top: 8px;
+}
+.agent-task-composer.is-editing .agent-task-composer-row > button {
+  min-width: 32px;
+  min-height: 32px;
+  color: #3c6146;
+}
+.agent-task-composer.is-editing
+  .agent-task-composer-row
+  > button[type="submit"]:not(:disabled) {
+  background: #e0ecdf;
+}
+.agent-task-composer.is-editing
+  .agent-task-composer-row
+  > button:focus-visible {
+  outline: 2px solid #547c5e;
+  outline-offset: 2px;
+}
+.agent-inline-edit-feedback {
+  flex: 1 1 100%;
+  padding: 8px 24px;
+  font-size: 12px;
+}
+.agent-inline-edit-feedback pre {
+  overflow: auto;
+  max-height: 180px;
+  white-space: pre-wrap;
+}
+.agent-checklist-dispatch > .agent-dispatch-options {
+  margin: 12px 0 10px;
+}
+@media (max-width: 640px) {
+  .agent-task-composer.is-editing .agent-task-composer-row > button {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .agent-inline-edit-feedback {
+    padding: 8px 4px;
+  }
+}

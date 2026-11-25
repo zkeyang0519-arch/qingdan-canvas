@@ -20,6 +20,14 @@ Object.assign(globalThis, {
   window: dom.window,
   document: dom.window.document,
   localStorage: dom.window.localStorage,
+  HTMLElement: dom.window.HTMLElement,
+  HTMLInputElement: dom.window.HTMLInputElement,
+  Element: dom.window.Element,
+  Node: dom.window.Node,
+  NodeFilter: dom.window.NodeFilter,
+  CustomEvent: dom.window.CustomEvent,
+  MutationObserver: dom.window.MutationObserver,
+  getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
   IS_REACT_ACT_ENVIRONMENT: true,
 });
 Object.defineProperty(globalThis, "navigator", {
@@ -454,7 +462,8 @@ test("model catalog failure preserves a saved model and blocks new dispatch unti
     ...f,
     embedded: true,
     requestLocal: async (route, options) => {
-      if (!route.startsWith("/codex/models?")) return f.requestLocal(route, options);
+      if (!route.startsWith("/codex/models?"))
+        return f.requestLocal(route, options);
       if (fail) throw Error("模型目录读取失败");
       return {
         models: [{ id: "available", name: "Available", supportsFast: true }],
@@ -485,7 +494,11 @@ test("model catalog failure preserves a saved model and blocks new dispatch unti
 
 test("an existing project follows Codex settings until an explicit execution preference is saved", async () => {
   const f = fixture();
-  const model = { id: "project-model", name: "Project Model", supportsFast: true };
+  const model = {
+    id: "project-model",
+    name: "Project Model",
+    supportsFast: true,
+  };
   let current = {
     model: model.id,
     fastMode: true,
@@ -497,11 +510,13 @@ test("an existing project follows Codex settings until an explicit execution pre
   const close = await mount({
     ...f,
     embedded: true,
-    requestLocal: (route, options) => route.startsWith("/codex/models?")
-      ? Promise.resolve({ models: [model], current })
-      : f.requestLocal(route, options),
+    requestLocal: (route, options) =>
+      route.startsWith("/codex/models?")
+        ? Promise.resolve({ models: [model], current })
+        : f.requestLocal(route, options),
     requestCloud: (route, options) => {
-      if (route.endsWith("/intents")) intents.push(structuredClone(options.body));
+      if (route.endsWith("/intents"))
+        intents.push(structuredClone(options.body));
       return f.requestCloud(route, options);
     },
   });
@@ -817,8 +832,12 @@ test("workbench editing changes only the todo text and preserves existing execut
   const close = await mount({ ...f, embedded: true });
   try {
     await click(button("编辑待办：写说明"));
-    const editor = document.querySelector(".agent-checklist-editor");
+    const editor = field("编辑待办内容").closest("li");
     assert.equal(editor.querySelectorAll("textarea").length, 1);
+    assert.equal(field("编辑待办内容").rows, 1);
+    assert.equal(document.activeElement, field("编辑待办内容"));
+    assert.equal(editor.querySelector(".agent-checklist-row"), null);
+    assert.equal(field("新待办"), null);
     assert.equal(field("编辑执行要求"), null);
     assert.equal(field("编辑验收方式"), null);
     await edit("编辑待办内容", "补充安装说明");
@@ -828,6 +847,61 @@ test("workbench editing changes only the todo text and preserves existing execut
     assert.equal(saved.instruction, "执行写说明");
     assert.equal(saved.acceptance, "验收写说明");
     assert.deepEqual(saved.acceptanceChecks, checks);
+  } finally {
+    await close();
+  }
+});
+
+test("原行编辑支持 Enter 保存与 Esc 取消，输入法回车不会提交或执行待办", async () => {
+  const f = fixture();
+  const close = await mount({ ...f, embedded: true });
+  const key = async (value, extra = {}) =>
+    act(async () =>
+      field("编辑待办内容").dispatchEvent(
+        new window.KeyboardEvent("keydown", {
+          key: value,
+          bubbles: true,
+          cancelable: true,
+          ...extra,
+        }),
+      ),
+    );
+  try {
+    await click(button("编辑待办：写说明"));
+    await edit("编辑待办内容", "未保存的修改");
+    await key("Enter", { isComposing: true });
+    await key("Enter", { shiftKey: true });
+    assert.equal(
+      f.calls.some((call) => call.body?.action === "save"),
+      false,
+    );
+    await key("Escape");
+    assert.equal(field("编辑待办内容"), null);
+    assert.equal(
+      document.activeElement?.getAttribute("aria-label"),
+      "编辑待办：写说明",
+    );
+    await click(button("编辑待办：写说明"));
+    assert.equal(field("编辑待办内容").value, "写说明");
+    await edit("编辑待办内容", "原行更新后的说明");
+    await key("Enter");
+    assert.equal(field("编辑待办内容"), null);
+    assert.equal(field("真实待办").children.length, 2);
+    assert.equal(
+      document.activeElement?.getAttribute("aria-label"),
+      "编辑待办：原行更新后的说明",
+    );
+    assert.equal(
+      f.calls.filter((call) => call.body?.action === "save").length,
+      1,
+    );
+    assert.equal(
+      f.calls.some(
+        (call) =>
+          call.body?.action === "create" || call.route.endsWith("/intents"),
+      ),
+      false,
+    );
   } finally {
     await close();
   }
@@ -2279,8 +2353,11 @@ test("embedded checklist refreshes saved chat tasks without losing selection or 
     await close.render({ embedded: true, refreshToken: 1 });
     assert.ok(field("选中待办：聊天整理的新待办"));
     assert.equal(field("选中待办：创建示例").checked, true);
-    assert.equal(field("新待办").value, "新建草稿");
+    assert.equal(field("新待办"), null);
     assert.equal(field("编辑待办内容").value, "还没保存的修改");
+    await click(button("取消编辑"));
+    await click(button("添加待办"));
+    assert.equal(field("新待办").value, "新建草稿");
     assert.equal(
       f.calls.some((c) => c.route.endsWith("/intents")),
       false,
@@ -2316,8 +2393,11 @@ test("embedded drafts survive project switching and remounts without leaking to 
       embedded: true,
       pages: [{ id: "section", title: "我的清单" }],
     });
-    assert.equal(field("新待办").value, "只属于这个项目的草稿");
+    assert.equal(field("新待办"), null);
     assert.equal(field("编辑待办内容").value, "尚未保存的标准");
+    await click(button("取消编辑"));
+    await click(button("添加待办"));
+    assert.equal(field("新待办").value, "只属于这个项目的草稿");
     await close.render({
       embedded: true,
       userId: "bob",

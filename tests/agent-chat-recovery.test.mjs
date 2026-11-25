@@ -526,6 +526,14 @@ for (const outcome of ["failed", "expired"])
     dom.reconfigure({ url: f.origin });
     await mount(f);
     await until(() => field("聊天消息")?.disabled === false);
+    // Receipt reconciliation now continues automatically after a lost ACK.
+    // Deny cleanup before sending, so it remains unavailable during the
+    // server restart as well as after the browser is reopened.
+    window.Storage.prototype.setItem = function (key, value) {
+      if (key === draftStorageKey(null) && JSON.parse(value).value === "")
+        throw Error("fixture accepted send cleanup denied");
+      return storageSetItem.call(this, key, value);
+    };
     f.dropSend("after");
     await edit("聊天消息", "model failure");
     await click("发送");
@@ -545,11 +553,6 @@ for (const outcome of ["failed", "expired"])
       assert.equal(expired.job.status, "failed");
       assert.match(expired.job.error, /中断/);
     }
-    window.Storage.prototype.setItem = function (key, value) {
-      if (key === draftStorageKey(null) && JSON.parse(value).value === "")
-        throw Error("fixture accepted send cleanup denied");
-      return storageSetItem.call(this, key, value);
-    };
     await reopen(f);
     await until(
       () => button("重试保存草稿") && field("聊天消息")?.disabled === false,

@@ -1649,15 +1649,15 @@ test("更新提醒接受下载状态，稍后不安装，保存失败保持可�
     notify({ status: "downloaded", version: "0.3.0" });
     resolveState({ status: "checking" });
   });
-  assert.match(host.textContent, /新版 0.3.0已就绪/);
+  assert.match(host.textContent, /新版 0.3.0 已就绪/);
   await click(button(host, "稍后"));
   assert.equal(installs, 0);
-  assert.equal(button(host, "重启更新"), undefined);
+  assert.equal(button(host, "重启并更新"), undefined);
   await click(button(host, "有更新"));
-  await click(button(host, "重启更新"));
+  await click(button(host, "重启并更新"));
   assert.equal(installs, 1);
   assert.match(host.textContent, /输入草稿尚未保存/);
-  assert.equal(button(host, "重启更新").disabled, false);
+  assert.equal(button(host, "重启并更新").disabled, false);
 });
 
 test("更新保存前同步冻结交互，保存失败后立即恢复输入且保留内容", async (t) => {
@@ -1689,7 +1689,7 @@ test("更新保存前同步冻结交互，保存失败后立即恢复输入且�
   });
   assert.match(
     host.querySelector(".desktop-update-status").textContent,
-    /正在保存并重启更新/,
+    /正在安装更新/,
   );
   await act(async () => {
     for (const handler of calls.updateHandlers)
@@ -2208,7 +2208,7 @@ test("手动检查更新防重复，错误可重试，旧读取结果不能覆�
   });
   assert.match(host.textContent, /新版 0\.4\.0 已就绪/);
   assert.match(host.textContent, /v0\.3\.6/);
-  assert.equal(button(host, "重启更新").disabled, true);
+  assert.equal(button(host, "重启并更新").disabled, true);
   await act(async () =>
     root.render(React.createElement(DesktopUpdateCheck, { bridge: {} })),
   );
@@ -2325,7 +2325,7 @@ test("色块渲染在隐藏、离屏、减少动态效果与卸载时停止，�
   assert.equal(mediaListeners.size, 0);
 });
 
-test("设置内检查、下载、重启更新走原生控制器，保存失败可重试且不改调色", async (t) => {
+test("设置内检查、下载、重启并更新走原生控制器，保存失败可重试且不改调色", async (t) => {
   localStorage.removeItem(islandAppearanceKey);
   t.after(() => localStorage.removeItem(islandAppearanceKey));
   const { host, bridge, calls, controls } = await mount(t, {
@@ -2373,24 +2373,24 @@ test("设置内检查、下载、重启更新走原生控制器，保存失败�
   const section = host.querySelector('[aria-label="轻岛版本更新"]');
   await click(button(section, "检查更新"));
   assert.equal(checks, 1);
-  assert.match(section.textContent, /正在下载 38%/);
+  assert.match(section.textContent, /正在后台下载 38%/);
   assert.equal(button(section, "检查更新").disabled, true);
   assert.equal(installs, 0);
   await act(async () =>
     updater.emit("update-downloaded", { version: "0.3.7" }),
   );
-  assert.equal(button(section, "重启更新").disabled, false);
+  assert.equal(button(section, "重启并更新").disabled, false);
   assert.equal(installs, 0, "download completion never restarts by itself");
-  await click(button(section, "重启更新"));
+  await click(button(section, "重启并更新"));
   assert.equal(installs, 0);
   assert.match(
     section.querySelector('[role="alert"]').textContent,
     /本机保存暂时失败/,
   );
-  assert.equal(button(section, "重启更新").disabled, false);
+  assert.equal(button(section, "重启并更新").disabled, false);
   assert.equal(host.querySelector("textarea").value, "安装前必须保留的草稿");
   failSave = false;
-  await click(button(section, "重启更新"));
+  await click(button(section, "重启并更新"));
   assert.equal(button(section, "正在保存…").disabled, true);
   await click(button(section, "正在保存…"));
   assert.equal(installs, 0);

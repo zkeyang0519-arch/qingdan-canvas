@@ -10,7 +10,12 @@ import {
   commandEnvelopeSchema,
   executionSnapshotSchema,
 } from "../shared/agent/schemas";
-import { projectContextSchema, nativeStopProofSchema, type NativeStopProof, type ExecutionReconcileTicket } from "../shared/agent/execution";
+import {
+  projectContextSchema,
+  nativeStopProofSchema,
+  type NativeStopProof,
+  type ExecutionReconcileTicket,
+} from "../shared/agent/execution";
 import {
   CodexAdapter,
   parseApprovalsReviewer,
@@ -99,26 +104,56 @@ const batchGateResult = z.strictObject({
   nextIndex: z.number().int().min(0).max(99).optional(),
   reason: z.string().max(2000).optional(),
 });
-const leaseRecoveryResult = z.discriminatedUnion("decision",[
-  z.strictObject({decision:z.literal("wait")}),
-  z.strictObject({decision:z.literal("cancel")}),
-  z.strictObject({decision:z.literal("inspect"),recoveryId:id}),
-  z.strictObject({decision:z.literal("recovered"),recoveryId:id,lease:z.strictObject({workspaceId:id,runId:id,leaseEpoch:z.number().int().positive(),expiresAt:z.number().int().positive()})}),
+const leaseRecoveryResult = z.discriminatedUnion("decision", [
+  z.strictObject({ decision: z.literal("wait") }),
+  z.strictObject({ decision: z.literal("cancel") }),
+  z.strictObject({ decision: z.literal("inspect"), recoveryId: id }),
+  z.strictObject({
+    decision: z.literal("recovered"),
+    recoveryId: id,
+    lease: z.strictObject({
+      workspaceId: id,
+      runId: id,
+      leaseEpoch: z.number().int().positive(),
+      expiresAt: z.number().int().positive(),
+    }),
+  }),
 ]);
-const reconcileIdentity = { runId: id, workspaceId: id, leaseEpoch: z.number().int().positive() };
+const reconcileIdentity = {
+  runId: id,
+  workspaceId: id,
+  leaseEpoch: z.number().int().positive(),
+};
 const reconcileResult = z.union([
-  z.strictObject({ decision: z.literal("inspect"), ticket: z.strictObject({
-    ...reconcileIdentity, recoveryId: id, originalCommandId: id, currentCommandId: id,
-    snapshotHash: z.string().regex(/^[a-f0-9]{64}$/), reportRevision: z.number().int().nonnegative(),
-    threadId: id.nullable(), turnId: id.nullable(), action: z.enum(["inspect_only", "stop"]),
-  }) }),
+  z.strictObject({
+    decision: z.literal("inspect"),
+    ticket: z.strictObject({
+      ...reconcileIdentity,
+      recoveryId: id,
+      originalCommandId: id,
+      currentCommandId: id,
+      snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+      reportRevision: z.number().int().nonnegative(),
+      threadId: id.nullable(),
+      turnId: id.nullable(),
+      action: z.enum(["inspect_only", "stop"]),
+    }),
+  }),
   z.strictObject({ decision: z.literal("settled"), ...reconcileIdentity }),
-  z.strictObject({ ok: z.literal(true), settled: z.literal(true), ...reconcileIdentity,
-    recoveryId: id, reportRevision: z.number().int().positive() }),
+  z.strictObject({
+    ok: z.literal(true),
+    settled: z.literal(true),
+    ...reconcileIdentity,
+    recoveryId: id,
+    reportRevision: z.number().int().positive(),
+  }),
 ]);
 // Only these pre-recovery versions' safety-stop messages may migrate their
 // nonterminal checkpoint. User cancellation and lifecycle stop remain final.
-const legacyCheckpointStop = new Set(["批次后续待办的执行授权已失效。","运行租约已过期。"]);
+const legacyCheckpointStop = new Set([
+  "批次后续待办的执行授权已失效。",
+  "运行租约已过期。",
+]);
 const errorCode = (error: unknown) => (error as { code?: string })?.code;
 const denied = (error: unknown) =>
   ["EXECUTION_REVOKED", "EXECUTION_DISABLED"].includes(errorCode(error) ?? "");
@@ -159,7 +194,12 @@ function wireEvent(event: RunnerEvent): RunnerEvent {
       }
       return {
         ...event,
-        payload: { status: event.payload.status, error: event.payload.error, summary: null, outcome: null },
+        payload: {
+          status: event.payload.status,
+          error: event.payload.error,
+          summary: null,
+          outcome: null,
+        },
       };
     default:
       return event;
@@ -183,14 +223,22 @@ export class RunnerExecutor {
   private capturedAt = 0;
   private contextQueue: Promise<unknown> = Promise.resolve();
   private releaseConsumer: () => void;
-  private interruptAttempts = new Map<string, { key: string; adapter: CodexAdapter }>();
+  private interruptAttempts = new Map<
+    string,
+    { key: string; adapter: CodexAdapter }
+  >();
 
   constructor(private o: Options) {
     this.now = o.now ?? Date.now;
     this.releaseConsumer = o.store.acquireConsumer();
   }
   private get disabled() {
-    return this.deviceResetGuard || this.paused || this.closed || this.o.enabled?.() === false;
+    return (
+      this.deviceResetGuard ||
+      this.paused ||
+      this.closed ||
+      this.o.enabled?.() === false
+    );
   }
   start() {
     if (this.closed || this.deviceResetGuard) return;
@@ -227,7 +275,8 @@ export class RunnerExecutor {
     if (this.closed || this.deviceResetGuard)
       throw new RunnerError("EXECUTOR_BUSY", "设备运行器正在关闭或核对重置。");
     // Reject existing occupancy without stopping it as a side effect of reset.
-    if (this.hasHold) throw new RunnerError("WORKSPACE_BUSY", "请先停止并核对本地运行。");
+    if (this.hasHold)
+      throw new RunnerError("WORKSPACE_BUSY", "请先停止并核对本地运行。");
     const resume = this.timer !== undefined;
     this.deviceResetGuard = true;
     clearInterval(this.timer);
@@ -237,7 +286,10 @@ export class RunnerExecutor {
       await this.reconciling;
       await this.contextQueue;
       if (this.closed || this.hasHold)
-        throw new RunnerError("WORKSPACE_BUSY", "本地执行状态已变化，不能重置设备。");
+        throw new RunnerError(
+          "WORKSPACE_BUSY",
+          "本地执行状态已变化，不能重置设备。",
+        );
       return await work();
     } finally {
       this.deviceResetGuard = false;
@@ -272,17 +324,52 @@ export class RunnerExecutor {
   get hasHold() {
     return !!this.o.store.held();
   }
+  private admissionsPaused = false;
+  async pauseAdmissions() {
+    this.admissionsPaused = true;
+    await this.working;
+    return { paused: true };
+  }
+  resumeAdmissions() {
+    this.admissionsPaused = false;
+    void this.tick();
+  }
+  updateActivity() {
+    const held = this.o.store.held();
+    const run = held && this.o.runs.getRun(held.runId);
+    return {
+      tasks: held
+        ? [
+            {
+              id: held.runId,
+              label:
+                run?.snapshot.kind === "task"
+                  ? "Codex 待办任务"
+                  : "项目整理任务",
+              status: run?.status || held.phase,
+            },
+          ]
+        : [],
+      unknown:
+        run?.status === "reconciliation_required"
+          ? ["Codex 原执行结果待核对"]
+          : [],
+    };
+  }
   private get online() {
     const t = this.o.transport();
     return t?.status.connectionStatus === "online" ? t : undefined;
   }
   private boundHold() {
-    const held = this.o.store.held(), lease = held && this.o.device.lease(held.runId);
+    const held = this.o.store.held(),
+      lease = held && this.o.device.lease(held.runId);
     return held && !held.leaseEpoch && lease?.workspaceId === held.workspaceId
-      ? this.o.store.bindClaim(held, lease.leaseEpoch) : held;
+      ? this.o.store.bindClaim(held, lease.leaseEpoch)
+      : held;
   }
   private captureNativeGuard(runId: string): NativeOperationGuard {
-    const held = this.boundHold(), entry = this.o.store.latest(runId);
+    const held = this.boundHold(),
+      entry = this.o.store.latest(runId);
     if (!held || held.runId !== runId)
       throw new RunnerError("LEASE_MISMATCH", "原生操作没有对应的本机占用。");
     return this.nativeGuard(held, entry?.envelope.commandId);
@@ -290,16 +377,26 @@ export class RunnerExecutor {
   private nativeGuard(held: HeldRun, commandId?: string): NativeOperationGuard {
     // This immutable closure belongs to this operation, not whatever held or
     // latest command a delayed RPC happens to find when its reply arrives.
-    const claim = { ...held }, transport = this.online, epoch = transport?.status.connectionEpoch;
+    const claim = { ...held },
+      transport = this.online,
+      epoch = transport?.status.connectionEpoch;
     const assertCurrent = () => this.assertHeldCurrent(claim, commandId);
     return {
       assertCurrent,
       assertDispatch: () => {
-        if (!commandId) throw new RunnerError("COMMAND_SEALED", "缺少原派单记录。");
+        if (!commandId)
+          throw new RunnerError("COMMAND_SEALED", "缺少原派单记录。");
         assertCurrent();
-        if (!transport || this.online !== transport || transport.status.connectionEpoch !== epoch)
+        if (
+          !transport ||
+          this.online !== transport ||
+          transport.status.connectionEpoch !== epoch
+        )
           throw new RunnerError("CONNECTION_LOST", "原派发连接已改变。");
-        if (this.disabled || !this.liveLease(claim, this.o.store.command(commandId)?.envelope))
+        if (
+          this.disabled ||
+          !this.liveLease(claim, this.o.store.command(commandId)?.envelope)
+        )
           throw new RunnerError("DISPATCH_EXPIRED", "原执行租约已失效。");
         this.o.store.assertDispatchAllowed(claim, commandId);
       },
@@ -313,7 +410,11 @@ export class RunnerExecutor {
   private assertHeldCurrent(held: HeldRun, commandId?: string) {
     this.o.store.assertClaimCurrent(held, commandId);
     const lease = this.o.device.lease(held.runId);
-    if (lease && (lease.workspaceId !== held.workspaceId || lease.leaseEpoch !== held.leaseEpoch))
+    if (
+      lease &&
+      (lease.workspaceId !== held.workspaceId ||
+        lease.leaseEpoch !== held.leaseEpoch)
+    )
       throw new RunnerError("LEASE_MISMATCH", "原执行租约已改变。");
   }
   private async codex(workspaceId: string) {
@@ -333,7 +434,7 @@ export class RunnerExecutor {
           runnerId: this.o.runnerId,
           store: this.o.runs,
           workspaces: [],
-          captureGuard: runId => this.captureNativeGuard(runId),
+          captureGuard: (runId) => this.captureNativeGuard(runId),
         });
         this.connecting = (async () => {
           await previous?.close({ stopRuns: false, waitDesktop: false });
@@ -418,33 +519,64 @@ export class RunnerExecutor {
         // completion/acceptance. Only a still-unsettled run needs retirement.
         if (await this.sync(held, t)) return;
         const state = this.o.store.run(held.runId);
-        if (active?.status === "reconciliation_required" && active.threadId && active.activeTurnId &&
-            !active.pendingRequestId && !active.cancelRequested && this.liveLease(held) && !this.recoverableCheckpoint(active)) {
-          const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
-          const observed = await adapter.identifyRunTurn(held.runId).catch(() => undefined);
-          if (observed && ["completed", "failed", "interrupted"].includes(observed.status)) {
+        if (
+          active?.status === "reconciliation_required" &&
+          active.threadId &&
+          active.activeTurnId &&
+          !active.pendingRequestId &&
+          !active.cancelRequested &&
+          this.liveLease(held) &&
+          !this.recoverableCheckpoint(active)
+        ) {
+          const adapter = this.adapter?.available
+            ? this.adapter
+            : await this.codex(held.workspaceId);
+          const observed = await adapter
+            .identifyRunTurn(held.runId)
+            .catch(() => undefined);
+          if (
+            observed &&
+            ["completed", "failed", "interrupted"].includes(observed.status)
+          ) {
             // A failed normal completion may still be retrying P1 terminal
             // cleanup. Do not seal that authorized retry into inspect_only.
             await this.recover(held).catch(() => {});
             if (await this.sync(held, t)) return;
             const current = this.o.store.run(held.runId);
-            if (terminal(this.o.runs.getRun(held.runId)) && current?.report?.stopConfirmed && current.reportSent && !current.reportSettled)
+            if (
+              terminal(this.o.runs.getRun(held.runId)) &&
+              current?.report?.stopConfirmed &&
+              current.reportSent &&
+              !current.reportSettled
+            )
               await this.reconcileHeldRun();
             else this.o.store.clearReconciliationRequest(held);
             return;
           }
         }
-        if (!this.recoverableCheckpoint(active) &&
-            (!entry || active?.status === "reconciliation_required" || active?.cancelRequested ||
-              (terminal(active) && state?.report?.stopConfirmed && state.reportSent && !state.reportSettled))) {
+        if (
+          !this.recoverableCheckpoint(active) &&
+          (!entry ||
+            active?.status === "reconciliation_required" ||
+            active?.cancelRequested ||
+            (terminal(active) &&
+              state?.report?.stopConfirmed &&
+              state.reportSent &&
+              !state.reportSettled))
+        ) {
           await this.reconcileHeldRun();
           return;
         }
         this.o.store.clearReconciliationRequest(held);
       }
-      if (!active?.activeTurnId && !active?.pendingRequestId &&
-          ((!entry && !this.liveLease(held)) ||
-           (entry && (Date.parse(entry.envelope.expiresAt) <= this.now() || ["uncertain", "superseded"].includes(entry.phase))))) {
+      if (
+        !active?.activeTurnId &&
+        !active?.pendingRequestId &&
+        ((!entry && !this.liveLease(held)) ||
+          (entry &&
+            (Date.parse(entry.envelope.expiresAt) <= this.now() ||
+              ["uncertain", "superseded"].includes(entry.phase))))
+      ) {
         // An ordinary terminal report may still settle normally. Preserve that
         // outcome, and publish a pending uncertainty report before inspecting.
         if (await this.sync(held, t)) return;
@@ -452,33 +584,50 @@ export class RunnerExecutor {
         return;
       }
       const status = this.o.transport()?.status.connectionStatus;
-      if(entry?.phase==="applied"&&this.recoverableCheckpoint(active)&&!this.disabled&&status!=="revoked"&&(!this.liveLease(held)||active!.cancelRequested)) {
-        if(active!.cancelRequested&&legacyCheckpointStop.has(active!.resultError??""))
-          this.o.store.markCheckpointRecovery(held.runId,entry.envelope.commandId,active!.activeTurnId!);
-        if(!active!.cancelRequested)this.o.runs.patchRun(held.runId,{status:"reconciliation_required",resultError:"暂停点租约已过期，请核对并恢复连接。"});
-        if(t)await this.recoverCheckpoint(held,t,entry).catch(()=>{});
-        await this.sync(held,t).catch(()=>{});
+      if (
+        entry?.phase === "applied" &&
+        this.recoverableCheckpoint(active) &&
+        !this.disabled &&
+        status !== "revoked" &&
+        (!this.liveLease(held) || active!.cancelRequested)
+      ) {
+        if (
+          active!.cancelRequested &&
+          legacyCheckpointStop.has(active!.resultError ?? "")
+        )
+          this.o.store.markCheckpointRecovery(
+            held.runId,
+            entry.envelope.commandId,
+            active!.activeTurnId!,
+          );
+        if (!active!.cancelRequested)
+          this.o.runs.patchRun(held.runId, {
+            status: "reconciliation_required",
+            resultError: "暂停点租约已过期，请核对并恢复连接。",
+          });
+        if (t) await this.recoverCheckpoint(held, t, entry).catch(() => {});
+        await this.sync(held, t).catch(() => {});
         return;
       }
       if (active && !terminal(active)) {
-        const intent=this.o.store.stopIntent(held.runId);
+        const intent = this.o.store.stopIntent(held.runId);
         let stopReason =
-          intent&&intent.commandId===(entry?.envelope.commandId??null)
+          intent && intent.commandId === (entry?.envelope.commandId ?? null)
             ? intent.reason
             : this.disabled || status === "revoked"
-            ? "设备执行已停用。"
-            : undefined;
-        if (!stopReason&&!this.liveLease(held)) stopReason = "运行租约已过期。";
+              ? "设备执行已停用。"
+              : undefined;
+        if (!stopReason && !this.liveLease(held))
+          stopReason = "运行租约已过期。";
         if (
-          !stopReason&&entry?.startedAt &&
+          !stopReason &&
+          entry?.startedAt &&
           !(
             active.snapshot.kind === "task" &&
             active.snapshot.batch?.managed &&
             active.batchPhase === "ready"
           ) &&
-          this.now() >=
-            entry.startedAt +
-              30 * 60_000
+          this.now() >= entry.startedAt + 30 * 60_000
         )
           stopReason = "运行超过时间上限。";
         try {
@@ -535,7 +684,7 @@ export class RunnerExecutor {
       )
         return;
     }
-    if (!t || this.disabled) return;
+    if (!t || this.disabled || (!held && this.admissionsPaused)) return;
 
     // Poll before a staged mutation, including after restart, so a replacement
     // cancellation can take precedence.
@@ -548,6 +697,7 @@ export class RunnerExecutor {
       return;
     }
     if (!held) {
+      if (this.admissionsPaused) return;
       const offer = response.offers[0];
       if (!offer || this.o.device.leases().length) {
         await this.flushEvents(t).catch(() => {});
@@ -583,7 +733,10 @@ export class RunnerExecutor {
         });
       held = this.o.store.updateHold(held, "claimed") ?? undefined;
       if (!held) return;
-      held = this.o.store.bindClaim(held, this.o.device.lease(held.runId)!.leaseEpoch);
+      held = this.o.store.bindClaim(
+        held,
+        this.o.device.lease(held.runId)!.leaseEpoch,
+      );
       response = await this.poll(t);
     }
     const delivery = response.deliveries[0];
@@ -603,9 +756,15 @@ export class RunnerExecutor {
         if (run.snapshot.kind === "task" && run.snapshot.batch?.managed)
           await this.managedBatch(held, t, entry, adapter);
         else
-          await adapter.advanceBatchRun(held.runId, Object.assign(async () => {
-            await this.gate(held!, t, entry, true);
-          }, { native: this.nativeGuard(held, entry.envelope.commandId) }));
+          await adapter.advanceBatchRun(
+            held.runId,
+            Object.assign(
+              async () => {
+                await this.gate(held!, t, entry, true);
+              },
+              { native: this.nativeGuard(held, entry.envelope.commandId) },
+            ),
+          );
       } catch (error) {
         if (
           denied(error) ||
@@ -761,15 +920,18 @@ export class RunnerExecutor {
     if (["wait", "blocked"].includes(decision.decision)) return;
     if (!decision.permitId)
       throw new RunnerError("BATCH_NOT_READY", "服务端未返回有效的继续许可。");
-    const guard = Object.assign(async () => {
-      await this.gate(held, t, entry, true);
-      const current = this.o.runs.getRun(held.runId);
-      if (
-        current?.batch?.currentIndex !== index ||
-        current.activeTurnId !== turnId
-      )
-        throw new RunnerError("BATCH_NOT_READY", "当前完成项已改变。");
-    }, { native: this.nativeGuard(held, entry.envelope.commandId) });
+    const guard = Object.assign(
+      async () => {
+        await this.gate(held, t, entry, true);
+        const current = this.o.runs.getRun(held.runId);
+        if (
+          current?.batch?.currentIndex !== index ||
+          current.activeTurnId !== turnId
+        )
+          throw new RunnerError("BATCH_NOT_READY", "当前完成项已改变。");
+      },
+      { native: this.nativeGuard(held, entry.envelope.commandId) },
+    );
     if (decision.decision === "finish") {
       await adapter.finishManagedBatch(run.runId, guard);
       return;
@@ -781,11 +943,14 @@ export class RunnerExecutor {
       throw new RunnerError("BATCH_NOT_READY", "许可指向的待办顺序不匹配。");
     await adapter.advanceBatchRun(
       run.runId,
-      Object.assign(async (stage: string) => {
-        await guard();
-        if (stage === "turn")
-          this.o.store.transition(entry, { startedAt: this.now() });
-      }, { native: guard.native }),
+      Object.assign(
+        async (stage: string) => {
+          await guard();
+          if (stage === "turn")
+            this.o.store.transition(entry, { startedAt: this.now() });
+        },
+        { native: guard.native },
+      ),
       {
         permitId: decision.permitId,
         decision: decision.decision as "advance" | "repair",
@@ -901,7 +1066,11 @@ export class RunnerExecutor {
   ) {
     const { envelope } = entry;
     this.o.store.assertDispatchAllowed(held, envelope.commandId);
-    if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
+    if (this.online !== t)
+      throw new RunnerError(
+        "CONNECTION_LOST",
+        "执行连接正在恢复，请稍后重试。",
+      );
     const current = this.o.runs.getRun(held.runId);
     // The original delivery expires after acceptance, but a running batch is
     // authorized by its immutable snapshot and a freshly checked live lease.
@@ -958,7 +1127,11 @@ export class RunnerExecutor {
           "项目 Git 分支或 HEAD 已改变；后续任务需要重新确认。",
         );
     }
-    if(this.online!==t)throw new RunnerError("CONNECTION_LOST","执行连接正在恢复，请稍后重试。");
+    if (this.online !== t)
+      throw new RunnerError(
+        "CONNECTION_LOST",
+        "执行连接正在恢复，请稍后重试。",
+      );
     this.o.store.assertDispatchAllowed(held, envelope.commandId);
     if (
       this.disabled ||
@@ -968,43 +1141,124 @@ export class RunnerExecutor {
     )
       throw new RunnerError("DISPATCH_EXPIRED", "执行租约或命令已过期。");
   }
-  private recoverableCheckpoint(run?:RunRecord|null) {
-    const stop=run&&this.o.store.stopIntent(run.runId);
-    if(stop&&stop.commandId===(this.o.store.latest(run!.runId)?.envelope.commandId??null))return false;
-    const migrated=run&&this.o.store.checkpointRecovery(run.runId);
-    return !!(run&&run.active&&!run.terminal&&run.snapshot.kind==="task"&&run.snapshot.batch?.managed&&run.batchPhase==="ready"&&!run.pendingRequestId&&run.threadId&&run.activeTurnId&&run.batch?.items[run.batch.currentIndex].completedTurnId===run.activeTurnId&&run.resultValid&&(!run.cancelRequested||legacyCheckpointStop.has(run.resultError??"")||(migrated?.turnId===run.activeTurnId&&migrated.commandId===this.o.store.latest(run.runId)?.envelope.commandId)));
+  private recoverableCheckpoint(run?: RunRecord | null) {
+    const stop = run && this.o.store.stopIntent(run.runId);
+    if (
+      stop &&
+      stop.commandId ===
+        (this.o.store.latest(run!.runId)?.envelope.commandId ?? null)
+    )
+      return false;
+    const migrated = run && this.o.store.checkpointRecovery(run.runId);
+    return !!(
+      run &&
+      run.active &&
+      !run.terminal &&
+      run.snapshot.kind === "task" &&
+      run.snapshot.batch?.managed &&
+      run.batchPhase === "ready" &&
+      !run.pendingRequestId &&
+      run.threadId &&
+      run.activeTurnId &&
+      run.batch?.items[run.batch.currentIndex].completedTurnId ===
+        run.activeTurnId &&
+      run.resultValid &&
+      (!run.cancelRequested ||
+        legacyCheckpointStop.has(run.resultError ?? "") ||
+        (migrated?.turnId === run.activeTurnId &&
+          migrated.commandId ===
+            this.o.store.latest(run.runId)?.envelope.commandId))
+    );
   }
-  private async recoverCheckpoint(held:HeldRun,t:ExecutionTransport,entry:JournalEntry) {
-    const run=this.o.runs.getRun(held.runId)!;
-    const connectionEpoch=t.status.connectionEpoch;
-    const input={runId:held.runId,commandId:entry.envelope.commandId,threadId:run.threadId!,completedTurnId:run.activeTurnId!,leaseEpoch:entry.envelope.leaseEpoch};
-    const decision=leaseRecoveryResult.parse(await t.executionRequest("recover-lease",{...input,phase:"inspect"}));
-    if(decision.decision==="cancel") {await this.stop(held,"用户请求停止。");return;}
-    if(decision.decision!=="inspect")return;
-    const guard=async()=>{
-      const assertCurrent=()=>{
-        const current=this.o.runs.getRun(held.runId), latest=this.o.store.latest(held.runId);
-        if(this.disabled||this.online!==t||t.status.connectionEpoch!==connectionEpoch||!this.recoverableCheckpoint(current)||current!.threadId!==input.threadId||current!.activeTurnId!==input.completedTurnId||latest?.envelope.commandId!==input.commandId||latest.phase!=="applied"||this.o.store.held()?.lockToken!==held.lockToken)
-          throw new RunnerError("RECONCILIATION_REQUIRED","原暂停点或执行连接已改变。");
+  private async recoverCheckpoint(
+    held: HeldRun,
+    t: ExecutionTransport,
+    entry: JournalEntry,
+  ) {
+    const run = this.o.runs.getRun(held.runId)!;
+    const connectionEpoch = t.status.connectionEpoch;
+    const input = {
+      runId: held.runId,
+      commandId: entry.envelope.commandId,
+      threadId: run.threadId!,
+      completedTurnId: run.activeTurnId!,
+      leaseEpoch: entry.envelope.leaseEpoch,
+    };
+    const decision = leaseRecoveryResult.parse(
+      await t.executionRequest("recover-lease", { ...input, phase: "inspect" }),
+    );
+    if (decision.decision === "cancel") {
+      await this.stop(held, "用户请求停止。");
+      return;
+    }
+    if (decision.decision !== "inspect") return;
+    const guard = async () => {
+      const assertCurrent = () => {
+        const current = this.o.runs.getRun(held.runId),
+          latest = this.o.store.latest(held.runId);
+        if (
+          this.disabled ||
+          this.online !== t ||
+          t.status.connectionEpoch !== connectionEpoch ||
+          !this.recoverableCheckpoint(current) ||
+          current!.threadId !== input.threadId ||
+          current!.activeTurnId !== input.completedTurnId ||
+          latest?.envelope.commandId !== input.commandId ||
+          latest.phase !== "applied" ||
+          this.o.store.held()?.lockToken !== held.lockToken
+        )
+          throw new RunnerError(
+            "RECONCILIATION_REQUIRED",
+            "原暂停点或执行连接已改变。",
+          );
         return current!;
       };
-      const current=assertCurrent();
-      await this.o.registry.resolve(held.workspaceId,true);
-      await this.o.registry.assertLock(held.workspaceId,held.runId,held.lockToken);
-      const actual=await readGitBaseline(current!.root),expected=current!.snapshot.context.gitBaseline;
-      if(actual.commit!==expected.commit||actual.branch!==expected.branch)
-        throw new RunnerError("GIT_BASELINE_CHANGED","项目 Git 身份已改变，不能恢复旧暂停点。");
+      const current = assertCurrent();
+      await this.o.registry.resolve(held.workspaceId, true);
+      await this.o.registry.assertLock(
+        held.workspaceId,
+        held.runId,
+        held.lockToken,
+      );
+      const actual = await readGitBaseline(current!.root),
+        expected = current!.snapshot.context.gitBaseline;
+      if (
+        actual.commit !== expected.commit ||
+        actual.branch !== expected.branch
+      )
+        throw new RunnerError(
+          "GIT_BASELINE_CHANGED",
+          "项目 Git 身份已改变，不能恢复旧暂停点。",
+        );
       assertCurrent();
     };
     await guard();
-    const adapter=await this.codex(held.workspaceId);
-    await adapter.confirmPausedCheckpoint(held.runId,guard);
+    const adapter = await this.codex(held.workspaceId);
+    await adapter.confirmPausedCheckpoint(held.runId, guard);
     await guard();
-    const receipt=leaseRecoveryResult.parse(await t.executionRequest("recover-lease",{...input,phase:"confirm",recoveryId:decision.recoveryId}));
+    const receipt = leaseRecoveryResult.parse(
+      await t.executionRequest("recover-lease", {
+        ...input,
+        phase: "confirm",
+        recoveryId: decision.recoveryId,
+      }),
+    );
     await guard();
-    if(receipt.decision!=="recovered"||receipt.recoveryId!==decision.recoveryId||receipt.lease.runId!==held.runId||receipt.lease.workspaceId!==held.workspaceId||receipt.lease.leaseEpoch!==input.leaseEpoch||receipt.lease.expiresAt<=this.now())return;
+    if (
+      receipt.decision !== "recovered" ||
+      receipt.recoveryId !== decision.recoveryId ||
+      receipt.lease.runId !== held.runId ||
+      receipt.lease.workspaceId !== held.workspaceId ||
+      receipt.lease.leaseEpoch !== input.leaseEpoch ||
+      receipt.lease.expiresAt <= this.now()
+    )
+      return;
     this.o.device.saveLease(receipt.lease);
-    this.o.runs.patchRun(held.runId,{cancelRequested:false,status:"verifying",resultError:null});
+    this.o.runs.patchRun(held.runId, {
+      cancelRequested: false,
+      status: "verifying",
+      resultError: null,
+    });
     this.o.store.clearCheckpointRecovery(held.runId);
     this.attached.add(held.runId);
   }
@@ -1076,13 +1330,17 @@ export class RunnerExecutor {
         return;
       }
       const adapter = await this.codex(held.workspaceId);
-      const guard = Object.assign(async (stage: string) => {
-        await this.gate(held, t, entry);
-        if (stage === "turn") {
-          entry =
-            this.o.store.transition(entry, { startedAt: this.now() }) ?? entry;
-        }
-      }, { native: this.nativeGuard(held, entry.envelope.commandId) });
+      const guard = Object.assign(
+        async (stage: string) => {
+          await this.gate(held, t, entry);
+          if (stage === "turn") {
+            entry =
+              this.o.store.transition(entry, { startedAt: this.now() }) ??
+              entry;
+          }
+        },
+        { native: this.nativeGuard(held, entry.envelope.commandId) },
+      );
       if (command.type === "create_run") {
         const launched = await adapter.startFreshRun(entry.snapshot, guard);
         if (launched.status === "started") {
@@ -1193,7 +1451,11 @@ export class RunnerExecutor {
     // Persist explicit stop intent before any await or cross-store cleanup.
     // Old safety-stop display text must never recreate recovery eligibility if
     // this process dies while a later user/lifecycle stop is being handled.
-    this.o.store.recordStopIntent(held.runId,reason,this.o.store.latest(held.runId)?.envelope.commandId??null);
+    this.o.store.recordStopIntent(
+      held.runId,
+      reason,
+      this.o.store.latest(held.runId)?.envelope.commandId ?? null,
+    );
     this.o.store.clearCheckpointRecovery(held.runId);
     let run = this.o.runs.getRun(held.runId);
     if (!run || terminal(run)) return;
@@ -1231,10 +1493,13 @@ export class RunnerExecutor {
       if (!current || terminal(current)) return;
       if (
         recovered.status === "reconciliation_required" ||
-        this.adapter !== adapter || !adapter.available ||
-        current.threadId !== run.threadId || current.activeTurnId !== run.activeTurnId ||
+        this.adapter !== adapter ||
+        !adapter.available ||
+        current.threadId !== run.threadId ||
+        current.activeTurnId !== run.activeTurnId ||
         current.pendingRequestId
-      ) return;
+      )
+        return;
       const receipt = await adapter.cancelRun(run.runId);
       this.assertHeldCurrent(held);
       // Suppress repeated accepted interrupts only for this live connection.
@@ -1270,7 +1535,8 @@ export class RunnerExecutor {
     if (command.type === "cancel_run" && stopped) status = "cancelled";
     else if (entry.phase === "rejected" && stopped) status = "failed";
     else if (
-      stopError || run?.status === "reconciliation_required" ||
+      stopError ||
+      run?.status === "reconciliation_required" ||
       (!stopped &&
         (run?.cancelRequested || !run?.activeTurnId) &&
         entry.phase === "uncertain")
@@ -1280,7 +1546,9 @@ export class RunnerExecutor {
     else if (run.status === "cancel_requested") status = "running";
     else status = run.status as NativeReport["status"];
     const error =
-      stopError ?? run?.resultError ?? (status === "verifying" ? undefined : entry.error);
+      stopError ??
+      run?.resultError ??
+      (status === "verifying" ? undefined : entry.error);
     return {
       runId: held.runId,
       commandId: entry.envelope.commandId,
@@ -1318,8 +1586,13 @@ export class RunnerExecutor {
         try {
           // A replaced workspace must still allow the already attached native
           // thread to be stopped; only new dispatch needs directory resolution.
-          const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
-          await adapter.confirmRunStopped(held.runId, undefined, { readOnly: false, native: this.nativeGuard(held, entry.envelope.commandId) });
+          const adapter = this.adapter?.available
+            ? this.adapter
+            : await this.codex(held.workspaceId);
+          await adapter.confirmRunStopped(held.runId, undefined, {
+            readOnly: false,
+            native: this.nativeGuard(held, entry.envelope.commandId),
+          });
         } catch (error) {
           stopError = String(error);
         }
@@ -1331,7 +1604,8 @@ export class RunnerExecutor {
       if (pending?.report && !pending.reportSent) {
         // Old versions may have saved this report before inspecting terminals.
         // Keep its immutable receipt for retry, but never deliver a false stop.
-        if (pending.report.stopConfirmed && !report?.stopConfirmed) return false;
+        if (pending.report.stopConfirmed && !report?.stopConfirmed)
+          return false;
         const receipt = result.parse(
           await t.executionRequest("report", pending.report),
         );
@@ -1363,73 +1637,179 @@ export class RunnerExecutor {
     if (this.closed || this.deviceResetGuard) return Promise.resolve();
     if (this.reconciling) return this.reconciling;
     const held = this.boundHold();
-    this.reconciling = this.reconcileHeld().catch(error => {
-      if (!held) return;
-      const message = shorten(String(error), 2000);
-      if (this.o.store.reconciliation(held))
-        this.o.store.saveReconciliation(held, { error: message });
-      const run = this.o.runs.getRun(held.runId);
-      if (run && !terminal(run) && sameExecutionClaim(this.o.store.held(), held))
-        this.o.runs.patchRun(held.runId, { status: "reconciliation_required", resultError: message });
-    }).finally(() => { this.reconciling = undefined; });
+    this.reconciling = this.reconcileHeld()
+      .catch((error) => {
+        if (!held) return;
+        const message = shorten(String(error), 2000);
+        if (this.o.store.reconciliation(held))
+          this.o.store.saveReconciliation(held, { error: message });
+        const run = this.o.runs.getRun(held.runId);
+        if (
+          run &&
+          !terminal(run) &&
+          sameExecutionClaim(this.o.store.held(), held)
+        )
+          this.o.runs.patchRun(held.runId, {
+            status: "reconciliation_required",
+            resultError: message,
+          });
+      })
+      .finally(() => {
+        this.reconciling = undefined;
+      });
     return this.reconciling;
   }
-  private async assertRecoveryClaim(held: HeldRun, recovery: NativeReconciliation) {
+  private async assertRecoveryClaim(
+    held: HeldRun,
+    recovery: NativeReconciliation,
+  ) {
     const assertCurrent = () => {
-      const current = this.o.store.held(), lease = this.o.device.lease(held.runId), claim = recovery.claim;
-      if (!current || this.closed || current.runId !== claim.runId || current.workspaceId !== claim.workspaceId ||
-          current.lockToken !== claim.lockToken || current.leaseEpoch !== claim.leaseEpoch ||
-          (lease && (lease.runId !== claim.runId || lease.workspaceId !== claim.workspaceId || lease.leaseEpoch !== claim.leaseEpoch)))
-        throw new RunnerError("LEASE_MISMATCH", "原占用或租约已改变，不能确认或释放其他占用。");
+      const current = this.o.store.held(),
+        lease = this.o.device.lease(held.runId),
+        claim = recovery.claim;
+      if (
+        !current ||
+        this.closed ||
+        current.runId !== claim.runId ||
+        current.workspaceId !== claim.workspaceId ||
+        current.lockToken !== claim.lockToken ||
+        current.leaseEpoch !== claim.leaseEpoch ||
+        (lease &&
+          (lease.runId !== claim.runId ||
+            lease.workspaceId !== claim.workspaceId ||
+            lease.leaseEpoch !== claim.leaseEpoch))
+      )
+        throw new RunnerError(
+          "LEASE_MISMATCH",
+          "原占用或租约已改变，不能确认或释放其他占用。",
+        );
     };
     assertCurrent();
-    await this.o.registry.assertLock(held.workspaceId, held.runId, held.lockToken);
+    await this.o.registry.assertLock(
+      held.workspaceId,
+      held.runId,
+      held.lockToken,
+    );
     assertCurrent();
   }
-  private neverDispatched(recovery: NativeReconciliation): NativeStopProof | undefined {
+  private neverDispatched(
+    recovery: NativeReconciliation,
+  ): NativeStopProof | undefined {
     const ticket = recovery.ticket!;
-    const commands = this.o.store.commandsForRun(ticket.runId), run = this.o.runs.getRun(ticket.runId);
+    const commands = this.o.store.commandsForRun(ticket.runId),
+      run = this.o.runs.getRun(ticket.runId);
     const original = this.o.store.command(ticket.originalCommandId);
-    if (commands.some(entry => entry.envelope.payload.type === "continue_run" || entry.phase === "applied") ||
-        (commands.length > 0 && !original) || ticket.turnId ||
-        (original && (original.envelope.payload.type !== "create_run" || original.envelope.leaseEpoch !== ticket.leaseEpoch ||
-          original.snapshot.payloadHash !== ticket.snapshotHash || digest({ ...original.snapshot, payloadHash: undefined }) !== ticket.snapshotHash)) ||
-        (run && (run.snapshot.payloadHash !== ticket.snapshotHash || run.digest !== digest(run.snapshot) || run.pendingRequestId ||
-          run.activeTurnId || run.launchResult?.status === "started" || !["prepared", "thread_requested", "thread_created"].includes(run.launchIntent))))
+    if (
+      commands.some(
+        (entry) =>
+          entry.envelope.payload.type === "continue_run" ||
+          entry.phase === "applied",
+      ) ||
+      (commands.length > 0 && !original) ||
+      ticket.turnId ||
+      (original &&
+        (original.envelope.payload.type !== "create_run" ||
+          original.envelope.leaseEpoch !== ticket.leaseEpoch ||
+          original.snapshot.payloadHash !== ticket.snapshotHash ||
+          digest({ ...original.snapshot, payloadHash: undefined }) !==
+            ticket.snapshotHash)) ||
+      (run &&
+        (run.snapshot.payloadHash !== ticket.snapshotHash ||
+          run.digest !== digest(run.snapshot) ||
+          run.pendingRequestId ||
+          run.activeTurnId ||
+          run.launchResult?.status === "started" ||
+          !["prepared", "thread_requested", "thread_created"].includes(
+            run.launchIntent,
+          )))
+    )
       return;
     // Absence alone is not evidence: this always requires the durable original
     // claim, its workspace lock and this process's exclusive consumer lock.
     if (!original && run) return;
     const commandState = original?.phase ?? "not_received";
-    if (!["not_received", "staged", "dispatching", "rejected", "uncertain"].includes(commandState)) return;
-    return nativeStopProofSchema.parse({ kind: "never_dispatched", consumerHeld: true, claim: recovery.claim,
-      journal: { commandId: ticket.originalCommandId, snapshotHash: ticket.snapshotHash, sealed: true },
-      commandState, launchStage: run?.launchIntent ?? "absent", turnStartRecorded: false });
+    if (
+      ![
+        "not_received",
+        "staged",
+        "dispatching",
+        "rejected",
+        "uncertain",
+      ].includes(commandState)
+    )
+      return;
+    return nativeStopProofSchema.parse({
+      kind: "never_dispatched",
+      consumerHeld: true,
+      claim: recovery.claim,
+      journal: {
+        commandId: ticket.originalCommandId,
+        snapshotHash: ticket.snapshotHash,
+        sealed: true,
+      },
+      commandState,
+      launchStage: run?.launchIntent ?? "absent",
+      turnStartRecorded: false,
+    });
   }
-  private async recoveryProof(held: HeldRun, recovery: NativeReconciliation): Promise<NativeStopProof> {
+  private async recoveryProof(
+    held: HeldRun,
+    recovery: NativeReconciliation,
+  ): Promise<NativeStopProof> {
     const ticket = recovery.ticket!;
     const never = this.neverDispatched(recovery);
     if (never) return never;
     const run = this.o.runs.getRun(held.runId);
     if (!run?.threadId || run.snapshot.payloadHash !== ticket.snapshotHash)
-      throw new RunnerError("RECONCILIATION_REQUIRED", "缺少原生轮次或未派发的完整证据；不能猜测会话。");
-    const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
+      throw new RunnerError(
+        "RECONCILIATION_REQUIRED",
+        "缺少原生轮次或未派发的完整证据；不能猜测会话。",
+      );
+    const adapter = this.adapter?.available
+      ? this.adapter
+      : await this.codex(held.workspaceId);
     // Identity lookup reads history only, including turn/start ACK loss. It
     // never guesses a thread from a title, timestamp or another user's chat.
     await adapter.identifyRunTurn(held.runId);
     await this.assertRecoveryClaim(held, recovery);
-    if (ticket.action === "stop") await this.stop(held, "用户停止或原执行授权已失效。", ticket.currentCommandId);
+    if (ticket.action === "stop")
+      await this.stop(
+        held,
+        "用户停止或原执行授权已失效。",
+        ticket.currentCommandId,
+      );
     try {
-      await adapter.confirmRunStopped(held.runId, () => this.assertRecoveryClaim(held, recovery), { readOnly: ticket.action === "inspect_only" });
+      await adapter.confirmRunStopped(
+        held.runId,
+        () => this.assertRecoveryClaim(held, recovery),
+        { readOnly: ticket.action === "inspect_only" },
+      );
     } catch (error) {
-      if (ticket.action === "inspect_only" && errorCode(error) === "RECONCILIATION_REQUIRED")
-        throw new RunnerError("RECONCILIATION_REQUIRED", "只读核对尚未确认原会话和后台进程全部停止。请先在清单请求停止，再重连核对。");
+      if (
+        ticket.action === "inspect_only" &&
+        errorCode(error) === "RECONCILIATION_REQUIRED"
+      )
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "只读核对尚未确认原会话和后台进程全部停止。请先在清单请求停止，再重连核对。",
+        );
       throw error;
     }
     const current = this.o.runs.getRun(held.runId)!;
-    return nativeStopProofSchema.parse({ kind: "native_stopped", consumerHeld: true, claim: recovery.claim,
-      journal: { commandId: ticket.originalCommandId, snapshotHash: ticket.snapshotHash, sealed: true },
-      threadId: current.threadId, turnId: current.activeTurnId, turnsStopped: true, backgroundTerminalsStopped: true });
+    return nativeStopProofSchema.parse({
+      kind: "native_stopped",
+      consumerHeld: true,
+      claim: recovery.claim,
+      journal: {
+        commandId: ticket.originalCommandId,
+        snapshotHash: ticket.snapshotHash,
+        sealed: true,
+      },
+      threadId: current.threadId,
+      turnId: current.activeTurnId,
+      turnsStopped: true,
+      backgroundTerminalsStopped: true,
+    });
   }
   private async reconcileHeld() {
     let held = this.o.store.held();
@@ -1440,7 +1820,10 @@ export class RunnerExecutor {
       // Legacy claims can migrate only from their own persisted lease. The
       // server ticket must never manufacture local execution ownership.
       if (!lease || lease.workspaceId !== held.workspaceId)
-        throw new RunnerError("RECONCILIATION_REQUIRED", "缺少原持久租约，不能确认从未派发。");
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "缺少原持久租约，不能确认从未派发。",
+        );
       held = this.o.store.bindClaim(held, lease.leaseEpoch);
     }
     let recovery = this.o.store.beginReconciliation(held);
@@ -1449,34 +1832,75 @@ export class RunnerExecutor {
     const epoch = t.status.connectionEpoch;
     const connection = () => {
       if (this.online !== t || t.status.connectionEpoch !== epoch)
-        throw new RunnerError("CONNECTION_LOST", "核对连接已更改，保留原请求等待重试。");
+        throw new RunnerError(
+          "CONNECTION_LOST",
+          "核对连接已更改，保留原请求等待重试。",
+        );
     };
     if (!recovery.request) {
       const pending = this.o.store.run(held.runId);
-      if (!recovery.ticket && pending?.report?.status === "reconciliation_required" && !pending.reportSent) {
-        const receipt = result.parse(await t.executionRequest("report", pending.report));
+      if (
+        !recovery.ticket &&
+        pending?.report?.status === "reconciliation_required" &&
+        !pending.reportSent
+      ) {
+        const receipt = result.parse(
+          await t.executionRequest("report", pending.report),
+        );
         connection();
         this.o.store.markReportSent(pending.report, receipt.settled === true);
       }
-      const response = reconcileResult.parse(await t.executionRequest("reconcile", { phase: "inspect", runId: held.runId, workspaceId: held.workspaceId, leaseEpoch: recovery.claim.leaseEpoch }));
+      const response = reconcileResult.parse(
+        await t.executionRequest("reconcile", {
+          phase: "inspect",
+          runId: held.runId,
+          workspaceId: held.workspaceId,
+          leaseEpoch: recovery.claim.leaseEpoch,
+        }),
+      );
       connection();
       await this.assertRecoveryClaim(held, recovery);
       // An already-settled server status alone cannot replace our native stop
       // proof. A lost confirm ACK is recovered by the persisted request below.
       if (!("decision" in response) || response.decision !== "inspect")
-        throw new RunnerError("RECONCILIATION_REQUIRED", "服务端已有终态，但本机缺少匹配的停止证明回执。");
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "服务端已有终态，但本机缺少匹配的停止证明回执。",
+        );
       const ticket: ExecutionReconcileTicket = response.ticket;
-      if (ticket.runId !== held.runId || ticket.workspaceId !== held.workspaceId || ticket.leaseEpoch !== recovery.claim.leaseEpoch)
+      if (
+        ticket.runId !== held.runId ||
+        ticket.workspaceId !== held.workspaceId ||
+        ticket.leaseEpoch !== recovery.claim.leaseEpoch
+      )
         throw new RunnerError("LEASE_MISMATCH", "核对票据不属于原占用。");
-      recovery = this.o.store.saveReconciliation(held, { ticket, error: undefined });
+      recovery = this.o.store.saveReconciliation(held, {
+        ticket,
+        error: undefined,
+      });
       const proof = await this.recoveryProof(held, recovery);
       connection();
       await this.assertRecoveryClaim(held, recovery);
-      const request = { phase: "confirm" as const, runId: held.runId, recoveryId: ticket.recoveryId, requestId: randomUUID(), proof,
-        report: { runId: held.runId, commandId: ticket.currentCommandId, revision: ticket.reportRevision + 1,
-          threadId: proof.kind === "native_stopped" ? proof.threadId : this.o.runs.getRun(held.runId)?.threadId ?? ticket.threadId,
+      const request = {
+        phase: "confirm" as const,
+        runId: held.runId,
+        recoveryId: ticket.recoveryId,
+        requestId: randomUUID(),
+        proof,
+        report: {
+          runId: held.runId,
+          commandId: ticket.currentCommandId,
+          revision: ticket.reportRevision + 1,
+          threadId:
+            proof.kind === "native_stopped"
+              ? proof.threadId
+              : (this.o.runs.getRun(held.runId)?.threadId ?? ticket.threadId),
           turnId: proof.kind === "native_stopped" ? proof.turnId : null,
-          status: "cancelled" as const, terminal: true as const, stopConfirmed: true as const } };
+          status: "cancelled" as const,
+          terminal: true as const,
+          stopConfirmed: true as const,
+        },
+      };
       // Fixed payload is durable before send; only transport supplies a fresh
       // connectionEpoch on replay. Old requests remain archived on conflicts.
       recovery = this.o.store.saveReconciliation(held, { request });
@@ -1485,26 +1909,49 @@ export class RunnerExecutor {
     if (!recovery.settled) {
       let response;
       try {
-        response = reconcileResult.parse(await t.executionRequest("reconcile", request));
+        response = reconcileResult.parse(
+          await t.executionRequest("reconcile", request),
+        );
       } catch (error) {
         if (errorCode(error) === "EXECUTION_HTTP_409")
-          this.o.store.saveReconciliation(held, { request: undefined, ticket: undefined });
+          this.o.store.saveReconciliation(held, {
+            request: undefined,
+            ticket: undefined,
+          });
         throw error;
       }
       connection();
       await this.assertRecoveryClaim(held, recovery);
-      if (!("ok" in response) || response.runId !== held.runId || response.workspaceId !== held.workspaceId ||
-          response.leaseEpoch !== recovery.claim.leaseEpoch || response.recoveryId !== request.recoveryId ||
-          response.reportRevision !== request.report.revision)
-        throw new RunnerError("RECONCILIATION_REQUIRED", "停止确认回执不匹配原请求。");
-      recovery = this.o.store.saveReconciliation(held, { settled: true, error: undefined });
+      if (
+        !("ok" in response) ||
+        response.runId !== held.runId ||
+        response.workspaceId !== held.workspaceId ||
+        response.leaseEpoch !== recovery.claim.leaseEpoch ||
+        response.recoveryId !== request.recoveryId ||
+        response.reportRevision !== request.report.revision
+      )
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "停止确认回执不匹配原请求。",
+        );
+      recovery = this.o.store.saveReconciliation(held, {
+        settled: true,
+        error: undefined,
+      });
     }
     // Server settled is necessary, but P1 native verification is still required
     // on EVERY release/restart, including a cached stop proof and receipt.
-    if (this.o.runs.getRun(held.runId)) this.o.runs.patchRun(held.runId, {
-      status: "cancelled", active: false, terminal: true, cancelRequested: true,
-      resultError: null, ...(this.o.runs.getRun(held.runId)?.batch ? { batchPhase: "cancelled" as const } : {}),
-    });
+    if (this.o.runs.getRun(held.runId))
+      this.o.runs.patchRun(held.runId, {
+        status: "cancelled",
+        active: false,
+        terminal: true,
+        cancelRequested: true,
+        resultError: null,
+        ...(this.o.runs.getRun(held.runId)?.batch
+          ? { batchPhase: "cancelled" as const }
+          : {}),
+      });
     const releasing = this.o.store.updateHold(held, "releasing");
     if (releasing) await this.release(releasing, t);
   }
@@ -1513,18 +1960,40 @@ export class RunnerExecutor {
     const recovery = this.o.store.reconciliation(held);
     if (recovery) {
       if (!recovery.settled || !recovery.request || !recovery.ticket)
-        throw new RunnerError("RECONCILIATION_REQUIRED", "尚未收到匹配的服务端停止回执。");
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "尚未收到匹配的服务端停止回执。",
+        );
       await this.assertRecoveryClaim(held, recovery);
-      if (recovery.request.proof.kind === "never_dispatched" && !this.neverDispatched(recovery))
-        throw new RunnerError("RECONCILIATION_REQUIRED", "未派发证据已变化，保留原占用。");
+      if (
+        recovery.request.proof.kind === "never_dispatched" &&
+        !this.neverDispatched(recovery)
+      )
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "未派发证据已变化，保留原占用。",
+        );
     }
     const run = this.o.runs.getRun(held.runId);
     if (run?.threadId && run.activeTurnId) {
       const proof = recovery?.request?.proof;
-      if (proof && (proof.kind !== "native_stopped" || proof.threadId !== run.threadId || proof.turnId !== run.activeTurnId))
-        throw new RunnerError("RECONCILIATION_REQUIRED", "已确认的原生轮次已变化，保留原占用。");
-      const adapter = this.adapter?.available ? this.adapter : await this.codex(held.workspaceId);
-      await adapter.confirmRunStopped(held.runId, undefined, { readOnly: !!recovery, native: this.nativeGuard(held) });
+      if (
+        proof &&
+        (proof.kind !== "native_stopped" ||
+          proof.threadId !== run.threadId ||
+          proof.turnId !== run.activeTurnId)
+      )
+        throw new RunnerError(
+          "RECONCILIATION_REQUIRED",
+          "已确认的原生轮次已变化，保留原占用。",
+        );
+      const adapter = this.adapter?.available
+        ? this.adapter
+        : await this.codex(held.workspaceId);
+      await adapter.confirmRunStopped(held.runId, undefined, {
+        readOnly: !!recovery,
+        native: this.nativeGuard(held),
+      });
     }
     this.assertHeldCurrent(held);
     if (recovery) await this.assertRecoveryClaim(held, recovery);

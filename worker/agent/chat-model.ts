@@ -42,6 +42,7 @@ type Usage = { inputTokens: number; outputTokens: number };
 export type ChatGenerationOptions = {
   signal?: AbortSignal;
   onPartialText?: (text: string) => void | Promise<void>;
+  maxOutputTokens?: number;
 };
 
 function modelConfig(env: ChatModelEnv) {
@@ -463,6 +464,10 @@ export async function generateChatReply(
   const responses = config.format === "responses";
   const endpoint = config.url;
   const deepseek = endpoint.hostname === "api.deepseek.com";
+  const outputBudget = Math.max(
+    256,
+    Math.min(maxOutputTokens, options.maxOutputTokens || maxOutputTokens),
+  );
   const path = responses ? "responses" : "chat/completions";
   endpoint.pathname = `${endpoint.pathname.replace(/\/+$/u, "")}/${path}`;
   const request = responses
@@ -472,7 +477,7 @@ export async function generateChatReply(
         store: false,
         instructions: context.instructions,
         input: context.messages,
-        max_output_tokens: maxOutputTokens,
+        max_output_tokens: outputBudget,
         text: {
           format: {
             type: "json_schema",
@@ -499,8 +504,8 @@ export async function generateChatReply(
           ...context.messages,
         ],
         ...(deepseek
-          ? { max_tokens: maxOutputTokens, thinking: { type: "disabled" } }
-          : { max_completion_tokens: maxOutputTokens }),
+          ? { max_tokens: outputBudget, thinking: { type: "disabled" } }
+          : { max_completion_tokens: outputBudget }),
         response_format: { type: "json_object" },
       };
   if (options.signal?.aborted) throw new ChatModelError("MODEL_CANCELLED");

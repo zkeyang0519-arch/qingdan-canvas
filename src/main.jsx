@@ -10,6 +10,9 @@ import "./ops/operations.css";
 import "./ui/luma.css";
 
 // Remember download-page selection before login/room navigation rewrites the URL.
+document.documentElement.dataset.qingdanBuildVersion =
+  document.querySelector('meta[name="qingdan-build-version"]')?.content ||
+  "development";
 desktopPreviewSelected();
 
 createRoot(document.getElementById("root")).render(

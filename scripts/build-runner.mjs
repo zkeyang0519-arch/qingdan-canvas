@@ -10,7 +10,7 @@ await build({
   target: "node24",
   format: "esm",
   bundle: true,
-  external: ["ws"],
+  external: ["ws", "@earendil-works/pi-coding-agent"],
   sourcemap: true,
   logLevel: "info",
 });

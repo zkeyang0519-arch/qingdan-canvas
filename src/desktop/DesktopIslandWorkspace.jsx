@@ -98,7 +98,9 @@ function ConnectedWorkspace({
       if (!active || !root.current) return;
       // Native emits installing before requesting a save. Set this directly,
       // without awaiting a React render, so no later input can race the save.
-      const installing = state?.status === "installing";
+      const installing = ["saving", "stopping", "installing"].includes(
+        state?.status,
+      );
       root.current.inert = installing;
       root.current.toggleAttribute("inert", installing);
       root.current.setAttribute("aria-busy", String(installing));

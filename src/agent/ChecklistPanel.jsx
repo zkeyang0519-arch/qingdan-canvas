@@ -1,9 +1,11 @@
 import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
   Check,
+  Clapperboard,
   Pencil,
   Plus,
   RefreshCw,
@@ -52,6 +54,7 @@ import {
   PermissionButton,
   usePermissionPreference,
 } from "./PermissionControls.jsx";
+import "./checklist-interactions.css";
 
 const executionApi = "/api/agent/execution";
 const emptyDraft = { text: "", instruction: "", acceptance: "" };
@@ -159,7 +162,7 @@ const trimDraft = (value) => {
   return result;
 };
 
-function CompletedTasks({ count, children, review = false }) {
+function CompletedTasks({ count, children, review = false, asPage = false }) {
   const details = useRef(null);
   const previous = useRef(count);
   useEffect(() => {
@@ -167,6 +170,19 @@ function CompletedTasks({ count, children, review = false }) {
       details.current.open = false;
     previous.current = count;
   }, [count]);
+  const content = count ? (
+    <ol
+      className="agent-checklist-tasks"
+      aria-label={review ? "已执行待核对列表" : "已完成待办列表"}
+    >
+      {children}
+    </ol>
+  ) : (
+    <p className="agent-note">
+      {review ? "还没有待核对的执行结果。" : "还没有已完成的待办。"}
+    </p>
+  );
+  if (asPage) return content;
   return (
     <details
       ref={details}
@@ -176,18 +192,7 @@ function CompletedTasks({ count, children, review = false }) {
       <summary>
         {review ? "已执行，待核对" : "已完成"} <span>{count}</span>
       </summary>
-      {count ? (
-        <ol
-          className="agent-checklist-tasks"
-          aria-label={review ? "已执行待核对列表" : "已完成待办列表"}
-        >
-          {children}
-        </ol>
-      ) : (
-        <p className="agent-note">
-          {review ? "还没有待核对的执行结果。" : "还没有已完成的待办。"}
-        </p>
-      )}
+      {content}
     </details>
   );
 }
@@ -453,7 +458,11 @@ function BoundChecklist({
   onDeleteTodo,
   onReopenTodo,
   onSetTodoDone,
+  onFilmTodo,
   onCountsChange,
+  collection,
+  centralSettings,
+  settingsHost,
 }) {
   const [view, setView] = useState(null);
   const dispatchHintId = useId();
@@ -500,6 +509,17 @@ function BoundChecklist({
     true,
     { validate: validEditor },
   );
+  const editButtons = useRef(new Map());
+  const previousEditor = useRef(editing);
+  const editorFocusTarget = useRef(null);
+  useEffect(() => {
+    if (editing) {
+      setAdding(false);
+      editorFocusTarget.current = null;
+    } else if (previousEditor.current)
+      editorFocusTarget.current = previousEditor.current.task.taskId;
+    previousEditor.current = editing;
+  }, [editing]);
   const [preserved, setPreserved, preservedStorage] = useWorkspaceDraft(
     `${draftScope}:preserved-edit`,
     null,
@@ -540,6 +560,15 @@ function BoundChecklist({
   const [stopRequested, setStopRequested] = useState("");
   const [operationBusy, setBusy] = useState(false);
   const busy = operationBusy || migrating;
+  useEffect(() => {
+    if (!editing && !busy && editorFocusTarget.current) {
+      const button = editButtons.current.get(editorFocusTarget.current);
+      (button && !button.disabled ? button : addButton.current)?.focus({
+        preventScroll: true,
+      });
+      editorFocusTarget.current = null;
+    }
+  }, [editing, busy]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const active = useRef(false);
@@ -853,7 +882,11 @@ function BoundChecklist({
       setRun(null);
       setSelected(new Set());
       setMessage(
-        embedded ? "已提交到项目聊天。" : "批次已提交。执行结果会在下方更新。",
+        embedded
+          ? collection
+            ? "已提交，可在执行记录中查看。"
+            : "已提交到项目聊天。"
+          : "批次已提交。执行结果会在下方更新。",
       );
       if (valid(version))
         onOpenBatch?.({
@@ -1222,7 +1255,10 @@ function BoundChecklist({
   }
   async function dispatch(version) {
     if (!picked.length || defaultsIssue) return;
-    const executionSettings = executionSettingsPayload(executionDefaults, modelCatalog);
+    const executionSettings = executionSettingsPayload(
+      executionDefaults,
+      modelCatalog,
+    );
     const prepared = [];
     for (const task of picked) {
       if (task.specStatus === "ready") {
@@ -1330,8 +1366,8 @@ function BoundChecklist({
     setPreserved(editing);
     setEditing({ task: editingTask, value: draftFromTask(editingTask) });
   }
-  const editor = editing && (
-    <div className="agent-checklist-editor">
+  const editorFeedback = editing && (
+    <>
       {!editingTask ? (
         <p className="agent-note">
           此待办已移出清单。你仍可复制未保存的编辑内容。
@@ -1342,7 +1378,7 @@ function BoundChecklist({
       {editingStale && (
         <div role="status">
           <p>
-            此待办已变化。旧草稿保留在下方；请比较最新内容，明确载入后重新编辑。
+            此待办已变化。未保存的草稿已保留；请比较最新内容，明确载入后重新编辑。
           </p>
           <pre>{JSON.stringify(draftFromTask(editingTask), null, 2)}</pre>
           <button
@@ -1353,6 +1389,19 @@ function BoundChecklist({
           </button>
         </div>
       )}
+    </>
+  );
+  const saveEditDisabled =
+    busy ||
+    !editingTask ||
+    editingStale ||
+    editingTask.done ||
+    editingTask.locked ||
+    editingTask.specStatus === "syncing" ||
+    (editing.task.editableText && !editing.value.text.trim());
+  const editor = editing && (
+    <div className="agent-checklist-editor">
+      {editorFeedback}
       <DraftFields
         label="编辑"
         simple={embedded}
@@ -1363,14 +1412,7 @@ function BoundChecklist({
       />
       <div className="agent-actions">
         <button
-          disabled={
-            busy ||
-            !editingTask ||
-            editingStale ||
-            editingTask.done ||
-            editingTask.locked ||
-            (editing.task.editableText && !editing.value.text.trim())
-          }
+          disabled={saveEditDisabled}
           onClick={() => perform(saveExisting)}
         >
           保存待办
@@ -1385,154 +1427,235 @@ function BoundChecklist({
     items.map((task) => {
       const index = unfinished.indexOf(task);
       const checked = selected.has(taskVersion(task));
+      const inlineEditing =
+        embedded &&
+        editingTask === task &&
+        !task.done &&
+        !task.reviewRunId &&
+        editing.task.editableText;
       return (
-        <li key={task.taskId} data-completed={task.done || undefined}>
-          <div className="agent-checklist-row">
-            {task.done && embedded ? (
-              <button
-                type="button"
-                className="agent-completed-task-text"
-                aria-label={`移回待办：${task.text}`}
-                title="点击移回待办"
-                disabled={
-                  busy ||
-                  !!editing ||
-                  task.locked ||
-                  (!onSetTodoDone && !onReopenTodo)
+        <li
+          key={task.taskId}
+          data-completed={task.done || undefined}
+          data-editing={inlineEditing || undefined}
+        >
+          {inlineEditing ? (
+            <>
+              <TaskComposer
+                mode="edit"
+                value={editing.value.text}
+                busy={busy}
+                saveDisabled={saveEditDisabled}
+                onChange={(text) =>
+                  setEditing({ ...editing, value: { ...editing.value, text } })
                 }
-                onClick={() => reopen(task)}
-              >
-                <Check size={13} aria-hidden="true" />
-                <span>{task.text}</span>
-              </button>
-            ) : (
-              <label>
-                <input
-                  type="checkbox"
-                  aria-label={`${task.done ? "已完成" : task.reviewRunId ? "待核对" : "选中"}待办：${task.text}`}
-                  checked={task.done || checked}
-                  disabled={
-                    busy ||
-                    !eligible(task) ||
-                    (!checked && picked.length >= MAX_PLAN_TASKS)
-                  }
-                  onChange={() => toggle(task)}
-                />
-                <span>{task.text}</span>
-              </label>
-            )}
-            {(task.done ||
-              task.reviewRunId ||
-              task.locked ||
-              specText[task.specStatus]) &&
-              (!embedded ||
-                task.done ||
-                task.reviewRunId ||
-                task.locked ||
-                task.specStatus !== "ready") && (
-                <span className="agent-note">
-                  {task.done
-                    ? "已完成"
-                    : task.reviewRunId
-                      ? "执行已结束，待核对"
-                      : task.locked
-                        ? "已锁定"
-                        : specText[task.specStatus]}
-                </span>
+                onSave={() => perform(saveExisting)}
+                onClose={() => setEditing(null)}
+              />
+              {editingStale && (
+                <div className="agent-inline-edit-feedback">
+                  {editorFeedback}
+                </div>
               )}
-          </div>
-          {(!task.done || onDeleteTodo) && (
-            <div className="agent-actions agent-task-actions">
-              {!task.done && onSetTodoDone && (
-                <button
-                  aria-label={`标记完成待办：${task.text}`}
-                  title="标记完成"
-                  disabled={busy || !!editing || task.locked}
-                  onClick={() => complete(task)}
-                >
-                  {embedded ? <Check size={14} /> : "标记完成"}
-                </button>
-              )}
-              {task.reviewRunId && (
-                <button
-                  aria-label={`重新准备待办：${task.text}`}
-                  disabled={busy || !!editing || task.locked}
-                  onClick={() => reopen(task)}
-                >
-                  继续处理
-                </button>
-              )}
-              {!task.done && !task.reviewRunId && (
-                <>
+            </>
+          ) : (
+            <>
+              <div className="agent-checklist-row">
+                {task.done && embedded ? (
                   <button
-                    aria-label={`编辑待办：${task.text}`}
-                    title="编辑待办"
+                    type="button"
+                    className="agent-completed-task-text"
+                    aria-label={`移回待办：${task.text}`}
+                    title="点击移回待办"
                     disabled={
                       busy ||
                       !!editing ||
                       task.locked ||
-                      task.specStatus === "syncing"
+                      (!onSetTodoDone && !onReopenTodo)
                     }
-                    onClick={() =>
-                      setEditing({
-                        task,
-                        value: draftFromTask(task),
-                      })
-                    }
+                    onClick={() => reopen(task)}
                   >
-                    {embedded ? <Pencil size={14} /> : "编辑待办"}
+                    <Check size={13} aria-hidden="true" />
+                    <span>{task.text}</span>
                   </button>
-                  <button
-                    aria-label={`上移待办：${task.text}`}
-                    title="上移"
-                    disabled={busy || !!editing || !canReorder || index <= 0}
-                    onClick={() => move(index, -1)}
-                  >
-                    {embedded ? <ArrowUp size={14} /> : "上移"}
-                  </button>
-                  <button
-                    aria-label={`下移待办：${task.text}`}
-                    title="下移"
-                    disabled={
-                      busy ||
-                      !!editing ||
-                      !canReorder ||
-                      index >= unfinished.length - 1
-                    }
-                    onClick={() => move(index, 1)}
-                  >
-                    {embedded ? <ArrowDown size={14} /> : "下移"}
-                  </button>
-                </>
+                ) : (
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={`${task.done ? "已完成" : task.reviewRunId ? "待核对" : "选中"}待办：${task.text}`}
+                      checked={task.done || checked}
+                      disabled={
+                        busy ||
+                        !eligible(task) ||
+                        (!checked && picked.length >= MAX_PLAN_TASKS)
+                      }
+                      onChange={() => toggle(task)}
+                    />
+                    <span>{task.text}</span>
+                  </label>
+                )}
+                {(task.done ||
+                  task.reviewRunId ||
+                  task.locked ||
+                  specText[task.specStatus]) &&
+                  (!embedded ||
+                    task.done ||
+                    task.reviewRunId ||
+                    task.locked ||
+                    task.specStatus !== "ready") && (
+                    <span className="agent-note">
+                      {task.done
+                        ? "已完成"
+                        : task.reviewRunId
+                          ? "执行已结束，待核对"
+                          : task.locked
+                            ? "已锁定"
+                            : specText[task.specStatus]}
+                    </span>
+                  )}
+              </div>
+              {(!task.done || onDeleteTodo) && (
+                <div className="agent-actions agent-task-actions">
+                  {onFilmTodo && !task.done && (
+                    <button
+                      aria-label={`用此待办制作短片：${task.text}`}
+                      title="制作短片"
+                      onClick={() =>
+                        onFilmTodo({
+                          noteId: task.noteId,
+                          taskId: task.taskId,
+                          text: task.text,
+                          ...(Number.isSafeInteger(task.generation)
+                            ? { generation: task.generation }
+                            : {}),
+                          ...(Number.isSafeInteger(task.specRevision)
+                            ? { specRevision: task.specRevision }
+                            : {}),
+                        })
+                      }
+                    >
+                      <Clapperboard size={13} />
+                    </button>
+                  )}
+                  {!task.done && onSetTodoDone && (
+                    <button
+                      aria-label={`标记完成待办：${task.text}`}
+                      title="标记完成"
+                      disabled={busy || !!editing || task.locked}
+                      onClick={() => complete(task)}
+                    >
+                      {embedded ? <Check size={14} /> : "标记完成"}
+                    </button>
+                  )}
+                  {task.reviewRunId && (
+                    <button
+                      aria-label={`重新准备待办：${task.text}`}
+                      disabled={busy || !!editing || task.locked}
+                      onClick={() => reopen(task)}
+                    >
+                      继续处理
+                    </button>
+                  )}
+                  {!task.done && !task.reviewRunId && (
+                    <>
+                      <button
+                        ref={(node) => {
+                          if (node) editButtons.current.set(task.taskId, node);
+                          else editButtons.current.delete(task.taskId);
+                        }}
+                        aria-label={`编辑待办：${task.text}`}
+                        title="编辑待办"
+                        disabled={
+                          busy ||
+                          !!editing ||
+                          task.locked ||
+                          task.specStatus === "syncing"
+                        }
+                        onClick={() => {
+                          setAdding(false);
+                          setEditing({
+                            task,
+                            value: draftFromTask(task),
+                          });
+                        }}
+                      >
+                        {embedded ? <Pencil size={14} /> : "编辑待办"}
+                      </button>
+                      <button
+                        aria-label={`上移待办：${task.text}`}
+                        title="上移"
+                        disabled={
+                          busy || !!editing || !canReorder || index <= 0
+                        }
+                        onClick={() => move(index, -1)}
+                      >
+                        {embedded ? <ArrowUp size={14} /> : "上移"}
+                      </button>
+                      <button
+                        aria-label={`下移待办：${task.text}`}
+                        title="下移"
+                        disabled={
+                          busy ||
+                          !!editing ||
+                          !canReorder ||
+                          index >= unfinished.length - 1
+                        }
+                        onClick={() => move(index, 1)}
+                      >
+                        {embedded ? <ArrowDown size={14} /> : "下移"}
+                      </button>
+                    </>
+                  )}
+                  {onDeleteTodo && (
+                    <button
+                      className="agent-task-delete"
+                      aria-label={`删除待办：${task.text}`}
+                      title={task.locked ? "已锁定，无法删除" : "删除待办"}
+                      disabled={busy || !!editing || task.locked}
+                      onClick={() => remove(task)}
+                    >
+                      {embedded ? <Trash2 size={14} /> : "删除待办"}
+                    </button>
+                  )}
+                </div>
               )}
-              {onDeleteTodo && (
-                <button
-                  className="agent-task-delete"
-                  aria-label={`删除待办：${task.text}`}
-                  title={task.locked ? "已锁定，无法删除" : "删除待办"}
-                  disabled={busy || !!editing || task.locked}
-                  onClick={() => remove(task)}
-                >
-                  {embedded ? <Trash2 size={14} /> : "删除待办"}
-                </button>
-              )}
-            </div>
+            </>
           )}
-          {editingTask === task && !task.done && !task.reviewRunId && editor}
+          {!inlineEditing &&
+            editingTask === task &&
+            !task.done &&
+            !task.reviewRunId &&
+            editor}
         </li>
       );
     });
   return (
     <>
-      {embedded && (
-        <ExecutionSettings
-          value={executionDefaults}
-          onSave={setExecutionDefaults}
-          catalog={modelCatalog}
-          disabled={busy}
-          warning={defaultsStorage.warning}
-        />
-      )}
+      {embedded &&
+        centralSettings &&
+        settingsHost &&
+        createPortal(
+          <ExecutionSettings
+            inline
+            value={executionDefaults}
+            onSave={setExecutionDefaults}
+            catalog={modelCatalog}
+            disabled={busy}
+            warning={defaultsStorage.warning}
+          />,
+          settingsHost,
+        )}
+      {embedded &&
+        !centralSettings &&
+        (!collection || collection === "pending") && (
+          <ExecutionSettings
+            value={executionDefaults}
+            onSave={setExecutionDefaults}
+            catalog={modelCatalog}
+            disabled={busy}
+            warning={defaultsStorage.warning}
+          />
+        )}
       <div className="agent-card-heading">
         <p title={`执行项目：${project?.name || "已绑定项目"}`}>
           {!embedded && "执行项目 · "}
@@ -1672,130 +1795,136 @@ function BoundChecklist({
                 : "当前显示部分待办。请在画布中调整完整顺序。"}
             </p>
           )}
-          {unfinished.length === 0 && (
-            <p className="agent-note">
-              {reviewCount
-                ? "执行已结束，可在下方核对结果或继续处理。"
-                : completed.length
-                  ? "当前待办已全部完成。"
-                  : "清单里还没有待办。"}
-            </p>
-          )}
-          {unfinished.length > 0 && (
-            <div className="agent-checklist-selection">
-              <label className="agent-checklist-option">
-                <input
-                  type="checkbox"
-                  aria-label="全选待办"
-                  checked={allSelected}
-                  ref={(input) => {
-                    if (input)
-                      input.indeterminate = picked.length > 0 && !allSelected;
-                  }}
-                  disabled={busy || !!editing || !selectable.length}
-                  onChange={toggleAll}
-                />
-                <span>{allSelected ? "取消全选" : "全选待办"}</span>
-              </label>
-              {selectable.length > MAX_PLAN_TASKS && (
-                <span className="agent-note">
-                  每批最多 {MAX_PLAN_TASKS} 项，全选前 {MAX_PLAN_TASKS} 项
-                </span>
-              )}
-            </div>
-          )}
-          <ol className="agent-checklist-tasks" aria-label="真实待办">
-            {renderTasks(unfinished)}
-          </ol>
-          {embedded &&
-            canAddTodo &&
-            (adding ? (
-              <TaskComposer
-                inputRef={composerInput}
-                value={draft.text}
-                onChange={(text) => setDraft({ ...draft, text })}
-                onSave={() => perform(saveNew, !onAddTodo)}
-                onClose={() => setAdding(false)}
-                busy={busy}
-              />
-            ) : (
-              <AddTaskButton
-                buttonRef={addButton}
-                disabled={busy}
-                onClick={() => setAdding(true)}
-              />
-            ))}
-          {message && (
-            <p className="agent-success agent-checklist-message" role="status">
-              {message}
-            </p>
-          )}
-          {(!editingTask || editingTask.done || editingTask.reviewRunId) &&
-            editor}
-          {(!embedded || unfinished.length > 0) && (
-            <div className="agent-checklist-dispatch">
-              <details
-                className="agent-dispatch-options"
-                open={embedded ? undefined : true}
-              >
-                <summary>{embedded ? "执行权限" : "执行设置"}</summary>
-                <PermissionButton
-                  value={permissionProfile}
-                  onChange={setPermissionProfile}
-                  disabled={busy}
-                />
-                {!embedded && (
-                  <label className="agent-checklist-option">
-                    <input
-                      type="checkbox"
-                      aria-label="自动勾选完成"
-                      checked={autoComplete}
-                      disabled={busy}
-                      onChange={(event) =>
-                        setAutoComplete(event.target.checked)
-                      }
-                    />
-                    <span title="验收通过且待办内容未变化时，自动更新完成状态">
-                      验收后自动勾选完成
-                    </span>
-                  </label>
+          <div hidden={!!collection && collection !== "pending"}>
+            {unfinished.length === 0 && (
+              <p className="agent-note">
+                {reviewCount
+                  ? "执行已结束，可在下方核对结果或继续处理。"
+                  : completed.length
+                    ? "当前待办已全部完成。"
+                    : "清单里还没有待办。"}
+              </p>
+            )}
+            {unfinished.length > 0 && (
+              <div className="agent-checklist-selection">
+                <label className="agent-checklist-option">
+                  <input
+                    type="checkbox"
+                    aria-label="全选待办"
+                    checked={allSelected}
+                    ref={(input) => {
+                      if (input)
+                        input.indeterminate = picked.length > 0 && !allSelected;
+                    }}
+                    disabled={busy || !!editing || !selectable.length}
+                    onChange={toggleAll}
+                  />
+                  <span>{allSelected ? "取消全选" : "全选待办"}</span>
+                </label>
+                {selectable.length > MAX_PLAN_TASKS && (
+                  <span className="agent-note">
+                    每批最多 {MAX_PLAN_TASKS} 项，全选前 {MAX_PLAN_TASKS} 项
+                  </span>
                 )}
-              </details>
-              <div className="agent-actions">
-                <button
-                  className="primary"
-                  disabled={!picked.length || !!dispatchDisabledReason}
-                  title={
-                    dispatchDisabledReason ||
-                    (embedded
-                      ? "将项目信息和所选待办一起交给 Codex"
-                      : "按清单顺序执行已选待办")
-                  }
-                  aria-describedby={dispatchDisabledReason ? dispatchHintId : undefined}
-                  onClick={() => perform(dispatch)}
-                >
-                  提交所选待办
-                </button>
-                <span className="agent-note">
-                  已选 {picked.length} 项
-                  {!embedded && "，按清单顺序在同一个会话执行"}
-                </span>
               </div>
-              {dispatchDisabledReason && (
-                <p id={dispatchHintId} className="agent-note" role="status">
-                  {dispatchDisabledReason}
-                </p>
-              )}
-            </div>
-          )}
-          {reviewCount > 0 && (
-            <CompletedTasks count={reviewCount} review>
+            )}
+            <ol className="agent-checklist-tasks" aria-label="真实待办">
+              {renderTasks(unfinished)}
+            </ol>
+            {embedded &&
+              canAddTodo &&
+              !editing &&
+              (adding ? (
+                <TaskComposer
+                  inputRef={composerInput}
+                  value={draft.text}
+                  onChange={(text) => setDraft({ ...draft, text })}
+                  onSave={() => perform(saveNew, !onAddTodo)}
+                  onClose={() => setAdding(false)}
+                  busy={busy}
+                />
+              ) : (
+                <AddTaskButton
+                  buttonRef={addButton}
+                  disabled={busy}
+                  onClick={() => setAdding(true)}
+                />
+              ))}
+            {message && (
+              <p
+                className="agent-success agent-checklist-message"
+                role="status"
+              >
+                {message}
+              </p>
+            )}
+            {(!editingTask || editingTask.done || editingTask.reviewRunId) &&
+              editor}
+            {(!embedded || unfinished.length > 0) && (
+              <div className="agent-checklist-dispatch">
+                <div className="agent-dispatch-options">
+                  <PermissionButton
+                    value={permissionProfile}
+                    onChange={setPermissionProfile}
+                    disabled={busy}
+                  />
+                  {!embedded && (
+                    <label className="agent-checklist-option">
+                      <input
+                        type="checkbox"
+                        aria-label="自动勾选完成"
+                        checked={autoComplete}
+                        disabled={busy}
+                        onChange={(event) =>
+                          setAutoComplete(event.target.checked)
+                        }
+                      />
+                      <span title="验收通过且待办内容未变化时，自动更新完成状态">
+                        验收后自动勾选完成
+                      </span>
+                    </label>
+                  )}
+                </div>
+                <div className="agent-actions">
+                  <button
+                    className="primary"
+                    disabled={!picked.length || !!dispatchDisabledReason}
+                    title={
+                      dispatchDisabledReason ||
+                      (embedded
+                        ? "将项目信息和所选待办一起交给 Codex"
+                        : "按清单顺序执行已选待办")
+                    }
+                    aria-describedby={
+                      dispatchDisabledReason ? dispatchHintId : undefined
+                    }
+                    onClick={() => perform(dispatch)}
+                  >
+                    提交所选待办
+                  </button>
+                  <span className="agent-note">
+                    已选 {picked.length} 项
+                    {!embedded && "，按清单顺序在同一个会话执行"}
+                  </span>
+                </div>
+                {dispatchDisabledReason && (
+                  <p id={dispatchHintId} className="agent-note" role="status">
+                    {dispatchDisabledReason}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          {((!collection && reviewCount > 0) || collection === "review") && (
+            <CompletedTasks count={reviewCount} review asPage={!!collection}>
               {renderTasks(reviewTasks)}
             </CompletedTasks>
           )}
-          <CompletedTasks count={completed.length}>
-            {renderTasks(completed)}
-          </CompletedTasks>
+          <div hidden={!!collection && collection !== "done"}>
+            <CompletedTasks count={completed.length} asPage={!!collection}>
+              {renderTasks(completed)}
+            </CompletedTasks>
+          </div>
           {!embedded && (
             <section
               className="agent-checklist-editor"
@@ -1899,8 +2028,10 @@ function UnboundChecklist({
   onDeleteTodo,
   onReopenTodo,
   onSetTodoDone,
+  onFilmTodo,
   onRefresh,
   onCountsChange,
+  collection,
 }) {
   const [draft, setDraft, storage] = useWorkspaceDraft(
     `${JSON.stringify([userId, roomId, page.id])}:unbound-task`,
@@ -2013,8 +2144,24 @@ function UnboundChecklist({
           )}
         </div>
         {task.block.done && <span className="agent-note">已完成</span>}
-        {(onDeleteTodo || (!task.block.done && onSetTodoDone)) && (
+        {(onDeleteTodo ||
+          (!task.block.done && (onSetTodoDone || onFilmTodo))) && (
           <div className="agent-actions agent-task-actions">
+            {onFilmTodo && !task.block.done && (
+              <button
+                aria-label={`用此待办制作短片：${blockText(task.block)}`}
+                title="制作短片"
+                onClick={() =>
+                  onFilmTodo({
+                    noteId: task.note.id,
+                    taskId: task.key,
+                    text: blockText(task.block),
+                  })
+                }
+              >
+                <Clapperboard size={13} />
+              </button>
+            )}
             {!task.block.done && onSetTodoDone && (
               <button
                 aria-label={`标记完成待办：${blockText(task.block)}`}
@@ -2060,31 +2207,38 @@ function UnboundChecklist({
           {error || storage.warning}
         </p>
       )}
-      <ol className="agent-checklist-tasks" aria-label="真实待办">
-        {renderTasks(unfinished)}
-      </ol>
-      {onAddTodo && !adding && (
-        <AddTaskButton
-          buttonRef={addButton}
-          disabled={busy}
-          onClick={() => setAdding(true)}
-        />
+      <div hidden={!!collection && collection !== "pending"}>
+        <ol className="agent-checklist-tasks" aria-label="真实待办">
+          {renderTasks(unfinished)}
+        </ol>
+        {onAddTodo && !adding && (
+          <AddTaskButton
+            buttonRef={addButton}
+            disabled={busy}
+            onClick={() => setAdding(true)}
+          />
+        )}
+        {onAddTodo && adding && (
+          <TaskComposer
+            inputRef={composerInput}
+            value={draft}
+            onChange={setDraft}
+            onSave={save}
+            onClose={() => {
+              setAdding(false);
+            }}
+            busy={busy}
+          />
+        )}
+      </div>
+      {collection === "review" && (
+        <p className="agent-note">还没有待核对的执行结果。</p>
       )}
-      {onAddTodo && adding && (
-        <TaskComposer
-          inputRef={composerInput}
-          value={draft}
-          onChange={setDraft}
-          onSave={save}
-          onClose={() => {
-            setAdding(false);
-          }}
-          busy={busy}
-        />
-      )}
-      <CompletedTasks count={completed.length}>
-        {renderTasks(completed)}
-      </CompletedTasks>
+      <div hidden={!!collection && collection !== "done"}>
+        <CompletedTasks count={completed.length} asPage={!!collection}>
+          {renderTasks(completed)}
+        </CompletedTasks>
+      </div>
     </>
   );
 }
@@ -2103,7 +2257,11 @@ function ChecklistSection({
   onDeleteTodo,
   onReopenTodo,
   onSetTodoDone,
+  onFilmTodo,
   onCountsChange,
+  collection,
+  centralSettings,
+  settingsHost,
 }) {
   const [binding, setBinding] = useState(undefined);
   const [devices, setDevices] = useState([]);
@@ -2155,6 +2313,22 @@ function ChecklistSection({
   if (!binding) {
     return (
       <>
+        {centralSettings &&
+          settingsHost &&
+          createPortal(
+            <div className="agent-note" role="status">
+              {error ||
+                (binding === undefined
+                  ? "正在读取执行项目…"
+                  : "绑定执行项目后即可配置执行模型。")}
+              {binding === null && (
+                <button type="button" onClick={onOpenSettings}>
+                  绑定执行项目
+                </button>
+              )}
+            </div>,
+            settingsHost,
+          )}
         {embedded && (binding === null || !!error) && (
           <UnboundChecklist
             {...{
@@ -2165,7 +2339,9 @@ function ChecklistSection({
               onDeleteTodo,
               onReopenTodo,
               onSetTodoDone,
+              onFilmTodo,
               onCountsChange,
+              collection,
             }}
             onRefresh={refreshBinding}
           />
@@ -2217,7 +2393,11 @@ function ChecklistSection({
         onDeleteTodo,
         onReopenTodo,
         onSetTodoDone,
+        onFilmTodo,
         onCountsChange,
+        collection,
+        centralSettings,
+        settingsHost,
       }}
     />
   );
@@ -2237,7 +2417,11 @@ export default function ChecklistPanel({
   onDeleteTodo,
   onReopenTodo,
   onSetTodoDone,
+  onFilmTodo,
   onCountsChange,
+  collection,
+  centralSettings = false,
+  settingsHost,
 }) {
   const [sectionId, setSectionId] = useState("");
   const page = pages.find((item) => item.id === sectionId) || pages[0];
@@ -2285,7 +2469,11 @@ export default function ChecklistPanel({
                 onDeleteTodo,
                 onReopenTodo,
                 onSetTodoDone,
+                onFilmTodo,
                 onCountsChange,
+                collection,
+                centralSettings,
+                settingsHost,
               }}
             />
           </>

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const wrangler = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
@@ -43,6 +45,15 @@ try {
   );
   await run(wrangler, [
     "dev",
+    ...(process.env.QINGDAN_PI_ENV_FILE
+      ? [
+          ...(existsSync(path.join(root, ".dev.vars"))
+            ? ["--env-file", path.join(root, ".dev.vars")]
+            : []),
+          "--env-file",
+          process.env.QINGDAN_PI_ENV_FILE,
+        ]
+      : []),
     "--local",
     "--ip",
     "127.0.0.1",

@@ -77,7 +77,12 @@ export class CodexClient extends EventEmitter {
   private nextId = 0;
   private disconnected = false;
   private ready = false;
-  constructor(private options: ProcessOptions & { requestTimeoutMs?: number }) {
+  constructor(
+    private options: ProcessOptions & {
+      requestTimeoutMs?: number;
+      maxMessageBytes?: number;
+    },
+  ) {
     super();
     this.supervisor = new CodexSupervisor(options);
   }
@@ -87,11 +92,14 @@ export class CodexClient extends EventEmitter {
     const decoder = new StringDecoder("utf8");
     this.child.stdout.on("data", (chunk) => {
       buffer += decoder.write(chunk);
-      if (Buffer.byteLength(buffer) > 8_000_000)
+      const max = this.options.maxMessageBytes ?? 8_000_000;
+      if (Buffer.byteLength(buffer) > max)
         return this.fail(
           new RunnerError(
             "CODEX_PROTOCOL_ERROR",
-            "Codex message exceeded 8 MB",
+            this.options.maxMessageBytes
+              ? `Codex message exceeded ${max} bytes`
+              : "Codex message exceeded 8 MB",
           ),
         );
       let end: number;

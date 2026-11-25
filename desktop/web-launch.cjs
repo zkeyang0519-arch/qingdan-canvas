@@ -45,10 +45,10 @@ async function createWebLaunch({
       if (pending) throw failure("轻岛正在处理另一个启动请求，请稍后重试。");
       pending = true;
       try {
-        const state = await waitForDesktopDownload(updates, {
-          signal,
-          onStatus,
-        });
+        // Opening the app never grants installation authority. Downloads and
+        // scheduled updates are owned by the single native update controller.
+        void Promise.resolve(updates.check()).catch(() => {});
+        const state = updates.state();
         signal.throwIfAborted();
         onStatus("正在恢复当前账号和画布…");
         const broker = await createDesktopHandoff(context);
@@ -66,22 +66,12 @@ async function createWebLaunch({
           await broker.close();
         }
         signal.throwIfAborted();
-        if (state.status === "downloaded")
-          return {
-            started: true,
-            applied: true,
-            restarting: true,
-            afterResponse: async () => {
-              try {
-                await updates.install();
-              } catch {
-                onError("未能完成更新，原窗口和输入已保留。");
-              }
-            },
-          };
         return {
           started: true,
           applied: true,
+          ...(state.hasUpdate || state.status === "downloaded"
+            ? { warning: "新版轻岛已下载，请在应用内选择重启并更新。" }
+            : {}),
           ...(state.status === "error"
             ? { warning: "暂时无法检查新版本，已打开本机现有版本。" }
             : {}),

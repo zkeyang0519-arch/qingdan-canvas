@@ -15,6 +15,23 @@ export async function chatRecoveryServer(t) {
   const root = process.cwd();
   await mkdir(path.join(root, ".tmp"), { recursive: true });
   const dir = await mkdtemp(path.join(root, ".tmp/chat-recovery-"));
+  let mf, server;
+  // Register before building or starting workerd: setup failures must not
+  // leave a live runtime behind and prevent the test runner from exiting.
+  t.after(async () => {
+    try {
+      if (server) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    } finally {
+      try {
+        await mf?.dispose();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
   await build({
     stdin: {
       resolveDir: root,
@@ -78,7 +95,7 @@ export default {fetch(r,env,ctx){const p=new URL(r.url).pathname;if(p==='/fixtur
     unsafeEnableSharedStorage: true,
     unsafeDevRegistryPath: path.join(dir, "registry"),
   });
-  let mf = new Miniflare(options);
+  mf = new Miniflare(options);
   const db = await mf.getD1Database("DB");
   for (const file of (await readdir("migrations"))
     .filter((f) => f.endsWith(".sql"))
@@ -130,7 +147,7 @@ export default {fetch(r,env,ctx){const p=new URL(r.url).pathname;if(p==='/fixtur
   ]);
   let drop = null;
   const requests = [];
-  const server = createServer(async (req, res) => {
+  server = createServer(async (req, res) => {
     try {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
@@ -172,14 +189,14 @@ export default {fetch(r,env,ctx){const p=new URL(r.url).pathname;if(p==='/fixtur
       res.end(JSON.stringify({ error: error.message }));
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-    await mf.dispose();
-    await rm(dir, { recursive: true, force: true });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
   });
+  const origin = `http://127.0.0.1:${server.address().port}`;
   const call = async (route, body, account = "alice") => {
     const response = await fetch(origin + route, {
       method: body === undefined ? "GET" : "POST",

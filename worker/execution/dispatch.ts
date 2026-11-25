@@ -39,10 +39,26 @@ import type { DeviceRow, WorkspaceView } from "./types";
 import { z } from "zod";
 import { ProjectSummaries, projectActionSchemas } from "./project-summary";
 import { callAgentChecklist } from "../checklist-client";
-import { BatchQueue, initialQueue, isManaged, type QueueState } from "./batch-queue";
-import { batchGateSchema, queueControlSchema, leaseRecoverySchema } from "../../shared/agent/queue";
-import { executionRespondSchema, nativeResponsesSchema, nativeResponseAckSchema, resolveExecutionPermissions } from "../../shared/agent/permissions";
+import {
+  BatchQueue,
+  initialQueue,
+  isManaged,
+  type QueueState,
+} from "./batch-queue";
+import {
+  batchGateSchema,
+  queueControlSchema,
+  leaseRecoverySchema,
+} from "../../shared/agent/queue";
+import {
+  executionRespondSchema,
+  nativeResponsesSchema,
+  nativeResponseAckSchema,
+  resolveExecutionPermissions,
+} from "../../shared/agent/permissions";
 import { ExecutionRequestInbox } from "./request-inbox";
+import { ExecutionRetentionOutbox } from "./retention-outbox";
+import { runtimeAdmissionsPaused } from "../runtime-maintenance";
 import {
   ChecklistWritebacks,
   scheduleExecutionAlarm,
@@ -69,12 +85,17 @@ type ReconciliationReceipt = Extract<ExecutionReconcileResponse, { ok: true }>;
 interface ReconciliationCommit {
   key: string;
   releaseKey: string;
-  record: { hash: string; proof: NativeStopProof; result: ReconciliationReceipt };
+  record: {
+    hash: string;
+    proof: NativeStopProof;
+    result: ReconciliationReceipt;
+  };
 }
 const runKey = (id: string) => "exec:run:" + id;
 const seqKey = (runId: string, seq: number) =>
   `exec:event:${runId}:${String(seq).padStart(16, "0")}`;
-const resultKey = (runId: string, turnId: string) => `exec:result:${runId}:${turnId}`;
+const resultKey = (runId: string, turnId: string) =>
+  `exec:result:${runId}:${turnId}`;
 const byteLength = (value: unknown) =>
   new TextEncoder().encode(canonical(value)).length;
 const isProjectRun = (run: Pick<StoredRun, "snapshot">) =>
@@ -116,23 +137,42 @@ export class ExecutionDispatch {
   private writebacks() {
     return new ChecklistWritebacks(this.storage, this.env);
   }
-  private queue() { return new BatchQueue(this.storage, this.env); }
-  private requests() { return new ExecutionRequestInbox(this.storage,this.env); }
+  private queue() {
+    return new BatchQueue(this.storage, this.env);
+  }
+  private requests() {
+    return new ExecutionRequestInbox(this.storage, this.env);
+  }
   private async decorate(r: StoredRun): Promise<ExecutionRunView> {
-    const view = await this.requests().decorate(r, await this.queue().decorate(r, await this.writebacks().decorate(r)));
+    const view = await this.requests().decorate(
+      r,
+      await this.queue().decorate(r, await this.writebacks().decorate(r)),
+    );
     if (r.snapshot.kind === "task") await this.readFinalResult(view);
-    if (r.snapshot.executionSettings) view.executionSettings = r.snapshot.executionSettings;
-    if (r.snapshot.kind === "task" && r.snapshot.executionSettings && !r.snapshot.executionMode && !r.snapshot.batch) {
+    if (r.snapshot.executionSettings)
+      view.executionSettings = r.snapshot.executionSettings;
+    if (
+      r.snapshot.kind === "task" &&
+      r.snapshot.executionSettings &&
+      !r.snapshot.executionMode &&
+      !r.snapshot.batch
+    ) {
       view.submission = {
         text: r.snapshot.task.instruction,
-        tasks: [manualBatchItem(r.snapshot.task.taskRef.taskId, r.snapshot.task.instruction)],
+        tasks: [
+          manualBatchItem(
+            r.snapshot.task.taskRef.taskId,
+            r.snapshot.task.instruction,
+          ),
+        ],
         projectSummary: r.snapshot.context.projectSummary,
         summaryRevision: r.snapshot.summaryRevision,
         projectCapturedAt: r.snapshot.context.projectCapturedAt ?? null,
         projectSummaryStale: r.snapshot.context.projectSummaryStale ?? false,
       };
     }
-    if (r.snapshot.kind !== "task" || r.snapshot.executionMode !== "project") return view;
+    if (r.snapshot.kind !== "task" || r.snapshot.executionMode !== "project")
+      return view;
     return {
       ...view,
       executionMode: "project",
@@ -149,19 +189,28 @@ export class ExecutionDispatch {
   }
   private async readFinalResult(view: ExecutionRunView) {
     if (!view.terminal || !view.stopConfirmed) return;
-    view.resultReadComplete = view.output !== undefined || !view.threadId || !view.turnId;
+    view.resultReadComplete =
+      view.output !== undefined || !view.threadId || !view.turnId;
     if (!view.threadId || !view.turnId) return;
-    const matches = (event: RunnerEvent | undefined): event is Extract<RunnerEvent, { type: "turn.completed" }> =>
-      event?.type === "turn.completed" && event.runId === view.runId &&
-      event.threadId === view.threadId && event.turnId === view.turnId;
-    const indexed = await this.storage.get<RunnerEvent>(resultKey(view.runId, view.turnId));
+    const matches = (
+      event: RunnerEvent | undefined,
+    ): event is Extract<RunnerEvent, { type: "turn.completed" }> =>
+      event?.type === "turn.completed" &&
+      event.runId === view.runId &&
+      event.threadId === view.threadId &&
+      event.turnId === view.turnId;
+    const indexed = await this.storage.get<RunnerEvent>(
+      resultKey(view.runId, view.turnId),
+    );
     let completion = matches(indexed) ? indexed : undefined;
     if (!completion) {
       // Older runs have no result index. Their completion follows the display
       // log, so read a small tail instead of replaying tens of thousands of
       // token deltas to recover one answer. Never infer a result from log text.
       const tail = await this.storage.list<RunnerEvent>({
-        prefix: `exec:event:${view.runId}:`, reverse: true, limit: 64,
+        prefix: `exec:event:${view.runId}:`,
+        reverse: true,
+        limit: 64,
       });
       completion = [...tail.values()].find(matches);
     }
@@ -174,25 +223,43 @@ export class ExecutionDispatch {
       : completion.payload.outcome?.summary;
     if (output?.trim()) view.output = output;
   }
-  private async validateProjectTasks(p: ExecutionPrincipal, snapshot: ExecutionSnapshot) {
-    if (snapshot.kind !== "task" || snapshot.executionMode !== "project") return;
+  private async validateProjectTasks(
+    p: ExecutionPrincipal,
+    snapshot: ExecutionSnapshot,
+  ) {
+    if (snapshot.kind !== "task" || snapshot.executionMode !== "project")
+      return;
     const value = await callAgentChecklist(this.env, p, {
       action: "snapshot",
       tasks: snapshot.projectTasks!.map(({ source }) => ({
-        noteId: source!.taskRef.noteId, taskId: source!.taskRef.taskId,
-        generation: source!.generation, specRevision: source!.specRevision,
+        noteId: source!.taskRef.noteId,
+        taskId: source!.taskRef.taskId,
+        generation: source!.generation,
+        specRevision: source!.specRevision,
       })),
     });
-    check(canonical(value.items) === canonical(snapshot.projectTasks), "待办规格或排序已改变，请重新提交。", 409);
+    check(
+      canonical(value.items) === canonical(snapshot.projectTasks),
+      "待办规格或排序已改变，请重新提交。",
+      409,
+    );
   }
   private projects(p: ExecutionPrincipal) {
     return new ProjectSummaries(this.storage, this.env, {
-      prepare: async (input) => ({ input: parse(executionToolSchemas.codex_create_run, (await this.intent(p, input)).input) }),
-      commit: async (input) => await this.tool(p, "codex_create_run", input) as ExecutionReceipt,
+      prepare: async (input) => ({
+        input: parse(
+          executionToolSchemas.codex_create_run,
+          (await this.intent(p, input)).input,
+        ),
+      }),
+      commit: async (input) =>
+        (await this.tool(p, "codex_create_run", input)) as ExecutionReceipt,
     });
   }
   async retryWritebacks() {
     await this.writebacks().retryDue();
+    await new ExecutionRetentionOutbox(this.storage, this.env).flush();
+    await scheduleExecutionAlarm(this.storage);
   }
   private async save(r: StoredRun) {
     r.view.updatedAt = new Date().toISOString();
@@ -200,8 +267,16 @@ export class ExecutionDispatch {
   }
   private async cleanupTerminal(r: StoredRun) {
     if (!r.view.terminal || !r.view.stopConfirmed) return;
-    if (isManaged(r) && !["completed", "cancelled"].includes(r.view.queue?.phase ?? "")) return;
-    if ((isManaged(r) || isProjectRun(r)) && await this.storage.get("exec:queue-workspace:" + r.view.workspaceId) === r.view.runId)
+    if (
+      isManaged(r) &&
+      !["completed", "cancelled"].includes(r.view.queue?.phase ?? "")
+    )
+      return;
+    if (
+      (isManaged(r) || isProjectRun(r)) &&
+      (await this.storage.get("exec:queue-workspace:" + r.view.workspaceId)) ===
+        r.view.runId
+    )
       await this.storage.delete("exec:queue-workspace:" + r.view.workspaceId);
     await this.storage.delete("exec:pending:" + r.view.runId);
     if ((await this.storage.get<string>("exec:active")) === r.view.runId)
@@ -274,16 +349,23 @@ export class ExecutionDispatch {
     }
     if (action === "intent") return json(await this.intent(p, input.input));
     if (action === "respond") {
-      const value=parse(executionRespondSchema,input.input);
-      const r=await this.run(p,value.runId);
-      await this.reserve(p,"respond:"+value.requestId,value);
-      return json(await this.requests().respond(r,value));
+      const value = parse(executionRespondSchema, input.input);
+      const r = await this.run(p, value.runId);
+      await this.reserve(p, "respond:" + value.requestId, value);
+      return json(await this.requests().respond(r, value));
     }
     if (action === "queue") {
       const value = parse(queueControlSchema, input.input);
       const r = await this.run(p, value.runId);
       await this.reserve(p, "queue:" + value.requestId, value);
-      return json(await this.queue().control(r, value, r.commands.find(c=>c.receipt.commandId===r.view.commandId)?.settled));
+      return json(
+        await this.queue().control(
+          r,
+          value,
+          r.commands.find((c) => c.receipt.commandId === r.view.commandId)
+            ?.settled,
+        ),
+      );
     }
     if (action === "tool")
       return json(
@@ -330,23 +412,41 @@ export class ExecutionDispatch {
           tasks: input.sourceTasks,
         })
       : undefined;
-    const projectTasks = input.executionMode === "project" ? linked!.items as BatchItem[] : undefined;
-    const project = projectTasks || input.executionSettings ? await this.projects(p).state(p, true) : undefined;
-    const batch = projectTasks ? undefined : linked
-      ? {
-          items: linked.items as BatchItem[],
-          autoComplete: input.autoComplete ?? false,
-        }
-      : input.items && {
-          items: input.items.map(({ instruction, acceptance }, i) =>
-            manualBatchItem(`${runId}-item-${i + 1}`, instruction, acceptance),
-          ),
-        };
+    const projectTasks =
+      input.executionMode === "project"
+        ? (linked!.items as BatchItem[])
+        : undefined;
+    const project =
+      projectTasks || input.executionSettings
+        ? await this.projects(p).state(p, true)
+        : undefined;
+    const batch = projectTasks
+      ? undefined
+      : linked
+        ? {
+            items: linked.items as BatchItem[],
+            autoComplete: input.autoComplete ?? false,
+          }
+        : input.items && {
+            items: input.items.map(({ instruction, acceptance }, i) =>
+              manualBatchItem(
+                `${runId}-item-${i + 1}`,
+                instruction,
+                acceptance,
+              ),
+            ),
+          };
     if (batch && this.env.BATCH_QUEUE_ENABLED === "true")
       Object.assign(batch, { managed: true });
     if (input.kind === "task") {
       const first =
-        (projectTasks ? manualBatchItem(`${runId}-project`, `统筹完成本次提交的 ${projectTasks.length} 项待办。`, "根据每项保存的完成标准核对结果；本轮汇总回执不代表各待办已分别验收。") : batch?.items[0]) ??
+        (projectTasks
+          ? manualBatchItem(
+              `${runId}-project`,
+              `统筹完成本次提交的 ${projectTasks.length} 项待办。`,
+              "根据每项保存的完成标准核对结果；本轮汇总回执不代表各待办已分别验收。",
+            )
+          : batch?.items[0]) ??
         manualBatchItem(runId, input.instruction!, input.acceptance);
       task = {
         text: first.text,
@@ -377,8 +477,13 @@ export class ExecutionDispatch {
       bindingRevision: p.bindingRevision,
       workspaceId: binding.workspace_id,
       kind: input.kind,
-      executionPermissions:resolveExecutionPermissions(input.kind, input.executionPermissions?.profile),
-      ...(input.kind === "task" && input.executionSettings ? { executionSettings: input.executionSettings } : {}),
+      executionPermissions: resolveExecutionPermissions(
+        input.kind,
+        input.executionPermissions?.profile,
+      ),
+      ...(input.kind === "task" && input.executionSettings
+        ? { executionSettings: input.executionSettings }
+        : {}),
       task,
       ...(projectTasks ? { executionMode: "project", projectTasks } : {}),
       ...(batch ? { batch } : {}),
@@ -390,7 +495,12 @@ export class ExecutionDispatch {
       allowedCheckIds: workspace.checks.map((c) => c.checkId),
       context: {
         projectSummary: project?.summary ?? null,
-        ...(project ? { projectCapturedAt: project.capturedAt ?? null, projectSummaryStale: project.stale ?? false } : {}),
+        ...(project
+          ? {
+              projectCapturedAt: project.capturedAt ?? null,
+              projectSummaryStale: project.stale ?? false,
+            }
+          : {}),
         decisions:
           input.kind === "summary" && input.instruction
             ? ["用户本次总结要求：" + input.instruction]
@@ -427,8 +537,13 @@ export class ExecutionDispatch {
     const previousStop = r.commands.at(-1);
     // Repeated stop requests share the already durable cancellation command.
     // Reserve one extra journal slot for stopping a run at its command limit.
-    if (stopping && previousStop?.payload.type === "cancel_run") return previousStop.receipt;
-    check(r.commands.length < (stopping ? 201 : 200), "运行命令已达上限。", 409);
+    if (stopping && previousStop?.payload.type === "cancel_run")
+      return previousStop.receipt;
+    check(
+      r.commands.length < (stopping ? 201 : 200),
+      "运行命令已达上限。",
+      409,
+    );
     if (
       !stopping &&
       !r.view.terminal &&
@@ -464,14 +579,18 @@ export class ExecutionDispatch {
     });
     r.view.commandId = receipt.commandId;
     r.view.updatedAt = receipt.acceptedAt;
-    if (payload.type === "continue_run" && payload.mode === "reply") delete r.view.finishedAt;
+    if (payload.type === "continue_run" && payload.mode === "reply")
+      delete r.view.finishedAt;
     // Batch progress is replaceable report data. It must not exhaust the
     // command journal budget or prevent a user from cancelling a batch.
     const { batch: _, queue: _queueView, ...commandView } = r.view;
     const { queueState: _queueState, ...commandRecord } = r;
     check(
-      stopping || byteLength({ ...commandRecord, view: commandView }) + byteLength(payload) + 1000 <=
-        110000,
+      stopping ||
+        byteLength({ ...commandRecord, view: commandView }) +
+          byteLength(payload) +
+          1000 <=
+          110000,
       "运行记录已达大小上限，请新建试运行。",
       413,
     );
@@ -483,7 +602,9 @@ export class ExecutionDispatch {
       [`exec:list:${r.principal.bindingId}:${r.view.createdAt}:${r.view.runId}`]:
         r.view.runId,
       ...((isManaged(r) && payload.type === "create_run") ||
-          (isProjectRun(r) && (payload.type === "create_run" || payload.type === "continue_run" && payload.mode === "reply"))
+      (isProjectRun(r) &&
+        (payload.type === "create_run" ||
+          (payload.type === "continue_run" && payload.mode === "reply")))
         ? { ["exec:queue-workspace:" + r.view.workspaceId]: r.view.runId }
         : {}),
     });
@@ -524,13 +645,15 @@ export class ExecutionDispatch {
         input.limit ?? 50,
       );
     await this.reserve(p, input.requestId, { name, input });
-    if (name === "codex_create_run") await this.projects(p).assertCommit(p, input);
+    if (name === "codex_create_run")
+      await this.projects(p).assertCommit(p, input);
     const receiptKey = "exec:receipt:" + p.ownerId + ":" + input.requestId;
     const previous = await this.storage.get(receiptKey);
     if (previous) {
       const completed = await this.storage.get<StoredRun>(runKey(input.runId));
       if (completed) {
-        if (isManaged(completed) && !completed.view.queue) await this.queue().initialize(completed);
+        if (isManaged(completed) && !completed.view.queue)
+          await this.queue().initialize(completed);
         await this.cleanupTerminal(completed);
       }
       return previous;
@@ -588,8 +711,14 @@ export class ExecutionDispatch {
       const now = new Date().toISOString();
       const batch =
         authorized.snapshot.kind === "task" && authorized.snapshot.batch;
-      const occupied = await this.storage.get<string>("exec:queue-workspace:" + workspace.workspaceId);
-      check(!occupied, "此项目仍有未完成的批次或任务，请先继续或停止原运行。", 409);
+      const occupied = await this.storage.get<string>(
+        "exec:queue-workspace:" + workspace.workspaceId,
+      );
+      check(
+        !occupied,
+        "此项目仍有未完成的批次或任务，请先继续或停止原运行。",
+        409,
+      );
       r = {
         principal: p,
         snapshot: authorized.snapshot,
@@ -675,8 +804,14 @@ export class ExecutionDispatch {
             409,
           );
           if (isProjectRun(r)) {
-            const occupied = await this.storage.get<string>("exec:queue-workspace:" + r.view.workspaceId);
-            check(!occupied || occupied === r.view.runId, "此项目已有其他执行任务，请先停止原运行。", 409);
+            const occupied = await this.storage.get<string>(
+              "exec:queue-workspace:" + r.view.workspaceId,
+            );
+            check(
+              !occupied || occupied === r.view.runId,
+              "此项目已有其他执行任务，请先停止原运行。",
+              409,
+            );
           }
         }
         r.view.status = input.mode === "reply" ? "queued" : r.view.status;
@@ -695,11 +830,16 @@ export class ExecutionDispatch {
           r.view.status = "cancelled";
           cancelUnfinishedBatchItems(r.view.batch);
         } else if (
-          r.view.terminal && r.view.stopConfirmed &&
-          r.snapshot.kind === "summary" && r.view.status === "verifying"
+          r.view.terminal &&
+          r.view.stopConfirmed &&
+          r.snapshot.kind === "summary" &&
+          r.view.status === "verifying"
         ) {
-          const completion = await this.storage.get<RunnerEvent>("project:result:" + r.view.runId);
-          const received = completion?.type === "turn.completed" &&
+          const completion = await this.storage.get<RunnerEvent>(
+            "project:result:" + r.view.runId,
+          );
+          const received =
+            completion?.type === "turn.completed" &&
             completion.runId === r.view.runId &&
             completion.threadId === r.view.threadId &&
             completion.turnId === r.view.turnId;
@@ -724,7 +864,10 @@ export class ExecutionDispatch {
     const receipt = await this.append(r, payload);
     if (name === "codex_create_run" && isManaged(r)) {
       await this.queue().initialize(r);
-      await this.storage.put("exec:queue-workspace:" + r.view.workspaceId, r.view.runId);
+      await this.storage.put(
+        "exec:queue-workspace:" + r.view.workspaceId,
+        r.view.runId,
+      );
     }
     if (name === "codex_create_run")
       await this.storage.put(
@@ -801,38 +944,102 @@ export class ExecutionDispatch {
     );
     if (action === "batch-gate") {
       const r = await this.nativeRun(d, value.runId);
-      if(r.commands.find(c=>c.receipt.commandId===r.view.commandId)?.settled)
-        return {decision:"blocked",queueRevision:r.view.queue?.revision??1,reason:"运行正在核对停止，不能开始下一轮。"};
+      if (
+        r.commands.find((c) => c.receipt.commandId === r.view.commandId)
+          ?.settled
+      )
+        return {
+          decision: "blocked",
+          queueRevision: r.view.queue?.revision ?? 1,
+          reason: "运行正在核对停止，不能开始下一轮。",
+        };
       return this.queue().gate(r, value);
     }
-    if(action === "reconcile") return this.reconcileRun(d,value);
+    if (action === "reconcile") return this.reconcileRun(d, value);
     if (action === "recover-lease") {
-      const r=await this.nativeRun(d,value.runId);
-      if(value.phase==="inspect"&&r.commands.find(c=>c.receipt.commandId===r.view.commandId)?.payload.type==="cancel_run")return {decision:"cancel"};
-      const command=r.commands.find(c=>c.receipt.commandId===value.commandId);
-      check(isManaged(r)&&command?.envelope&&!command.settled&&command.payload.type!=="cancel_run"&&value.commandId===r.view.commandId&&command.envelope.leaseEpoch===value.leaseEpoch,"恢复请求没有可恢复的原派单与租约。",409);
-      const ticket=await this.queue().recovery(r,value);
-      if(!ticket)return {decision:"wait"};
-      if(value.phase==="inspect")return {decision:"inspect",recoveryId:ticket.recoveryId};
-      check(value.recoveryId===ticket.recoveryId,"恢复票据已更改。",409);
-      const lease=await this.env.DB.prepare("SELECT workspace_id,run_id,lease_epoch,expires_at FROM agent_workspace_leases WHERE runner_id=? AND workspace_id=? AND run_id=?")
-        .bind(d.runner_id,r.view.workspaceId,r.view.runId).first<{workspace_id:string;run_id:string;lease_epoch:number;expires_at:number}>();
-      check(lease&&lease.lease_epoch===value.leaseEpoch,"原租约占用已改变。",409);
-      const key=`exec:lease-recovery:${ticket.recoveryId}`;
-      let receipt=await this.storage.get<{workspaceId:string;runId:string;leaseEpoch:number;expiresAt:number}>(key);
-      if(!receipt) {
-        receipt={workspaceId:r.view.workspaceId,runId:r.view.runId,leaseEpoch:value.leaseEpoch,expiresAt:Date.now()+60000};
+      const r = await this.nativeRun(d, value.runId);
+      if (
+        value.phase === "inspect" &&
+        r.commands.find((c) => c.receipt.commandId === r.view.commandId)
+          ?.payload.type === "cancel_run"
+      )
+        return { decision: "cancel" };
+      const command = r.commands.find(
+        (c) => c.receipt.commandId === value.commandId,
+      );
+      check(
+        isManaged(r) &&
+          command?.envelope &&
+          !command.settled &&
+          command.payload.type !== "cancel_run" &&
+          value.commandId === r.view.commandId &&
+          command.envelope.leaseEpoch === value.leaseEpoch,
+        "恢复请求没有可恢复的原派单与租约。",
+        409,
+      );
+      const ticket = await this.queue().recovery(r, value);
+      if (!ticket) return { decision: "wait" };
+      if (value.phase === "inspect")
+        return { decision: "inspect", recoveryId: ticket.recoveryId };
+      check(value.recoveryId === ticket.recoveryId, "恢复票据已更改。", 409);
+      const lease = await this.env.DB.prepare(
+        "SELECT workspace_id,run_id,lease_epoch,expires_at FROM agent_workspace_leases WHERE runner_id=? AND workspace_id=? AND run_id=?",
+      )
+        .bind(d.runner_id, r.view.workspaceId, r.view.runId)
+        .first<{
+          workspace_id: string;
+          run_id: string;
+          lease_epoch: number;
+          expires_at: number;
+        }>();
+      check(
+        lease && lease.lease_epoch === value.leaseEpoch,
+        "原租约占用已改变。",
+        409,
+      );
+      const key = `exec:lease-recovery:${ticket.recoveryId}`;
+      let receipt = await this.storage.get<{
+        workspaceId: string;
+        runId: string;
+        leaseEpoch: number;
+        expiresAt: number;
+      }>(key);
+      if (!receipt) {
+        receipt = {
+          workspaceId: r.view.workspaceId,
+          runId: r.view.runId,
+          leaseEpoch: value.leaseEpoch,
+          expiresAt: Date.now() + 60000,
+        };
         // Commit the exact expiry before D1. A crash or lost ACK retries this
         // same bounded renewal, never extends it again or changes lease identity.
-        await this.storage.put(key,receipt);
+        await this.storage.put(key, receipt);
       }
-      const renewed=await this.env.DB.prepare("UPDATE agent_workspace_leases SET expires_at=MAX(expires_at,?) WHERE runner_id=? AND workspace_id=? AND run_id=? AND lease_epoch=?")
-        .bind(receipt.expiresAt,d.runner_id,receipt.workspaceId,receipt.runId,receipt.leaseEpoch).run();
-      check(renewed.meta.changes===1,"原租约占用已改变。",409);
-      return {decision:"recovered",recoveryId:ticket.recoveryId,lease:receipt};
+      const renewed = await this.env.DB.prepare(
+        "UPDATE agent_workspace_leases SET expires_at=MAX(expires_at,?) WHERE runner_id=? AND workspace_id=? AND run_id=? AND lease_epoch=?",
+      )
+        .bind(
+          receipt.expiresAt,
+          d.runner_id,
+          receipt.workspaceId,
+          receipt.runId,
+          receipt.leaseEpoch,
+        )
+        .run();
+      check(renewed.meta.changes === 1, "原租约占用已改变。", 409);
+      return {
+        decision: "recovered",
+        recoveryId: ticket.recoveryId,
+        lease: receipt,
+      };
     }
-    if (action === "responses") return this.requests().poll(await this.nativeRun(d,value.runId));
-    if (action === "response-ack") return this.requests().acknowledge(await this.nativeRun(d,value.runId),value);
+    if (action === "responses")
+      return this.requests().poll(await this.nativeRun(d, value.runId));
+    if (action === "response-ack")
+      return this.requests().acknowledge(
+        await this.nativeRun(d, value.runId),
+        value,
+      );
     if (action === "context") {
       const workspaces = JSON.parse(d.workspaces_json) as WorkspaceView[];
       const allowed = new Set(workspaces.map((w) => w.workspaceId));
@@ -869,7 +1076,12 @@ export class ExecutionDispatch {
       }
       return { ok: true };
     }
-    if (action === "poll") return this.poll(d);
+    if (action === "poll") {
+      const result = await this.poll(d);
+      return (await runtimeAdmissionsPaused(this.env))
+        ? { ...result, offers: [] }
+        : result;
+    }
     if (action === "ack") {
       const commandRun = await this.storage.get<string>(
         "exec:command-run:" + value.commandId,
@@ -881,9 +1093,18 @@ export class ExecutionDispatch {
         )!;
       const { connectionEpoch: _, ...ack } = value;
       check(command.envelope, "命令未派发。", 409);
-      if (ack.status === "stored" && !command.ack && command.payload.type !== "cancel_run" && value.commandId === r.view.commandId)
+      if (
+        ack.status === "stored" &&
+        !command.ack &&
+        command.payload.type !== "cancel_run" &&
+        value.commandId === r.view.commandId
+      )
         await this.validateProjectTasks(r.principal, r.snapshot);
-      if (ack.status === "stored" && command.payload.type !== "cancel_run" && value.commandId === r.view.commandId)
+      if (
+        ack.status === "stored" &&
+        command.payload.type !== "cancel_run" &&
+        value.commandId === r.view.commandId
+      )
         await this.queue().validateDispatch(r);
       const isBatch = r.snapshot.kind === "task" && !!r.snapshot.batch;
       // An applied batch command replays its stored ACK before each automatic
@@ -953,10 +1174,27 @@ export class ExecutionDispatch {
         check(!sameSeq, "事件序号冲突。", 409);
         check(event.seq > r.view.lastSeq, "事件顺序无效。", 409);
         let stored = event;
-        if (isManaged(r) && event.turnId && ["turn.completed", "verification.completed"].includes(event.type)) {
-          const proof = await this.storage.get<RunnerEvent>(`exec:queue-proof:${event.runId}:${event.turnId}:${event.type}`);
-          check(!proof || (proof.threadId === event.threadId && canonical(proof.payload) === canonical(event.payload)), "同一轮的验收来源不可更改。", 409);
-          if (event.type === "verification.completed") check(byteLength(event.payload) <= 90000, "验收凭据超过大小限制。", 413);
+        if (
+          isManaged(r) &&
+          event.turnId &&
+          ["turn.completed", "verification.completed"].includes(event.type)
+        ) {
+          const proof = await this.storage.get<RunnerEvent>(
+            `exec:queue-proof:${event.runId}:${event.turnId}:${event.type}`,
+          );
+          check(
+            !proof ||
+              (proof.threadId === event.threadId &&
+                canonical(proof.payload) === canonical(event.payload)),
+            "同一轮的验收来源不可更改。",
+            409,
+          );
+          if (event.type === "verification.completed")
+            check(
+              byteLength(event.payload) <= 90000,
+              "验收凭据超过大小限制。",
+              413,
+            );
         }
         if (event.type === "output.delta") {
           const room = Math.max(0, 1_000_000 - r.outputBytes);
@@ -977,7 +1215,7 @@ export class ExecutionDispatch {
           r.outputBytes += Math.min(room, encoded.length);
         }
         r.view.lastSeq = event.seq;
-        const requestUpdates=await this.requests().stageEvent(r,event);
+        const requestUpdates = await this.requests().stageEvent(r, event);
         // Events are ordered history. Current state comes only from persisted,
         // command-scoped report revisions, never cross-machine timestamps.
         await this.storage.put({
@@ -988,11 +1226,18 @@ export class ExecutionDispatch {
           ...(r.snapshot.kind === "summary" && event.type === "turn.completed"
             ? { ["project:result:" + event.runId]: stored }
             : {}),
-          ...(r.snapshot.kind === "task" && event.type === "turn.completed" && event.turnId
+          ...(r.snapshot.kind === "task" &&
+          event.type === "turn.completed" &&
+          event.turnId
             ? { [resultKey(event.runId, event.turnId)]: stored }
             : {}),
-          ...(isManaged(r) && event.turnId && ["turn.completed", "verification.completed"].includes(event.type)
-            ? { [`exec:queue-proof:${event.runId}:${event.turnId}:${event.type}`]: stored }
+          ...(isManaged(r) &&
+          event.turnId &&
+          ["turn.completed", "verification.completed"].includes(event.type)
+            ? {
+                [`exec:queue-proof:${event.runId}:${event.turnId}:${event.type}`]:
+                  stored,
+              }
             : {}),
         });
         if (r.snapshot.kind === "summary")
@@ -1001,9 +1246,13 @@ export class ExecutionDispatch {
       }
       return { eventIds: ids };
     }
-    return this.acceptReport(await this.nativeRun(d,value.runId),value);
+    return this.acceptReport(await this.nativeRun(d, value.runId), value);
   }
-  private async acceptReport(r:StoredRun,value:ExecutionReport,reconciliation?:ReconciliationCommit) {
+  private async acceptReport(
+    r: StoredRun,
+    value: ExecutionReport,
+    reconciliation?: ReconciliationCommit,
+  ) {
     const reportKey = `exec:report:${value.runId}:${value.revision}`,
       reportHash = await hash({ ...value, connectionEpoch: undefined }),
       old = await this.storage.get<string>(reportKey);
@@ -1037,7 +1286,14 @@ export class ExecutionDispatch {
     const command = r.commands.find(
       (c) => c.receipt.commandId === value.commandId,
     );
-    check(command?.envelope || (reconciliation && command?.payload.type === "cancel_run" && value.commandId === r.view.commandId), "报告命令不存在。", 409);
+    check(
+      command?.envelope ||
+        (reconciliation &&
+          command?.payload.type === "cancel_run" &&
+          value.commandId === r.view.commandId),
+      "报告命令不存在。",
+      409,
+    );
     const onlyPendingCancels =
       value.terminal &&
       value.stopConfirmed &&
@@ -1075,10 +1331,18 @@ export class ExecutionDispatch {
     }
     if (value.summaryProgress) {
       check(r.snapshot.kind === "summary", "读取进度仅适用于项目总结。", 409);
-      const prior = r.view.summaryProgress, next = value.summaryProgress;
-      check(!prior || (prior.startedAt === next.startedAt &&
-        (prior.totalRecords === null || prior.totalRecords === next.totalRecords) &&
-        prior.pagesRead <= next.pagesRead && prior.readRecords <= next.readRecords), "总结读取进度不能倒退或更换来源。", 409);
+      const prior = r.view.summaryProgress,
+        next = value.summaryProgress;
+      check(
+        !prior ||
+          (prior.startedAt === next.startedAt &&
+            (prior.totalRecords === null ||
+              prior.totalRecords === next.totalRecords) &&
+            prior.pagesRead <= next.pagesRead &&
+            prior.readRecords <= next.readRecords),
+        "总结读取进度不能倒退或更换来源。",
+        409,
+      );
       r.view.summaryProgress = value.summaryProgress;
     }
     if (!value.terminal || (value.turnId && value.turnId !== r.view.turnId))
@@ -1103,18 +1367,29 @@ export class ExecutionDispatch {
     }
     // Queue observation and report/proof receipts share this commit. Neither
     // queue cancellation nor stopConfirmed may become visible on its own.
-    if (isManaged(r)) await this.queue().observe(r,false);
+    if (isManaged(r)) await this.queue().observe(r, false);
     r.view.updatedAt = new Date().toISOString();
     const writebackUpdates = await this.writebacks().stage(r);
-    if (value.terminal && value.stopConfirmed) r.view.finishedAt ||= r.view.updatedAt;
+    if (value.terminal && value.stopConfirmed)
+      r.view.finishedAt ||= r.view.updatedAt;
     else delete r.view.finishedAt;
     r.view.reportRevision = value.revision;
     r.reportCommandId = value.commandId;
+    const retentionUpdates = await new ExecutionRetentionOutbox(
+      this.storage,
+      this.env,
+    ).stage(r);
     await this.storage.put({
       [reportKey]: reportHash,
       [runKey(r.view.runId)]: r,
       ...writebackUpdates,
-      ...(reconciliation ? {[reconciliation.key]:reconciliation.record,[reconciliation.releaseKey]:true} : {}),
+      ...retentionUpdates,
+      ...(reconciliation
+        ? {
+            [reconciliation.key]: reconciliation.record,
+            [reconciliation.releaseKey]: true,
+          }
+        : {}),
     });
     await scheduleExecutionAlarm(this.storage);
     await this.writebacks().flushRun(r.view.runId);
@@ -1127,80 +1402,250 @@ export class ExecutionDispatch {
       ...(value.terminal && value.stopConfirmed ? { settled: true } : {}),
     };
   }
-  private async reconcileRun(d:DeviceRow,input:ExecutionReconcileRequest):Promise<ExecutionReconcileResponse> {
-    const r=await this.nativeRun(d,input.runId);
-    if(input.phase==="confirm") {
-      const key=`exec:reconcile-receipt:${r.principal.ownerId}:${input.requestId}`;
-      const digest=await hash({...input,connectionEpoch:undefined});
-      const old=await this.storage.get<ReconciliationCommit["record"]>(key);
-      if(old) {
-        check(old.hash===digest,"请求编号已用于不同停止证明。",409);
+  private async reconcileRun(
+    d: DeviceRow,
+    input: ExecutionReconcileRequest,
+  ): Promise<ExecutionReconcileResponse> {
+    const r = await this.nativeRun(d, input.runId);
+    if (input.phase === "confirm") {
+      const key = `exec:reconcile-receipt:${r.principal.ownerId}:${input.requestId}`;
+      const digest = await hash({ ...input, connectionEpoch: undefined });
+      const old = await this.storage.get<ReconciliationCommit["record"]>(key);
+      if (old) {
+        check(old.hash === digest, "请求编号已用于不同停止证明。", 409);
         await this.cleanupTerminal(r);
         await this.requests().expire(r);
         return old.result;
       }
-      const stored=await this.storage.get<ReconciliationTicket>(`exec:reconcile-ticket:${input.recoveryId}`);
-      check(stored&&stored.ticket.runId===r.view.runId&&canonical(stored.principal)===canonical(r.principal),"核对票据不存在或未授权。",409);
-      const ticket=stored.ticket;
-      check(await this.storage.get(`exec:reconcile-current:${r.view.runId}`)===ticket.recoveryId&&ticket.currentCommandId===r.view.commandId&&ticket.reportRevision===r.view.reportRevision&&stored.snapshotDigest===await hash(r.snapshot),"核对期间运行已更改，请重新核对。",409);
-      const lease=await this.reconciliationLease(d,r,ticket.leaseEpoch);
-      check(!stored.expiredLease||!lease||lease.expires_at<=Date.now()||r.view.status==="cancel_requested","原租约已恢复，不能使用过期核对票据。",409);
-      const original=r.commands.find(c=>c.receipt.commandId===ticket.originalCommandId);
-      check(original?.envelope&&original.envelope.leaseEpoch===ticket.leaseEpoch,"原派单身份已更改。",409);
-      const proof=input.proof,report=input.report;
-      check(proof.claim.runId===ticket.runId&&proof.claim.workspaceId===ticket.workspaceId&&proof.claim.leaseEpoch===ticket.leaseEpoch&&proof.journal.commandId===ticket.originalCommandId&&proof.journal.snapshotHash===ticket.snapshotHash,"停止证明不属于原派单与占用。",409);
-      check(report.runId===ticket.runId&&report.commandId===ticket.currentCommandId&&report.revision===ticket.reportRevision+1,"停止报告版本或命令已更改。",409);
-      if(proof.kind==="never_dispatched") {
-        check(original.payload.type==="create_run"&&!r.view.turnId&&!report.turnId&&original.ack?.status!=="applied"&&!r.commands.some(c=>c.envelope&&c.payload.type==="continue_run"),"已有执行轮次，不能声明从未派发。",409);
-        if(proof.commandState==="not_received")check(!original.ack&&r.view.reportRevision===0&&!r.view.threadId&&proof.launchStage==="absent","服务端已有接收记录，不能声明未收到命令。",409);
+      const stored = await this.storage.get<ReconciliationTicket>(
+        `exec:reconcile-ticket:${input.recoveryId}`,
+      );
+      check(
+        stored &&
+          stored.ticket.runId === r.view.runId &&
+          canonical(stored.principal) === canonical(r.principal),
+        "核对票据不存在或未授权。",
+        409,
+      );
+      const ticket = stored.ticket;
+      check(
+        (await this.storage.get(`exec:reconcile-current:${r.view.runId}`)) ===
+          ticket.recoveryId &&
+          ticket.currentCommandId === r.view.commandId &&
+          ticket.reportRevision === r.view.reportRevision &&
+          stored.snapshotDigest === (await hash(r.snapshot)),
+        "核对期间运行已更改，请重新核对。",
+        409,
+      );
+      const lease = await this.reconciliationLease(d, r, ticket.leaseEpoch);
+      check(
+        !stored.expiredLease ||
+          !lease ||
+          lease.expires_at <= Date.now() ||
+          r.view.status === "cancel_requested",
+        "原租约已恢复，不能使用过期核对票据。",
+        409,
+      );
+      const original = r.commands.find(
+        (c) => c.receipt.commandId === ticket.originalCommandId,
+      );
+      check(
+        original?.envelope &&
+          original.envelope.leaseEpoch === ticket.leaseEpoch,
+        "原派单身份已更改。",
+        409,
+      );
+      const proof = input.proof,
+        report = input.report;
+      check(
+        proof.claim.runId === ticket.runId &&
+          proof.claim.workspaceId === ticket.workspaceId &&
+          proof.claim.leaseEpoch === ticket.leaseEpoch &&
+          proof.journal.commandId === ticket.originalCommandId &&
+          proof.journal.snapshotHash === ticket.snapshotHash,
+        "停止证明不属于原派单与占用。",
+        409,
+      );
+      check(
+        report.runId === ticket.runId &&
+          report.commandId === ticket.currentCommandId &&
+          report.revision === ticket.reportRevision + 1,
+        "停止报告版本或命令已更改。",
+        409,
+      );
+      if (proof.kind === "never_dispatched") {
+        check(
+          original.payload.type === "create_run" &&
+            !r.view.turnId &&
+            !report.turnId &&
+            original.ack?.status !== "applied" &&
+            !r.commands.some(
+              (c) => c.envelope && c.payload.type === "continue_run",
+            ),
+          "已有执行轮次，不能声明从未派发。",
+          409,
+        );
+        if (proof.commandState === "not_received")
+          check(
+            !original.ack &&
+              r.view.reportRevision === 0 &&
+              !r.view.threadId &&
+              proof.launchStage === "absent",
+            "服务端已有接收记录，不能声明未收到命令。",
+            409,
+          );
       } else {
-        check(proof.threadId===report.threadId&&proof.turnId===report.turnId,"原生停止证明与报告轮次不一致。",409);
+        check(
+          proof.threadId === report.threadId && proof.turnId === report.turnId,
+          "原生停止证明与报告轮次不一致。",
+          409,
+        );
       }
-      const result:ReconciliationReceipt={ok:true,settled:true,recoveryId:ticket.recoveryId,runId:ticket.runId,workspaceId:ticket.workspaceId,leaseEpoch:ticket.leaseEpoch,reportRevision:report.revision};
+      const result: ReconciliationReceipt = {
+        ok: true,
+        settled: true,
+        recoveryId: ticket.recoveryId,
+        runId: ticket.runId,
+        workspaceId: ticket.workspaceId,
+        leaseEpoch: ticket.leaseEpoch,
+        reportRevision: report.revision,
+      };
       // The existing Hub release handler uses this exact stop-confirmation key.
       // Recording it with the proof also lets release finish when D1 is already
       // absent; it never deletes or renews a lease here.
-      const releaseKey=`lease-release:${ticket.workspaceId}:${ticket.runId}:${ticket.leaseEpoch}`;
-      await this.acceptReport(r,{...report,connectionEpoch:input.connectionEpoch},{key,releaseKey,record:{hash:digest,proof,result}});
+      const releaseKey = `lease-release:${ticket.workspaceId}:${ticket.runId}:${ticket.leaseEpoch}`;
+      await this.acceptReport(
+        r,
+        { ...report, connectionEpoch: input.connectionEpoch },
+        { key, releaseKey, record: { hash: digest, proof, result } },
+      );
       return result;
     }
-    check(input.workspaceId===r.view.workspaceId,"核对项目不匹配。",409);
-    const lease=await this.reconciliationLease(d,r,input.leaseEpoch);
-    const original=r.commands.filter(c=>c.envelope&&c.payload.type!=="cancel_run").at(-1);
-    check(original?.envelope&&original.envelope.leaseEpoch===input.leaseEpoch,"没有匹配的原派单。",409);
-    if(r.view.terminal&&r.view.stopConfirmed) {
+    check(input.workspaceId === r.view.workspaceId, "核对项目不匹配。", 409);
+    const lease = await this.reconciliationLease(d, r, input.leaseEpoch);
+    const original = r.commands
+      .filter((c) => c.envelope && c.payload.type !== "cancel_run")
+      .at(-1);
+    check(
+      original?.envelope && original.envelope.leaseEpoch === input.leaseEpoch,
+      "没有匹配的原派单。",
+      409,
+    );
+    if (r.view.terminal && r.view.stopConfirmed) {
       await this.cleanupTerminal(r);
-      return {decision:"settled",runId:r.view.runId,workspaceId:r.view.workspaceId,leaseEpoch:input.leaseEpoch};
+      return {
+        decision: "settled",
+        runId: r.view.runId,
+        workspaceId: r.view.workspaceId,
+        leaseEpoch: input.leaseEpoch,
+      };
     }
-    const head=r.commands.at(-1);
-    const cancelling=head?.receipt.commandId===r.view.commandId&&head.payload.type==="cancel_run";
+    const head = r.commands.at(-1);
+    const cancelling =
+      head?.receipt.commandId === r.view.commandId &&
+      head.payload.type === "cancel_run";
     // Cancellation can retire a queued continuation before it ever receives an
     // envelope. It cannot erase an issued delivery or accepted execution facts.
-    check(r.commands.slice(r.commands.indexOf(original)+1).every(c=>c.payload.type==="cancel_run"||(
-      cancelling&&c.payload.type==="continue_run"&&c.settled===true&&c.envelope===null&&c.ack===null&&r.reportCommandId!==c.receipt.commandId
-    )),"存在新的执行命令，请先请求停止再核对。",409);
-    check(cancelling||r.view.status==="reconciliation_required"||!lease||lease.expires_at<=Date.now()||((!original.ack||original.ack.status==="stored")&&Date.parse(original.envelope.expiresAt)<=Date.now()),"运行仍有有效执行授权，无需终结核对。",409);
-    const stop=cancelling||!lease||lease.expires_at<=Date.now();
-    const candidate:Omit<ExecutionReconcileTicket,"recoveryId">={runId:r.view.runId,workspaceId:r.view.workspaceId,originalCommandId:original.receipt.commandId,currentCommandId:r.view.commandId,leaseEpoch:input.leaseEpoch,snapshotHash:r.snapshot.payloadHash,reportRevision:r.view.reportRevision,threadId:r.view.threadId,turnId:r.view.turnId,action:stop?"stop":"inspect_only"};
-    const current=await this.storage.get<string>(`exec:reconcile-current:${r.view.runId}`);
-    const old=current&&await this.storage.get<ReconciliationTicket>(`exec:reconcile-ticket:${current}`);
-    const snapshotDigest=await hash(r.snapshot);
-    if(old&&canonical({...old.ticket,recoveryId:undefined})===canonical(candidate)&&old.snapshotDigest===snapshotDigest&&canonical(old.principal)===canonical(r.principal))return {decision:"inspect",ticket:old.ticket};
-    const ticket:ExecutionReconcileTicket={...candidate,recoveryId:crypto.randomUUID()};
+    check(
+      r.commands
+        .slice(r.commands.indexOf(original) + 1)
+        .every(
+          (c) =>
+            c.payload.type === "cancel_run" ||
+            (cancelling &&
+              c.payload.type === "continue_run" &&
+              c.settled === true &&
+              c.envelope === null &&
+              c.ack === null &&
+              r.reportCommandId !== c.receipt.commandId),
+        ),
+      "存在新的执行命令，请先请求停止再核对。",
+      409,
+    );
+    check(
+      cancelling ||
+        r.view.status === "reconciliation_required" ||
+        !lease ||
+        lease.expires_at <= Date.now() ||
+        ((!original.ack || original.ack.status === "stored") &&
+          Date.parse(original.envelope.expiresAt) <= Date.now()),
+      "运行仍有有效执行授权，无需终结核对。",
+      409,
+    );
+    const stop = cancelling || !lease || lease.expires_at <= Date.now();
+    const candidate: Omit<ExecutionReconcileTicket, "recoveryId"> = {
+      runId: r.view.runId,
+      workspaceId: r.view.workspaceId,
+      originalCommandId: original.receipt.commandId,
+      currentCommandId: r.view.commandId,
+      leaseEpoch: input.leaseEpoch,
+      snapshotHash: r.snapshot.payloadHash,
+      reportRevision: r.view.reportRevision,
+      threadId: r.view.threadId,
+      turnId: r.view.turnId,
+      action: stop ? "stop" : "inspect_only",
+    };
+    const current = await this.storage.get<string>(
+      `exec:reconcile-current:${r.view.runId}`,
+    );
+    const old =
+      current &&
+      (await this.storage.get<ReconciliationTicket>(
+        `exec:reconcile-ticket:${current}`,
+      ));
+    const snapshotDigest = await hash(r.snapshot);
+    if (
+      old &&
+      canonical({ ...old.ticket, recoveryId: undefined }) ===
+        canonical(candidate) &&
+      old.snapshotDigest === snapshotDigest &&
+      canonical(old.principal) === canonical(r.principal)
+    )
+      return { decision: "inspect", ticket: old.ticket };
+    const ticket: ExecutionReconcileTicket = {
+      ...candidate,
+      recoveryId: crypto.randomUUID(),
+    };
     // Retiring delivery is not proof of stopping. It prevents any delayed stored
     // ACK from authorizing execution while the sole native consumer inspects it.
-    for(const command of r.commands)command.settled=true;
-    if(r.queueState)delete r.queueState.recovery;
-    if(!cancelling)r.view.status="reconciliation_required";
-    r.view.updatedAt=new Date().toISOString();
-    const stored:ReconciliationTicket={ticket,principal:r.principal,snapshotDigest,expiredLease:!!lease&&lease.expires_at<=Date.now()};
-    await this.storage.put({[runKey(r.view.runId)]:r,[`exec:reconcile-ticket:${ticket.recoveryId}`]:stored,[`exec:reconcile-current:${r.view.runId}`]:ticket.recoveryId});
-    return {decision:"inspect",ticket};
+    for (const command of r.commands) command.settled = true;
+    if (r.queueState) delete r.queueState.recovery;
+    if (!cancelling) r.view.status = "reconciliation_required";
+    r.view.updatedAt = new Date().toISOString();
+    const stored: ReconciliationTicket = {
+      ticket,
+      principal: r.principal,
+      snapshotDigest,
+      expiredLease: !!lease && lease.expires_at <= Date.now(),
+    };
+    await this.storage.put({
+      [runKey(r.view.runId)]: r,
+      [`exec:reconcile-ticket:${ticket.recoveryId}`]: stored,
+      [`exec:reconcile-current:${r.view.runId}`]: ticket.recoveryId,
+    });
+    return { decision: "inspect", ticket };
   }
-  private async reconciliationLease(d:DeviceRow,r:StoredRun,leaseEpoch:number) {
-    const lease=await this.env.DB.prepare("SELECT workspace_id,run_id,lease_epoch,expires_at FROM agent_workspace_leases WHERE runner_id=? AND workspace_id=?")
-      .bind(d.runner_id,r.view.workspaceId).first<{workspace_id:string;run_id:string;lease_epoch:number;expires_at:number}>();
-    check(!lease||(lease.run_id===r.view.runId&&lease.lease_epoch===leaseEpoch),"原项目租约已更改，不能核对其他占用。",409);
+  private async reconciliationLease(
+    d: DeviceRow,
+    r: StoredRun,
+    leaseEpoch: number,
+  ) {
+    const lease = await this.env.DB.prepare(
+      "SELECT workspace_id,run_id,lease_epoch,expires_at FROM agent_workspace_leases WHERE runner_id=? AND workspace_id=?",
+    )
+      .bind(d.runner_id, r.view.workspaceId)
+      .first<{
+        workspace_id: string;
+        run_id: string;
+        lease_epoch: number;
+        expires_at: number;
+      }>();
+    check(
+      !lease ||
+        (lease.run_id === r.view.runId && lease.lease_epoch === leaseEpoch),
+      "原项目租约已更改，不能核对其他占用。",
+      409,
+    );
     return lease;
   }
   private async nativeRun(d: DeviceRow, id: string) {
@@ -1274,12 +1719,14 @@ export class ExecutionDispatch {
           offers.push({ runId, workspaceId: r.view.workspaceId });
           break;
         }
-        if(r.view.status!=="cancel_requested")r.view.status = "reconciliation_required";
+        if (r.view.status !== "cancel_requested")
+          r.view.status = "reconciliation_required";
         await this.save(r);
         continue;
       }
       if (lease.expires_at <= Date.now() || lease.lease_epoch < 1) {
-        if(r.view.status!=="cancel_requested")r.view.status = "reconciliation_required";
+        if (r.view.status !== "cancel_requested")
+          r.view.status = "reconciliation_required";
         await this.save(r);
         continue;
       }
@@ -1289,7 +1736,8 @@ export class ExecutionDispatch {
         (command.envelope.leaseEpoch !== lease.lease_epoch ||
           Date.parse(command.envelope.expiresAt) <= Date.now())
       ) {
-        if(r.view.status!=="cancel_requested")r.view.status = "reconciliation_required";
+        if (r.view.status !== "cancel_requested")
+          r.view.status = "reconciliation_required";
         await this.save(r);
         continue;
       }

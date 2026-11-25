@@ -4,11 +4,13 @@ import { validRequestId } from "./agent-experience-service.mjs";
 import { createDesktopOnlineApi } from "./desktop-online-api.mjs";
 
 const reject = (status, message) => Object.assign(Error(message), { status });
-function originFor(req) {
+function originFor(req, hostname = "127.0.0.1") {
+  if (hostname === "localhost")
+    return "http://localhost:" + req.socket.localPort;
   return `http://127.0.0.1:${req.socket.localPort}`;
 }
-function guard(req, local = false, extraOrigins) {
-  const origin = originFor(req);
+function guard(req, local = false, extraOrigins, hostname = "127.0.0.1") {
+  const origin = originFor(req, hostname);
   const originAllowed =
     req.headers.origin === origin || extraOrigins?.has(req.headers.origin);
   // The published page links here via a user-initiated top-level navigation.
@@ -106,7 +108,13 @@ export function createExperienceServer({
   desktopApi,
   onlineDesktop,
   handshakeTimeoutMs = 10000,
+  admissionsPaused,
+  runtimeVersion,
+  publicHost = "127.0.0.1",
+  localEntry,
 }) {
+  if (!["127.0.0.1", "localhost"].includes(publicHost))
+    throw Error("Invalid public loopback hostname");
   if (!Number.isSafeInteger(handshakeTimeoutMs) || handshakeTimeoutMs < 1)
     throw Error("WebSocket handshake timeout must be a positive integer.");
   let closing = false;
@@ -120,11 +128,15 @@ export function createExperienceServer({
     throw Error("上游必须是本机轻单开发服务。");
   // Only these local app pages may cross ports. Cookies are still verified
   // against the upstream session by each local API on every actual request.
-  const runnerOrigins = new Set([target.origin, "http://127.0.0.1:5178"]);
+  const runnerOrigins = new Set([
+    target.origin,
+    "http://127.0.0.1:5178",
+    "http://" + publicHost + ":" + target.port,
+  ]);
   const server = createServer(async (req, res) => {
     try {
       if (closing) throw reject(503, "本机服务正在关闭。");
-      const url = new URL(req.url, originFor(req));
+      const url = new URL(req.url, originFor(req, publicHost));
       if (
         onlineDesktopApi &&
         url.pathname.startsWith("/api/local-desktop/online/")
@@ -138,7 +150,24 @@ export function createExperienceServer({
         req,
         localCodex || (localBridge && req.method !== "OPTIONS"),
         localBridge ? runnerOrigins : undefined,
+        publicHost,
       );
+      if (localEntry && url.pathname === "/local/desktop-signin")
+        return await localEntry(req, res, url);
+      if (url.pathname === "/api/local-service/version" && req.method === "GET")
+        return json(res, runtimeVersion || { protocol: 1, managed: false });
+      if (
+        req.method === "POST" &&
+        admissionsPaused?.() &&
+        ([
+          "/api/agent/chat/send",
+          "/api/agent/execution/intents",
+          "/api/local-codex/tests",
+        ].includes(url.pathname) ||
+          (url.pathname.startsWith("/api/agent/films/") &&
+            !url.pathname.endsWith("/stop")))
+      )
+        throw reject(423, "已预约轻岛更新，暂不接收新任务。取消预约后可继续。");
       if (localDesktop) {
         if (runnerCors(req, res)) return;
         if (!desktopApi)
@@ -224,8 +253,11 @@ export function createExperienceServer({
   server.on("upgrade", (req, socket, head) => {
     try {
       if (closing) return socket.destroy();
-      guard(req);
-      if (req.headers.origin !== originFor(req) || !req.url.startsWith("/api/"))
+      guard(req, false, undefined, publicHost);
+      if (
+        req.headers.origin !== originFor(req, publicHost) ||
+        !req.url.startsWith("/api/")
+      )
         throw reject(403, "仅支持本机协作连接。");
       const url = new URL(req.url, target);
       url.protocol = "ws:";

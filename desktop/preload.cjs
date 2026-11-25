@@ -20,7 +20,8 @@ if (
   ipcRenderer.on("qingdan-desktop:prepare-quit", async (_event, token) => {
     if (typeof token !== "string") return;
     try {
-      const result = await beforeQuit?.();
+      if (!beforeQuit) throw Error("页面尚未准备好保存状态。");
+      const result = await beforeQuit();
       ipcRenderer.send("qingdan-desktop:prepared-quit", {
         token,
         ok: true,
@@ -43,6 +44,29 @@ if (
       getUpdateState: () => ipcRenderer.invoke("qingdan-desktop:update-state"),
       checkForUpdates: () => ipcRenderer.invoke("qingdan-desktop:check-update"),
       installUpdate: () => ipcRenderer.invoke("qingdan-desktop:install-update"),
+      cancelUpdate: () => ipcRenderer.invoke("qingdan-desktop:cancel-update"),
+      recoverUpdate: () => ipcRenderer.invoke("qingdan-desktop:recover-update"),
+      getLocalService: () =>
+        ipcRenderer.invoke("qingdan-desktop:local-service", "status"),
+      startLocalService: () =>
+        ipcRenderer.invoke("qingdan-desktop:local-service", "start"),
+      retryLocalService: () =>
+        ipcRenderer.invoke("qingdan-desktop:local-service", "retry"),
+      stopLocalService: () =>
+        ipcRenderer.invoke("qingdan-desktop:local-service", "stop"),
+      openLocalWorkspace: () =>
+        ipcRenderer.invoke("qingdan-desktop:local-service", "open"),
+      onLocalServiceState: (callback) => {
+        if (typeof callback !== "function")
+          throw TypeError("A service callback is required");
+        const listener = (_event, state) => callback(state);
+        ipcRenderer.on("qingdan-desktop:local-service-state", listener);
+        return () =>
+          ipcRenderer.removeListener(
+            "qingdan-desktop:local-service-state",
+            listener,
+          );
+      },
       onUpdateState: (callback) => {
         if (typeof callback !== "function")
           throw new TypeError("An update callback is required");

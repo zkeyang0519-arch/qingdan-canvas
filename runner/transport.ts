@@ -14,6 +14,10 @@ import {
 import { validateServerOrigin } from "./credentials";
 import { digest } from "./store";
 import { RunnerError } from "./errors";
+import { FilmRunner } from "./film/runner.mjs";
+import { CodexClient } from "./codex-client";
+import type { ProcessOptions } from "./supervisor";
+import { filmCodexVersions, inspectFilmCodex } from "./film/codex.mjs";
 const require = createRequire(import.meta.url);
 export type TransportStatus = {
   connectionStatus: "connecting" | "online" | "offline" | "revoked" | "error";
@@ -49,6 +53,11 @@ export type TransportOptions = {
   ) => Socket;
   onStatus?: (status: TransportStatus) => void;
   validateWorkspace?: (workspaceId: string) => Promise<unknown>;
+  film?: {
+    codexProcess?: ProcessOptions;
+    stateDir: string;
+    resolveWorkspace: (id: string) => Promise<{ root: string }>;
+  };
 };
 type Request = {
   resolve: (packet: any) => void;
@@ -92,6 +101,16 @@ export class RunnerTransport {
   private requestMap = new Map<string, Request>();
   private abort?: AbortController;
   private authTimeout: any;
+  private films?: FilmRunner;
+  pauseAdmissions() {
+    this.films?.pauseAdmissions();
+  }
+  resumeAdmissions() {
+    this.films?.resumeAdmissions();
+  }
+  updateActivity() {
+    return this.films?.updateActivity() || { tasks: [], unknown: [] };
+  }
   constructor(private options: TransportOptions) {
     validateServerOrigin(options.serverOrigin);
     this.clock = options.clock ?? {
@@ -101,6 +120,30 @@ export class RunnerTransport {
     };
     this.http = options.fetch ?? fetch;
     this.authEpoch = options.authEpoch;
+    if (options.film) {
+      const codexProcess = {
+        ...options.film.codexProcess,
+        command:
+          process.env.QINGDAN_FILM_CODEX_BIN ||
+          options.film.codexProcess?.command ||
+          process.env.QINGDAN_CODEX_BIN ||
+          "codex",
+        compatibleVersions: filmCodexVersions,
+      };
+      this.films = new FilmRunner({
+        ...options.film,
+        createCodexClient: () =>
+          new CodexClient({
+            ...codexProcess,
+            maxMessageBytes: 32 * 1024 * 1024,
+          }),
+        inspectCodex: () => inspectFilmCodex(codexProcess),
+        http: this.http,
+        connected: () => this.status.connectionStatus === "online",
+        request: (path: string, init: RequestInit) =>
+          this.filmRequest(path, init),
+      });
+    }
   }
   private state(value: Partial<TransportStatus>) {
     Object.assign(this.status, value);
@@ -109,6 +152,7 @@ export class RunnerTransport {
   async start() {
     if (this.running || this.revoked) return;
     this.running = true;
+    this.films?.start();
     void this.connect();
   }
   private clearTimers() {
@@ -117,6 +161,7 @@ export class RunnerTransport {
     this.timer = this.heartbeat = this.renew = this.authTimeout = undefined;
   }
   private drop() {
+    this.films?.disconnect();
     this.clearTimers();
     this.abort?.abort();
     this.abort = undefined;
@@ -135,6 +180,7 @@ export class RunnerTransport {
     this.requestMap.clear();
   }
   close() {
+    this.films?.close();
     this.running = false;
     ++this.generation;
     this.drop();
@@ -149,6 +195,7 @@ export class RunnerTransport {
     void this.connect();
   }
   private stopRevoked() {
+    this.films?.close();
     this.revoked = true;
     this.running = false;
     ++this.generation;
@@ -490,6 +537,30 @@ export class RunnerTransport {
   ): Promise<StoredReceipt | null> {
     if (this.status.connectionStatus !== "online") return null;
     return this.accept(envelope, this.generation);
+  }
+  private async filmRequest(path: string, init: RequestInit) {
+    if (
+      !/^[a-zA-Z0-9_/-]+$/.test(path) ||
+      !this.#executionToken ||
+      this.status.connectionStatus !== "online" ||
+      this.clock.now() >= this.tokenExpires
+    )
+      throw new RunnerError("RUNNER_OFFLINE", "设备制作连接不可用。");
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", "Bearer " + this.#executionToken);
+    headers.set("X-Film-Connection", String(this.status.connectionEpoch));
+    return this.http(
+      new URL("/api/runner/films/" + path, this.options.serverOrigin),
+      {
+        ...init,
+        headers,
+        redirect: "error",
+        signal: AbortSignal.any([
+          this.executionAbort.signal,
+          ...(init.signal ? [init.signal] : []),
+        ]),
+      },
+    );
   }
   async executionRequest(
     action: ExecutionAction,

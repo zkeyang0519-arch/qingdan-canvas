@@ -1,0 +1,228 @@
+.film-studio,
+.film-editor {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.film-studio > button:first-child {
+  justify-self: start;
+}
+.film-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.film-editor label {
+  display: grid;
+  gap: 5px;
+  color: var(--agent-ink, #354236);
+  font-size: 13px;
+}
+.film-editor input:not([type="checkbox"]),
+.film-editor select,
+.film-editor textarea,
+.film-filters input,
+.film-filters select {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+  font: inherit;
+  padding: 8px;
+  border: 1px solid #dbe0d5;
+  border-radius: 7px;
+  background: #fff;
+  color: #273727;
+}
+.film-editor textarea {
+  resize: vertical;
+}
+.film-block {
+  border: 1px solid #dce2d7;
+  border-radius: 9px;
+  padding: 12px;
+  min-width: 0;
+}
+.film-block summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.film-block[open] > :not(summary),
+.film-block section {
+  margin-top: 9px;
+}
+.film-block p,
+.film-block small {
+  overflow-wrap: anywhere;
+}
+.film-editor pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.65;
+  max-height: 22rem;
+  overflow: auto;
+}
+.film-two,
+.film-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  gap: 10px;
+}
+.film-editor .film-check,
+.film-order,
+.film-asset,
+.film-thumbs,
+.agent-film-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.film-asset span,
+.film-order span {
+  flex: 1;
+  min-width: 70px;
+}
+.film-asset select {
+  width: auto;
+}
+.film-asset img,
+.film-thumbs img {
+  height: 64px;
+  width: 64px;
+  object-fit: contain;
+  background: #f0f2ed;
+  border-radius: 6px;
+}
+.film-thumbs a,
+.film-asset small {
+  display: grid;
+  max-width: 9rem;
+}
+.film-editor video {
+  width: 100%;
+  max-height: 54vh;
+  background: #172018;
+}
+.film-block dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+}
+.film-block dd {
+  margin: 0;
+}
+.film-row,
+.agent-film-links button {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  text-align: start;
+}
+.film-row {
+  justify-content: space-between;
+  padding: 10px;
+}
+.agent-film-links {
+  padding: 0 12px;
+  max-height: 22dvh;
+  overflow-y: auto;
+}
+.agent-film-links button,
+.film-row span {
+  font-size: 12px;
+}
+.film-actions {
+  flex-wrap: wrap;
+}
+.film-editor small {
+  display: block;
+  color: #596754;
+}
+.film-block h3 {
+  margin: 0 0 10px;
+}
+.agent-message-media {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(165px, 100%), 1fr));
+  gap: 14px;
+  max-width: 620px;
+  margin: 12px 0;
+}
+.agent-message-media figure {
+  min-width: 0;
+  margin: 0;
+}
+.agent-message-media figure:only-child {
+  max-width: 360px;
+}
+.agent-message-media .agent-image-thumbnail {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+  background: #f1f1ef;
+  border: 1px solid #e0e2dc;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
+.agent-message-media .agent-image-thumbnail img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  object-fit: contain;
+}
+.agent-message-media figcaption {
+  margin-top: 4px;
+  color: var(--agent-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-image-preview > img {
+  display: block;
+  width: 100%;
+  max-height: 70dvh;
+  object-fit: contain;
+}
+.agent-image-preview > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 10px;
+}
+.agent-linked-film {
+  min-width: 0;
+  max-width: 100%;
+}
+.agent-linked-film .agent-message-media {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  margin: 4px 0;
+  overflow-x: auto;
+}
+.agent-linked-film .agent-message-media figure {
+  flex: 0 0 85px;
+}
+.agent-chat-film-video {
+  display: block;
+  max-width: 100%;
+  max-height: 65dvh;
+  margin-top: 10px;
+}
+.agent-message-submission {
+  margin: 8px 0;
+}
+.agent-message-submission summary {
+  cursor: pointer;
+}
+.agent-message-submission small {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

@@ -37,6 +37,21 @@ if (!args.includes("--skip-web-build"))
     "build",
   ]);
 await fs.access(path.join(root, "dist", "index.html"));
+const rendererHtml = await fs.readFile(
+  path.join(root, "dist/index.html"),
+  "utf8",
+);
+if (
+  !rendererHtml.includes(
+    'name="qingdan-build-version" content="' +
+      (process.env.QINGDAO_BUILD_VERSION || pkg.version) +
+      '"',
+  )
+)
+  throw Error(
+    "Renderer build version does not match the installer; rebuild the web bundle.",
+  );
+await run(process.execPath, [npm, "run", "desktop:service:package"]);
 // Keep node_modules between builds; replace only the bounded staged source trees.
 await fs.mkdir(stage, { recursive: true });
 for (const directory of ["desktop", "shared"]) {
@@ -59,6 +74,22 @@ for (const file of ["desktop-origins.cjs", "island-size.json"])
   );
 for (const file of ["package.json", "package-lock.json"])
   await fs.copyFile(path.join(root, "desktop", file), path.join(stage, file));
+if (process.env.QINGDAO_BUILD_VERSION) {
+  const version = process.env.QINGDAO_BUILD_VERSION;
+  if (!/^\d+\.\d+\.\d+-beta\.\d+$/.test(version))
+    throw Error(
+      "Only an explicit beta version may override the release source.",
+    );
+  for (const name of ["package.json", "package-lock.json"]) {
+    const file = path.join(stage, name),
+      value = JSON.parse(await fs.readFile(file, "utf8"));
+    value.version = version;
+    value.name = "qingdao-beta";
+    if (value.packages?.[""]) value.packages[""].name = "qingdao-beta";
+    if (value.packages?.[""]) value.packages[""].version = version;
+    await fs.writeFile(file, JSON.stringify(value, null, 2));
+  }
+}
 await run(
   process.execPath,
   [npm, "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],

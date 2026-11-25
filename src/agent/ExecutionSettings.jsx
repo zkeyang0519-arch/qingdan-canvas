@@ -10,6 +10,8 @@ import {
   Zap,
 } from "lucide-react";
 import WorkspaceDrawer from "./WorkspaceDrawer.jsx";
+import { Button } from "./ui/button.jsx";
+import { Input } from "./ui/input.jsx";
 import {
   executionSettingsIssue,
   executionSettingsPayload,
@@ -64,9 +66,10 @@ function ModelPicker({ value, catalog, onChange }) {
   return (
     <div className="agent-model-picker">
       <span>新会话默认模型</span>
-      <button
+      <Button
+        variant="outline"
         type="button"
-        className="agent-model-picker-trigger"
+        className="agent-model-picker-trigger qd:justify-between qd:rounded-xl qd:h-11 qd:px-3"
         role="combobox"
         aria-label="新会话默认模型"
         aria-haspopup="listbox"
@@ -95,12 +98,13 @@ function ModelPicker({ value, catalog, onChange }) {
               : "Codex 默认"}
         </span>
         <ChevronDown size={15} aria-hidden="true" />
-      </button>
+      </Button>
       {open && (
         <div className="agent-model-picker-panel" onKeyDown={navigate}>
           <div className="agent-model-picker-search">
             <Search size={15} aria-hidden="true" />
-            <input
+            <Input
+              className="qd:border-0 qd:bg-transparent qd:rounded-none"
               autoFocus
               aria-label="搜索模型"
               placeholder="搜索模型名称或 ID"
@@ -136,8 +140,9 @@ function ModelPicker({ value, catalog, onChange }) {
   );
 }
 
-function SettingsForm({ value, onSave, onClose, catalog }) {
+function SettingsForm({ value, onSave, onClose, catalog, inline, warning }) {
   const [draft, setDraft] = useState(() => ({ ...value }));
+  const [saved, setSaved] = useState(false);
   const resolved = executionSettingsPayload(draft, catalog);
   const selected = selectedExecutionModel(draft, catalog);
   const supportsFast = catalog.status === "ready" && selected?.supportsFast;
@@ -149,7 +154,8 @@ function SettingsForm({ value, onSave, onClose, catalog }) {
         event.preventDefault();
         if (!issue) {
           onSave(draft);
-          onClose();
+          setSaved(true);
+          onClose?.();
         }
       }}
     >
@@ -227,13 +233,32 @@ function SettingsForm({ value, onSave, onClose, catalog }) {
         </p>
       )}
       <footer>
+        {saved &&
+          inline &&
+          !warning &&
+          JSON.stringify(draft) === JSON.stringify(value) && (
+            <p role="status" className="agent-success">
+              执行设置已保存。
+            </p>
+          )}
         <div>
-          <button type="button" onClick={onClose}>
-            取消
-          </button>
-          <button type="submit" className="primary" disabled={!!issue}>
+          <Button
+            variant="ghost"
+            type="button"
+            onClick={
+              inline
+                ? () => {
+                    setDraft({ ...value });
+                    setSaved(false);
+                  }
+                : onClose
+            }
+          >
+            {inline ? "重置更改" : "取消"}
+          </Button>
+          <Button type="submit" className="primary" disabled={!!issue}>
             保存执行设置
-          </button>
+          </Button>
         </div>
       </footer>
     </form>
@@ -246,10 +271,24 @@ export default function ExecutionSettings({
   catalog,
   disabled,
   warning,
+  inline = false,
 }) {
   const [open, setOpen] = useState(false);
   const model = selectedExecutionModel(value, catalog);
   const resolved = executionSettingsPayload(value, catalog);
+  if (inline)
+    return (
+      <>
+        {warning && (
+          <p className="agent-note" role="status">
+            {warning}
+          </p>
+        )}
+        <fieldset disabled={disabled}>
+          <SettingsForm {...{ value, onSave, catalog, warning }} inline />
+        </fieldset>
+      </>
+    );
   return (
     <>
       <button

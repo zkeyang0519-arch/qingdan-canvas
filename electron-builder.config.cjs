@@ -1,13 +1,17 @@
 "use strict";
+const { channelDetails } = require("./desktop/channel.cjs");
+const variant = channelDetails(
+  process.env.QINGDAO_BUILD_VERSION || require("./package.json").version,
+);
 
 module.exports = {
-  appId: "cn.zky.qingdao",
-  productName: "Qingdao",
-  executableName: "Qingdao",
-  protocols: [{ name: "轻岛", schemes: ["qingdao"] }],
+  appId: variant.appId,
+  productName: variant.productName,
+  executableName: variant.executableName,
+  protocols: [{ name: variant.title, schemes: [variant.protocol] }],
   directories: {
     app: ".tmp/desktop-package",
-    output: "output/desktop-release",
+    output: process.env.QINGDAO_OUTPUT_DIR || "output/desktop-release",
   },
   asar: true,
   npmRebuild: false,
@@ -17,8 +21,25 @@ module.exports = {
     "shared/island-size.json",
     "package.json",
   ],
-  extraResources: [{ from: "dist", to: "web" }],
-  artifactName: "Qingdao-Setup-${version}-${arch}.${ext}",
+  extraResources: [
+    { from: "dist", to: "web" },
+    {
+      from: ".tmp/local-service-package",
+      to: "local-service",
+      filter: ["**/*", "!node_modules/**", "!**/.cache/**", "!**/*.map"],
+    },
+    // electron-builder omits a source tree's root node_modules. Copy the
+    // service's separately locked runtime dependencies as an explicit resource.
+    {
+      from: ".tmp/local-service-package/node_modules",
+      to: "local-service/node_modules",
+      filter: ["**/*", "!**/.cache/**", "!**/*.map"],
+    },
+  ],
+  artifactName:
+    variant.id === "beta"
+      ? "Qingdao-Beta-Setup-${version}-${arch}.${ext}"
+      : "Qingdao-Setup-${version}-${arch}.${ext}",
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],
     ...(process.env.QINGDAO_PUBLISHER_NAME
@@ -36,8 +57,8 @@ module.exports = {
     allowElevation: false,
     // The custom maintenance page offers overwrite or the native directory picker.
     runAfterFinish: true,
-    shortcutName: "轻岛",
-    uninstallDisplayName: "轻岛 Qingdao",
+    shortcutName: variant.title,
+    uninstallDisplayName: variant.title + " " + variant.productName,
     deleteAppDataOnUninstall: false,
   },
   publish: [
@@ -45,7 +66,8 @@ module.exports = {
       provider: "github",
       owner: "zkeyang0519-arch",
       repo: "qingdan-canvas",
-      releaseType: "release",
+      releaseType: variant.id === "beta" ? "prerelease" : "release",
+      channel: variant.id === "beta" ? "beta" : "latest",
       vPrefixedTagName: true,
     },
   ],

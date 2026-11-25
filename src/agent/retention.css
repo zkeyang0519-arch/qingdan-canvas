@@ -1,0 +1,109 @@
+.qd-retention-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 22px;
+  padding: 20px;
+  border: 1px solid #dfe6d8;
+  border-radius: 14px;
+  margin-bottom: 26px;
+}
+.qd-retention-settings strong {
+  font-size: 14px;
+}
+.qd-retention-settings p {
+  font-size: 12px;
+  color: #64715e;
+  line-height: 1.7;
+  margin: 5px 0 0;
+}
+.qd-retention-settings > p,
+.qd-retention-settings > .qd-retention-link {
+  grid-column: 1/-1;
+}
+.qd-retention-settings select {
+  align-self: start;
+  min-width: 140px;
+  max-width: 200px;
+}
+.qd-retention-link {
+  justify-self: start;
+  border: 0 !important;
+  background: none !important;
+  color: #48683f !important;
+  font-size: 12px !important;
+  padding: 4px 0 !important;
+}
+.qd-retention-receipt {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #64715e;
+  padding: 13px 0;
+  border-top: 1px solid #e1e7d9;
+  margin: 16px 0;
+}
+.qd-retention-job {
+  padding: 15px 0;
+  border-bottom: 1px solid #e1e7d9;
+}
+.qd-retention-job > summary {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.qd-retention-job > summary > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.qd-retention-job small {
+  color: #64715e;
+  font-size: 11px;
+}
+.qd-retention-candidate {
+  padding: 18px;
+  border: 1px solid #e0e7d9;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+}
+.qd-retention-candidate > small {
+  font-size: 11px;
+  color: #64715e;
+}
+.qd-retention-candidate h4,
+.qd-retention-candidate p {
+  margin: 0;
+}
+.qd-retention-candidate label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.qd-retention-candidate textarea {
+  width: 100%;
+  resize: vertical;
+}
+.qd-retention-candidate details {
+  font-size: 12px;
+  color: #64715e;
+}
+.qd-retention-candidate summary {
+  cursor: pointer;
+}
+.qd-retention-candidate p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+@media (max-width: 600px) {
+  .qd-retention-settings {
+    grid-template-columns: 1fr;
+  }
+  .qd-retention-job > summary {
+    flex-direction: column;
+    gap: 5px;
+  }
+}

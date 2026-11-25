@@ -13,7 +13,7 @@ function bundledAsset(url, directory) {
     return null;
   }
   if (name === "/app") name = "/index.html";
-  else if (!/^\/(assets|animals|island|island-releases)\//.test(name))
+  else if (!/^\/(assets|fonts|animals|island|island-releases)\//.test(name))
     return null;
   const root = path.resolve(directory),
     file = path.resolve(root, "." + name);

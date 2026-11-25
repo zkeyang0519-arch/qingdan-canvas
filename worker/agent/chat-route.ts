@@ -25,15 +25,21 @@ export async function chatRoute(
       "request",
       "new",
       "send",
+      "select-model",
+      "models",
       "cancel",
       "memory",
+      "retention",
       "remember",
       "save-tasks",
     ].includes(action),
     "聊天接口不存在。",
     404,
   );
-  const readOnly = action === "state" || action === "request";
+  const readOnly =
+    action === "state" ||
+    action === "request" ||
+    (action === "models" && request.method === "GET");
   check(
     (readOnly && request.method === "GET") ||
       (!readOnly && request.method === "POST"),
@@ -42,6 +48,7 @@ export async function chatRoute(
   );
   const input: Record<string, unknown> = readOnly
     ? {
+        ...(action === "models" ? { action: "list" } : {}),
         ...(url.searchParams.get("requestId")
           ? { requestId: url.searchParams.get("requestId") }
           : {}),

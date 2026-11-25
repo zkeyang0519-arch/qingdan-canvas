@@ -614,6 +614,39 @@ test("a terminal send receipt immediately reads the assistant reply from state",
   }
 });
 
+test("a finished reply reconciles a temporarily missing receipt and unlocks the next message without losing its draft", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = fixture();
+  const original = f.requestCloud;
+  let hideReceipt = false;
+  f.requestCloud = async (route, options) => {
+    if (hideReceipt && route.startsWith("/api/agent/chat/request?")) {
+      hideReceipt = false;
+      return { found: false };
+    }
+    return original(route, options);
+  };
+  const close = await mount(f, { embedded: true });
+  try {
+    await edit("聊天消息", "第一条任务");
+    await click("开始");
+    await edit("聊天消息", "任务完成后继续这条消息");
+    f.complete();
+    hideReceipt = true;
+    await act(async () => t.mock.timers.tick(700));
+    assert.equal(field("聊天消息").disabled, false);
+    await act(async () => t.mock.timers.tick(700));
+    assert.equal(field("聊天消息").value, "任务完成后继续这条消息");
+    assert.equal(button("开始").disabled, false);
+    await click("开始");
+    const sends = f.calls.filter((call) => call.route.endsWith("/send"));
+    assert.equal(sends.length, 2);
+    assert.equal(sends[1].body.text, "任务完成后继续这条消息");
+  } finally {
+    await close();
+  }
+});
+
 test("an invalidated saving proposal checks for its original receipt without offering another write", async () => {
   const f = fixture({ existing: true });
   const tasks = [
@@ -699,7 +732,7 @@ test("explicitly remembering uses the project revision and forgetting prevents u
     assert.equal(remember.body.bindingRevision, 2);
     assert.equal(remember.body.expectedMemoryId, "m1");
     assert.equal(remember.body.expectedRevision, 1);
-    await click("当前项目记忆");
+    await click("项目约定");
     assert.match(document.body.textContent, /来自聊天建议/);
     await click("删除记忆：文档语言");
     assert.equal(
@@ -721,7 +754,7 @@ test("forgetting disables cached candidates even if the refresh fails", async ()
   f.existingProjectMemory();
   const close = await mount(f);
   try {
-    await click("当前项目记忆");
+    await click("项目约定");
     f.loseState();
     await click("删除记忆：文档语言");
     assert.match(document.body.textContent, /无法刷新聊天状态/);
@@ -798,7 +831,7 @@ test("a changed binding revision clears the old draft before it can be sent", as
   }
 });
 
-test("project summary gates sending, preserves a composed draft, and new chat waits for its own summary", async () => {
+test("summary updates preserve drafts and absent summaries no longer block ordinary chat", async () => {
   const f = fixture({ existing: true });
   const project = {
     bindingId: "bound",
@@ -815,7 +848,7 @@ test("project summary gates sending, preserves a composed draft, and new chat wa
   try {
     assert.match(document.body.textContent, /等待项目空闲/);
     await edit("聊天消息", "保留这条准备发送的消息");
-    assert.equal(button("发送").disabled, true);
+    assert.equal(button("发送").disabled, false);
     f.setProject({
       ...project,
       status: "ready",
@@ -861,7 +894,7 @@ test("project summary gates sending, preserves a composed draft, and new chat wa
     await click("刷新聊天与记忆");
     await click("新聊天");
     await edit("聊天消息", "新聊天的草稿");
-    assert.equal(button("发送").disabled, true);
+    assert.equal(button("发送").disabled, false);
     assert.equal(f.calls.filter((c) => c.route.endsWith("/new")).length, 1);
     assert.equal(f.calls.filter((c) => c.route.endsWith("/send")).length, 0);
   } finally {

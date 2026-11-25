@@ -1,6 +1,7 @@
 import UnknownWorkspaceRequests from "./UnknownWorkspaceRequests.jsx";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { createPortal } from "react-dom";
 import { api } from "../api.js";
 import {
   useWorkspaceDraft,
@@ -381,6 +382,7 @@ export function BoundBatch({
   onRunChange,
   embedded,
   renderConversation,
+  detailHost,
   onExecutionChange,
 }) {
   const targetMatches =
@@ -713,8 +715,9 @@ export function BoundBatch({
       setMessage("原操作已收到回执，正在核对当前执行。");
       await refresh(version);
     });
+  const selectedDetail = detail?.run?.runId === selectedId ? detail : null;
   const run =
-    detail?.run ||
+    selectedDetail?.run ||
     (renderConversation
       ? runs.find((entry) => entry.runId === selectedId)
       : null);
@@ -833,47 +836,48 @@ export function BoundBatch({
     });
   }, [run?.runId, activeExecution, stopPending, busy]);
   useEffect(() => () => executionCallback.current?.(null), []);
-  if (renderConversation)
-    return renderConversation({
-      runs,
-      detail,
-      busy,
-      stopping: stopPending,
-      control,
-      notices: (
-        <>
-          {(requests.warning || error || readError) && (
-            <p className="agent-error" role="alert">
-              {requests.warning || error || readError}
-            </p>
-          )}
-          <UnknownWorkspaceRequests requests={requests} />
-          {requests.ownedRecords.map((record) => (
-            <div key={record.requestId} className="agent-actions">
-              <span className="agent-note">操作结果待确认</span>
-              <button disabled={busy} onClick={() => perform(refresh)}>
-                核对原操作
-              </button>
-              <button disabled={busy} onClick={() => retryOriginal(record)}>
-                重试原操作
-              </button>
-            </div>
-          ))}
-          {nativeRequest && (
-            <NativeRequestPrompt
-              key={`${run.runId}:${nativeRequest.requestId}`}
-              request={nativeRequest}
-              busy={busy}
-              delivered={responded.has(nativeRequest.requestId)}
-              receiptStatus={responded.get(nativeRequest.requestId)}
-              error={error}
-              onRespond={respond}
-            />
-          )}
-        </>
-      ),
-    });
-  return (
+  const nativePrompt = nativeRequest && (
+    <NativeRequestPrompt
+      key={`${run.runId}:${nativeRequest.requestId}`}
+      request={nativeRequest}
+      inline={!!renderConversation && !detailHost}
+      busy={busy}
+      delivered={responded.has(nativeRequest.requestId)}
+      receiptStatus={responded.get(nativeRequest.requestId)}
+      error={error}
+      onRespond={respond}
+    />
+  );
+  const conversation = renderConversation?.({
+    nativePrompt: !detailHost ? nativePrompt : null,
+    runs,
+    detail,
+    busy,
+    stopping: stopPending,
+    control,
+    notices: !detailHost && (
+      <>
+        {(requests.warning || error || readError) && (
+          <p className="agent-error" role="alert">
+            {requests.warning || error || readError}
+          </p>
+        )}
+        <UnknownWorkspaceRequests requests={requests} />
+        {requests.ownedRecords.map((record) => (
+          <div key={record.requestId} className="agent-actions">
+            <span className="agent-note">操作结果待确认</span>
+            <button disabled={busy} onClick={() => perform(refresh)}>
+              核对原操作
+            </button>
+            <button disabled={busy} onClick={() => retryOriginal(record)}>
+              重试原操作
+            </button>
+          </div>
+        ))}
+      </>
+    ),
+  });
+  const controls = (!renderConversation || detailHost) && (
     <>
       <div className="agent-batch-toolbar">
         {!embedded && onOpenChecklist && (
@@ -976,8 +980,8 @@ export function BoundBatch({
           {message}
         </p>
       )}
-      {!run && (
-        <p className="agent-note">
+      {!selectedDetail && !readError && (
+        <p className="agent-note" role="status">
           {selectedId
             ? "正在读取批次…"
             : embedded
@@ -985,11 +989,11 @@ export function BoundBatch({
               : "还没有选择执行批次。可以在第 5 步选择待办并提交。"}
         </p>
       )}
-      {run && (
+      {selectedDetail && (
         <BatchRun
           {...{
-            run,
-            events: detail.events,
+            run: selectedDetail.run,
+            events: selectedDetail.events,
             busy,
             stopping,
             confirmingStop,
@@ -1002,17 +1006,13 @@ export function BoundBatch({
           }}
         />
       )}
-      {nativeRequest && (
-        <NativeRequestPrompt
-          key={`${run.runId}:${nativeRequest.requestId}`}
-          request={nativeRequest}
-          busy={busy}
-          delivered={responded.has(nativeRequest.requestId)}
-          receiptStatus={responded.get(nativeRequest.requestId)}
-          error={error}
-          onRespond={respond}
-        />
-      )}
+    </>
+  );
+  return (
+    <>
+      {conversation}
+      {detailHost ? createPortal(controls, detailHost) : controls}
+      {(!renderConversation || detailHost) && nativePrompt}
     </>
   );
 }

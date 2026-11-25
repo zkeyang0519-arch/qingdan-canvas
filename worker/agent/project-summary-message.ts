@@ -2,12 +2,28 @@ import type { ProjectContext } from "../../shared/agent/project";
 import { progressText } from "../../shared/agent/progress";
 import { handoffReportText } from "../../shared/agent/handoff";
 
+export function projectSummaryNotice(project: ProjectContext) {
+  return [
+    `项目摘要已更新 · 第 ${project.summaryRevision} 版`,
+    project.summary?.overview?.slice(0, 1200),
+    project.capturedAt ? `来源时间：${project.capturedAt}` : "",
+    project.sourceKind === "codex_history"
+      ? "依据历史记录整理，本次未重新运行验证。"
+      : "",
+    "完整进展、交接报告和来源可在「项目资料」查看。",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 export function projectSummaryMessage(project: ProjectContext) {
   const history = project.sourceKind === "codex_history";
   if (project.summary?.handoff)
     return [
       `项目交接报告 · 第 ${project.summaryRevision} 版`,
-      project.sourceKind === "project_current" ? "根据本次按需读取的项目文件和相关记录整理。" : "根据已保存的项目交接资料整理。",
+      project.sourceKind === "project_current"
+        ? "根据本次按需读取的项目文件和相关记录整理。"
+        : "根据已保存的项目交接资料整理。",
       ...(project.capturedAt ? [`报告时间：${project.capturedAt}`] : []),
       ...(project.cwd ? [`项目目录：${project.cwd}`] : []),
       handoffReportText(project.summary),

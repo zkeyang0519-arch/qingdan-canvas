@@ -95,7 +95,7 @@ test("release metadata binds the exact versioned x64 installer to its size and S
   assert.throws(() => compareDesktopVersions("latest", "0.3.1"));
 });
 test("first installation downloads, verifies and installs before reporting the executable ready", async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { allowInitialInstall: true });
   const result = await f.ensure();
   assert.equal(result.version, "0.3.1");
   assert.equal(result.changed, true);
@@ -104,6 +104,12 @@ test("first installation downloads, verifies and installs before reporting the e
     await fs.readdir(path.join(f.root, "Qingdao/installer-cache")),
     [],
   );
+});
+
+test("opening from a webpage cannot authorize an initial installation", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.ensure(), /官网下载页安装/);
+  assert.deepEqual(f.events, []);
 });
 test("an equal or newer installed version opens without downloading, closing or downgrading", async (t) => {
   for (const version of ["0.3.1", "0.4.0"]) {
@@ -119,10 +125,11 @@ test("the web launcher follows a registered custom path, including a location ch
   const seen = [];
   let installed = false;
   const f = await fixture(t, {
+    allowInitialInstall: true,
     locate: () => (installed ? selected : previous),
     inspect: async ({ executable }) => {
       seen.push(executable);
-      return { version: installed ? "0.3.1" : "0.3.0", running: [] };
+      return { version: installed ? "0.3.1" : null, running: [] };
     },
     install: async () => {
       installed = true;
@@ -133,20 +140,21 @@ test("the web launcher follows a registered custom path, including a location ch
   assert.equal(seen.at(-1), selected);
   assert.equal((await f.ensure()).executable, selected);
 });
-test("a running old version only exits after the full installer checksum passed", async (t) => {
+test("web launch wakes a running old version without downloading or requesting exit", async (t) => {
   const f = await fixture(t, { version: "0.3.0", running: [100] });
   await f.ensure();
-  assert.deepEqual(f.events, ["download", "save-and-exit", "install"]);
+  assert.deepEqual(f.events, []);
+  assert.equal(f.state.version, "0.3.0");
 });
-test("an old stopped version updates without sending a shutdown command", async (t) => {
+test("web launch reopens an old stopped version and leaves update decisions to the app", async (t) => {
   const f = await fixture(t, { version: "0.3.0" });
   await f.ensure();
-  assert.deepEqual(f.events, ["download", "install"]);
+  assert.deepEqual(f.events, []);
 });
 test("corrupt and interrupted downloads leave the old process untouched and clean partial files", async (t) => {
   for (const body of [Buffer.alloc(bytes.length), bytes.subarray(1)]) {
     const f = await fixture(t, {
-      version: "0.3.0",
+      allowInitialInstall: true,
       running: [100],
       fetchImpl: async () => new Response(body),
     });
@@ -167,7 +175,7 @@ test("failed draft saving and unsupported legacy shutdown never invoke the insta
     requestDesktopExit,
   ]) {
     const f = await fixture(t, {
-      version: "0.3.0",
+      allowInitialInstall: true,
       running: [100],
       requestExit,
     });
@@ -178,7 +186,7 @@ test("failed draft saving and unsupported legacy shutdown never invoke the insta
 });
 test("a saved acknowledgment without process exit never authorizes installation", async (t) => {
   const f = await fixture(t, {
-    version: "0.3.0",
+    allowInitialInstall: true,
     running: [100],
     requestExit: async () => {},
   });
@@ -189,7 +197,7 @@ test("installation completes after saved shutdown even if the browser then disco
   const controller = new AbortController();
   let f;
   f = await fixture(t, {
-    version: "0.3.0",
+    allowInitialInstall: true,
     running: [100],
     requestExit: async () => {
       f.events.push("save-and-exit");
@@ -214,18 +222,18 @@ test("a failed installer or unchanged executable is never reported as successful
     },
     async () => {},
   ]) {
-    const f = await fixture(t, { version: "0.3.0", install });
+    const f = await fixture(t, { allowInitialInstall: true, install });
     await assert.rejects(f.ensure(), /blocked|安装成功/);
   }
 });
-test("release-network failure permits an existing app with a visible warning but cannot pretend to install", async (t) => {
+test("web opening an existing app does not depend on the update network", async (t) => {
   const release = async () => {
     throw Error("offline");
   };
   const present = await fixture(t, { version: "0.3.0", release });
-  assert.match((await present.ensure()).warning, /暂时无法检查/);
+  assert.equal((await present.ensure()).version, "0.3.0");
   assert.deepEqual(present.events, []);
-  const absent = await fixture(t, { release });
+  const absent = await fixture(t, { release, allowInitialInstall: true });
   await assert.rejects(absent.ensure(), /还没有安装/);
 });
 test("download redirects cannot escape GitHub's release asset hosts", async () => {

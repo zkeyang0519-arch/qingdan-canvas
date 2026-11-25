@@ -19,6 +19,7 @@ import ProjectProgress, { ProjectBackground } from "./ProjectProgress.jsx";
 import SummaryReadProgress from "./SummaryReadProgress.jsx";
 import SummaryLiveOutput from "./SummaryLiveOutput.jsx";
 import ProjectHandoffReport from "./ProjectHandoffReport.jsx";
+import ProjectOverview from "./ProjectOverview.jsx";
 
 const pending = (state) =>
   ["queued", "running", "finalizing", "reconciliation_required"].includes(
@@ -79,12 +80,51 @@ export function ProjectSummaryCard({
   blocked = false,
   unknown = false,
   liveOutput,
+  workspacePage = false,
+  detailOnly = false,
+  initialTab = "progress",
 }) {
+  const [tab, setTab] = useState(initialTab);
   const working = pending(state);
   const previous = !!state?.summary && (!state.ready || state.stale);
   const modular = !!state?.summary?.modules;
   const handoff = !!state?.summary?.handoff;
   const coverage = state?.summary?.coverage;
+  const activeTab = tab === "handoff" && !handoff ? "progress" : tab;
+  const showContent = !workspacePage || activeTab !== "sources";
+  const showReport = handoff && (!workspacePage || activeTab === "handoff");
+  const Sources = workspacePage ? "section" : "details";
+  const SourcesHeading = workspacePage ? "h4" : "summary";
+  if (workspacePage && !detailOnly) {
+    const props = {
+      state,
+      busy,
+      error,
+      reload,
+      refresh,
+      usePrevious,
+      openChat,
+      stop,
+      stopping,
+      stopNotice,
+      blocked,
+      unknown,
+      liveOutput,
+    };
+    return (
+      <ProjectOverview
+        {...props}
+        renderDetails={(tab) => (
+          <ProjectSummaryCard
+            {...props}
+            workspacePage
+            detailOnly
+            initialTab={tab}
+          />
+        )}
+      />
+    );
+  }
   return (
     <section
       className="agent-device-card agent-project-summary"
@@ -144,148 +184,177 @@ export function ProjectSummaryCard({
       )}
       {state?.summary && (
         <>
-          {handoff ? (
-            <>
-              <p className="agent-note">
-                项目交接报告 · 第 {state.summaryRevision} 版
-                {state.capturedAt && (
-                  <>
-                    {" "}
-                    ·{" "}
-                    <time dateTime={state.capturedAt}>
-                      {new Date(state.capturedAt).toLocaleString("zh-CN")}
-                    </time>
-                  </>
-                )}
-              </p>
-              <ProjectHandoffReport summary={state.summary} />
-            </>
-          ) : (
-            <>
-              {modular && (
-                <ProjectBackground background={state.summary.background} />
+          {workspacePage && (
+            <div className="studio-tabs" role="group" aria-label="摘要内容">
+              <button
+                aria-pressed={activeTab === "progress"}
+                onClick={() => setTab("progress")}
+              >
+                项目进展
+              </button>
+              {handoff && (
+                <button
+                  aria-pressed={activeTab === "handoff"}
+                  onClick={() => setTab("handoff")}
+                >
+                  交接报告
+                </button>
               )}
-              <p className="agent-project-overview">{state.summary.overview}</p>
-              {state.sourceKind === "codex_history" && (
-                <p className="agent-note">
-                  来源：Codex 历史任务总结；本次未重新检查代码或运行测试。
-                </p>
-              )}
-              {state.sourceKind === "project_current" && (
-                <p className="agent-note">
-                  来源：本次按需读取的项目文件及相关记录；未核实的部分已在报告中注明。
-                </p>
-              )}
-              <p className="agent-note">
-                {previous ? "上次摘要" : modular ? "项目进度" : "项目摘要"} · 第{" "}
-                {state.summaryRevision} 版
-                {state.capturedAt && (
-                  <>
-                    {" "}
-                    ·{" "}
-                    <time dateTime={state.capturedAt}>
-                      {new Date(state.capturedAt).toLocaleString("zh-CN")}
-                    </time>
-                  </>
-                )}
-              </p>
-              {modular && <ProjectProgress modules={state.summary.modules} />}
-              <div className="agent-summary-sections">
-                {sections
-                  .filter(
-                    ([key]) =>
-                      !modular ||
-                      (["blockers", "verification", "uncertainties"].includes(
-                        key,
-                      ) &&
-                        state.summary[key]?.length),
-                  )
-                  .map(([key, label]) => (
-                    <section key={key} aria-label={`摘要${label}`}>
-                      <h5>
-                        {key === "verification" &&
-                        state.sourceKind === "codex_history"
-                          ? "历史验证记录"
-                          : label}
-                      </h5>
-                      {state.summary[key]?.length ? (
-                        <ul>
-                          {state.summary[key].map((item, index) => (
-                            <li key={index}>
-                              {item.text}
-                              {item.evidenceRef && (
-                                <small>来源：{item.evidenceRef}</small>
-                              )}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="agent-note">暂无记录</p>
-                      )}
-                    </section>
-                  ))}
-              </div>
-            </>
+              <button
+                aria-pressed={activeTab === "sources"}
+                onClick={() => setTab("sources")}
+              >
+                读取范围与来源
+              </button>
+            </div>
           )}
-          <details className="agent-summary-source">
-            <summary>
-              {handoff
-                ? "读取范围与来源"
-                : modular
-                  ? "数据覆盖与来源"
-                  : "查看总结来源"}
-            </summary>
-            {coverage && (
-              <p className="agent-note">
-                已提供 {coverage.deliveredRecords} / {coverage.totalRecords}{" "}
-                条历史，来自 {coverage.threadCount} 个会话。
-                {!!coverage.cachedRecords &&
-                  `其中复用 ${coverage.cachedRecords} 条历史，本次新读取 ${coverage.deliveredRecords - coverage.cachedRecords} 条。`}
-                {coverage.partial && "存在覆盖缺口，结论仅适用于可读取的记录。"}
-                读取失败 {
-                  coverage.failedThreadCount
-                } 个会话；排除来源不明分叉 {coverage.excludedForkCount}{" "}
-                个；缺少最终答复 {coverage.missingFinalCount} 轮；非完成状态{" "}
-                {coverage.incompleteTurnCount} 轮。
-              </p>
-            )}
-            <dl>
-              {state.cwd && (
-                <>
-                  <dt>项目目录</dt>
-                  <dd>{state.cwd}</dd>
-                </>
+          {showContent &&
+            (showReport ? (
+              <>
+                <p className="agent-note">
+                  项目交接报告 · 第 {state.summaryRevision} 版
+                  {state.capturedAt && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <time dateTime={state.capturedAt}>
+                        {new Date(state.capturedAt).toLocaleString("zh-CN")}
+                      </time>
+                    </>
+                  )}
+                </p>
+                <ProjectHandoffReport summary={state.summary} />
+              </>
+            ) : (
+              <>
+                {modular && (
+                  <ProjectBackground background={state.summary.background} />
+                )}
+                <p className="agent-project-overview">
+                  {state.summary.overview}
+                </p>
+                {state.sourceKind === "codex_history" && (
+                  <p className="agent-note">
+                    来源：Codex 历史任务总结；本次未重新检查代码或运行测试。
+                  </p>
+                )}
+                {state.sourceKind === "project_current" && (
+                  <p className="agent-note">
+                    来源：本次按需读取的项目文件及相关记录；未核实的部分已在报告中注明。
+                  </p>
+                )}
+                <p className="agent-note">
+                  {previous ? "上次摘要" : modular ? "项目进度" : "项目摘要"} ·
+                  第 {state.summaryRevision} 版
+                  {state.capturedAt && (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <time dateTime={state.capturedAt}>
+                        {new Date(state.capturedAt).toLocaleString("zh-CN")}
+                      </time>
+                    </>
+                  )}
+                </p>
+                {modular && <ProjectProgress modules={state.summary.modules} />}
+                <div className="agent-summary-sections">
+                  {sections
+                    .filter(
+                      ([key]) =>
+                        !modular ||
+                        (["blockers", "verification", "uncertainties"].includes(
+                          key,
+                        ) &&
+                          state.summary[key]?.length),
+                    )
+                    .map(([key, label]) => (
+                      <section key={key} aria-label={`摘要${label}`}>
+                        <h5>
+                          {key === "verification" &&
+                          state.sourceKind === "codex_history"
+                            ? "历史验证记录"
+                            : label}
+                        </h5>
+                        {state.summary[key]?.length ? (
+                          <ul>
+                            {state.summary[key].map((item, index) => (
+                              <li key={index}>
+                                {item.text}
+                                {item.evidenceRef && (
+                                  <small>来源：{item.evidenceRef}</small>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="agent-note">暂无记录</p>
+                        )}
+                      </section>
+                    ))}
+                </div>
+              </>
+            ))}
+          {(!workspacePage || activeTab === "sources") && (
+            <Sources className="agent-summary-source">
+              <SourcesHeading>
+                {handoff
+                  ? "读取范围与来源"
+                  : modular
+                    ? "数据覆盖与来源"
+                    : "查看总结来源"}
+              </SourcesHeading>
+              {coverage && (
+                <p className="agent-note">
+                  已提供 {coverage.deliveredRecords} / {coverage.totalRecords}{" "}
+                  条历史，来自 {coverage.threadCount} 个会话。
+                  {!!coverage.cachedRecords &&
+                    `其中复用 ${coverage.cachedRecords} 条历史，本次新读取 ${coverage.deliveredRecords - coverage.cachedRecords} 条。`}
+                  {coverage.partial &&
+                    "存在覆盖缺口，结论仅适用于可读取的记录。"}
+                  读取失败 {coverage.failedThreadCount} 个会话；排除来源不明分叉{" "}
+                  {coverage.excludedForkCount} 个；缺少最终答复{" "}
+                  {coverage.missingFinalCount} 轮；非完成状态{" "}
+                  {coverage.incompleteTurnCount} 轮。
+                </p>
               )}
-              {state.threadId && (
-                <>
-                  <dt>Codex 会话</dt>
-                  <dd>{state.threadId}</dd>
-                </>
-              )}
-              {state.turnId && (
-                <>
-                  <dt>总结轮次</dt>
-                  <dd>{state.turnId}</dd>
-                </>
-              )}
-              {state.sourceRunId && (
-                <>
-                  <dt>运行编号</dt>
-                  <dd>{state.sourceRunId}</dd>
-                </>
-              )}
-              {state.gitBaseline && (
-                <>
-                  <dt>Git 基线</dt>
-                  <dd>
-                    {typeof state.gitBaseline === "string"
-                      ? state.gitBaseline
-                      : JSON.stringify(state.gitBaseline)}
-                  </dd>
-                </>
-              )}
-            </dl>
-          </details>
+              <dl>
+                {state.cwd && (
+                  <>
+                    <dt>项目目录</dt>
+                    <dd>{state.cwd}</dd>
+                  </>
+                )}
+                {state.threadId && (
+                  <>
+                    <dt>Codex 会话</dt>
+                    <dd>{state.threadId}</dd>
+                  </>
+                )}
+                {state.turnId && (
+                  <>
+                    <dt>总结轮次</dt>
+                    <dd>{state.turnId}</dd>
+                  </>
+                )}
+                {state.sourceRunId && (
+                  <>
+                    <dt>运行编号</dt>
+                    <dd>{state.sourceRunId}</dd>
+                  </>
+                )}
+                {state.gitBaseline && (
+                  <>
+                    <dt>Git 基线</dt>
+                    <dd>
+                      {typeof state.gitBaseline === "string"
+                        ? state.gitBaseline
+                        : JSON.stringify(state.gitBaseline)}
+                    </dd>
+                  </>
+                )}
+              </dl>
+            </Sources>
+          )}
         </>
       )}
       <div className="agent-actions">
@@ -338,6 +407,7 @@ export function ProjectSummary(props) {
 }
 
 function SummarySession({
+  workspacePage,
   binding,
   userId,
   roomId,
@@ -704,6 +774,7 @@ function SummarySession({
         </div>
       ))}
       <ProjectSummaryCard
+        workspacePage={workspacePage}
         {...{
           state,
           busy,

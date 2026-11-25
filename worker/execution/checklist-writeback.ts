@@ -39,9 +39,11 @@ const dueKey = "exec:writeback-next";
 export async function scheduleExecutionAlarm(storage: DurableObjectStorage) {
   const state = await storage.get<{ lastHeartbeat: number }>("state");
   const due = await storage.get<number>(dueKey);
+  const retentionDue = await storage.get<number>("exec:retention-next");
   const next = Math.min(
     state?.lastHeartbeat ? state.lastHeartbeat + 45000 : Infinity,
     due ?? Infinity,
+    retentionDue ?? Infinity,
   );
   if (Number.isFinite(next))
     await storage.setAlarm?.(Math.max(Date.now() + 1000, next));
@@ -55,7 +57,10 @@ export class ChecklistWritebacks {
   ) {}
   // Returned writes are committed with the accepted report. No Canvas mutation
   // happens until the immutable source and retry receipt are durable.
-  async stage(run: Run, acceptedTaskIds?: string[]): Promise<Record<string, unknown>> {
+  async stage(
+    run: Run,
+    acceptedTaskIds?: string[],
+  ): Promise<Record<string, unknown>> {
     const batch = run.snapshot.kind === "task" ? run.snapshot.batch : undefined;
     if (
       !batch?.autoComplete ||

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { createExperienceServer } from "./lib/agent-experience-server.mjs";
 import { ExperienceService } from "./lib/agent-experience-service.mjs";
 import { stopOwnedChild } from "./lib/stop-child.mjs";
@@ -31,6 +32,8 @@ let child,
   service,
   deviceController,
   sourceControlOpening,
+  piRuntime,
+  piOpening,
   closing = false;
 // Bind before touching the durable harness state: a second launcher must not
 // alter the running launcher's sessions or open another Codex process.
@@ -90,6 +93,7 @@ const run = (script, args = []) =>
         QINGDAN_CHAT_ENABLED: "true",
         QINGDAN_PROJECT_SUMMARY_ENABLED: "true",
         QINGDAN_BATCH_QUEUE_ENABLED: "true",
+        ...(piRuntime ? { QINGDAN_PI_ENV_FILE: piRuntime.envFile } : {}),
       },
       stdio: "inherit",
       windowsHide: true,
@@ -111,6 +115,7 @@ const supervisor = createWebSupervisor({
   },
 });
 setLifecycleHooks({
+  active: () => ({ count: piRuntime?.activeCount ?? 0, unknown: [] }),
   status: supervisor.status,
   recoverWeb: () => {
     if (closing) throw Error("Launcher is closing.");
@@ -126,6 +131,7 @@ function close() {
     // N6 owns cancellation and queue drain. Never clear its pending timer or
     // replace the controller merely because the web child is unavailable.
     await deviceController?.close();
+    await piOpening?.then((runtime) => runtime?.close()).catch(() => {});
     await service?.close();
     await stopOwnedChild(child);
     server.closeConnections();
@@ -172,6 +178,13 @@ try {
       });
       await deviceController.start();
       if (closing) return;
+      if (existsSync(path.join(root, ".tmp/pi-main/profile.json"))) {
+        const { startConfiguredPi } = await import("./pi-main/server.mjs");
+        piOpening = startConfiguredPi(root);
+        piRuntime = await piOpening;
+        if (closing) return;
+        console.log("主聊天已连接 Pi harness；沿用原账号模型和项目 MCP 选择。");
+      }
       console.log(
         "\n轻单 Agent 入口：http://127.0.0.1:8790\n登录并进入画布后，点击顶部“Agent”；电脑设置中可查看诊断与恢复。\n",
       );

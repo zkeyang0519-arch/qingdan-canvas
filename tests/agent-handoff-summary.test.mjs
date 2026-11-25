@@ -23,6 +23,7 @@ const { outputFiles } = await build({
   bundle: true,
   packages: "external",
   platform: "node",
+  loader: { ".css": "empty" },
   format: "esm",
   write: false,
   logLevel: "silent",

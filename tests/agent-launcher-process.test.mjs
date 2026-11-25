@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import * as manager from "../scripts/lib/agent-install.mjs";
 import {
   lifecycleCheckout,
@@ -45,6 +45,27 @@ test(
     );
   },
 );
+
+test("主聊天 Pi 活动任务参与安全停止检查", { timeout: 20000 }, async (t) => {
+  const f = await lifecycleCheckout(t, true);
+  const marker = path.join(f.root, "pi-active");
+  await mkdir(path.join(f.root, "scripts/pi-main"), { recursive: true });
+  await mkdir(path.join(f.root, ".tmp/pi-main"), { recursive: true });
+  await writeFile(path.join(f.root, ".tmp/pi-main/profile.json"), "{}");
+  await writeFile(marker, "active");
+  await writeFile(path.join(f.root, "web-allow"), "yes");
+  await writeFile(
+    path.join(f.root, "scripts/pi-main/server.mjs"),
+    `import {existsSync} from 'node:fs';
+    export async function startConfiguredPi(){return {get activeCount(){return existsSync(${JSON.stringify(marker)})?1:0},async close(){}}}`,
+  );
+  await f.launch();
+  await until(async () => (await manager.diagnose(f.options)).ready);
+  assert.equal((await manager.diagnose(f.options)).active.count, 1);
+  await assert.rejects(manager.stop(f.options), /Active or unknown runs/);
+  await unlink(marker);
+  await manager.stop(f.options);
+});
 
 for (const source of [true, false]) {
   test(

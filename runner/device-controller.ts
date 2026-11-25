@@ -52,6 +52,12 @@ type ManagedTransport = Partial<ExecutionTransport> & {
   close(): void;
   reconnect(): void;
   updateWorkspaces(): Promise<void>;
+  pauseAdmissions?(): void;
+  resumeAdmissions?(): void;
+  updateActivity?(): {
+    tasks: { id: string; label: string; status: string }[];
+    unknown: string[];
+  };
 };
 export type DeviceControllerOptions = {
   stateDir: string;
@@ -83,6 +89,7 @@ export class RunnerDeviceController {
   private http: typeof fetch;
   private closed = false;
   private started = false;
+  private updatePaused = false;
   private generation = 0;
   private lifecycle = new AbortController();
   private pendingTimer: any;
@@ -363,11 +370,26 @@ export class RunnerDeviceController {
       workspaces: () => this.registry.list(),
       fetch: this.http,
       validateWorkspace: (id) => this.registry.resolve(id),
+      film: this.options.executionEnabled
+        ? {
+            codexProcess: this.options.executionCodex,
+            stateDir: path.join(
+              this.options.stateDir,
+              "films",
+              digest([this.serverOrigin, config.ownerId, config.runnerId]),
+            ),
+            resolveWorkspace: (id: string) => this.registry.resolve(id),
+          }
+        : undefined,
     };
     const executor = this.ensureExecutor();
     this.transport =
       this.options.transportFactory?.(options) ?? new RunnerTransport(options);
     const transport = this.transport;
+    if (this.updatePaused) {
+      transport.pauseAdmissions?.();
+      void executor?.pauseAdmissions();
+    }
     executor?.start();
     void transport.start().catch(() => {
       if (
@@ -615,13 +637,23 @@ export class RunnerDeviceController {
       );
     return result;
   }
-  private assertWorkspaceScope(ownerId: string, runnerId: string, generation: number) {
+  private assertWorkspaceScope(
+    ownerId: string,
+    runnerId: string,
+    generation: number,
+  ) {
     this.owner(ownerId);
     this.requirePaired();
     if (generation !== this.generation || this.config?.runnerId !== runnerId)
-      throw new RunnerError("ACCESS_DENIED", "电脑连接已变化，请重新选择项目。");
+      throw new RunnerError(
+        "ACCESS_DENIED",
+        "电脑连接已变化，请重新选择项目。",
+      );
   }
-  verifyWorkspace(ownerId: string, scope: { runnerId: string; workspaceId: string }) {
+  verifyWorkspace(
+    ownerId: string,
+    scope: { runnerId: string; workspaceId: string },
+  ) {
     const generation = this.generation;
     return this.exclusive(async () => {
       this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
@@ -630,20 +662,32 @@ export class RunnerDeviceController {
       return { runnerId: scope.runnerId, workspace: workspaceView(workspace) };
     });
   }
-  async listCodexModels(ownerId: string, scope?: { runnerId: string; workspaceId: string }) {
+  async listCodexModels(
+    ownerId: string,
+    scope?: { runnerId: string; workspaceId: string },
+  ) {
     this.owner(ownerId);
     const generation = this.generation;
     const assertCurrent = () => {
-      if (scope) return this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
+      if (scope)
+        return this.assertWorkspaceScope(ownerId, scope.runnerId, generation);
       this.owner(ownerId);
       if (generation !== this.generation)
-        throw new RunnerError("ACCESS_DENIED", "电脑连接已变化，请重新读取模型。");
+        throw new RunnerError(
+          "ACCESS_DENIED",
+          "电脑连接已变化，请重新读取模型。",
+        );
     };
     assertCurrent();
-    const workspace = scope ? await this.registry.resolve(scope.workspaceId) : undefined;
+    const workspace = scope
+      ? await this.registry.resolve(scope.workspaceId)
+      : undefined;
     assertCurrent();
     const result = await listCodexModels(
-      { command: process.env.QINGDAN_CODEX_BIN || "codex", ...this.options.executionCodex },
+      {
+        command: process.env.QINGDAN_CODEX_BIN || "codex",
+        ...this.options.executionCodex,
+      },
       workspace,
     );
     if (scope) await this.verifyWorkspace(ownerId, scope);
@@ -905,6 +949,31 @@ export class RunnerDeviceController {
   private requirePaired() {
     if (!this.config || this.config.pairingPending)
       throw new RunnerError("NOT_PAIRED", "Pair this Runner first.");
+  }
+  async pauseAdmissions() {
+    this.updatePaused = true;
+    this.transport?.pauseAdmissions?.();
+    await this.execution?.executor.pauseAdmissions();
+    return { paused: true };
+  }
+  resumeAdmissions() {
+    this.updatePaused = false;
+    this.transport?.resumeAdmissions?.();
+    this.execution?.executor.resumeAdmissions();
+  }
+  updateActivity() {
+    const coding = this.execution?.executor.updateActivity() || {
+      tasks: [],
+      unknown: [],
+    };
+    const film = this.transport?.updateActivity?.() || {
+      tasks: [],
+      unknown: [],
+    };
+    return {
+      tasks: [...coding.tasks, ...film.tasks],
+      unknown: [...coding.unknown, ...film.unknown],
+    };
   }
   async close() {
     if (this.closed) return;

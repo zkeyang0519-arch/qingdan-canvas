@@ -17,14 +17,19 @@ const localOrigins = new Set([
   "http://127.0.0.1:8790",
   "http://127.0.0.1:8788",
   "http://127.0.0.1:5178",
+  "http://localhost:8794",
+  "http://localhost:8793",
 ]);
 
 async function requestLaunch(origin, accountId, roomId, signal) {
-  const crossPort = origin !== "http://127.0.0.1:8790";
+  const targetOrigin = origin.startsWith("http://localhost:879")
+    ? "http://localhost:8794"
+    : "http://127.0.0.1:8790";
+  const crossPort = origin !== targetOrigin;
   let response;
   try {
     response = await fetch(
-      `${crossPort ? "http://127.0.0.1:8790" : ""}/api/local-desktop/launch`,
+      `${crossPort ? targetOrigin : ""}/api/local-desktop/launch`,
       {
         method: "POST",
         credentials: crossPort ? "include" : "same-origin",

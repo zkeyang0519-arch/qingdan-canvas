@@ -10,8 +10,13 @@ export async function localRunnerRequest(
   const needsBridge = [
     "http://127.0.0.1:8788",
     "http://127.0.0.1:5178",
+    "http://localhost:8793",
   ].includes(origin);
-  const base = needsBridge ? "http://127.0.0.1:8790" : "";
+  const base = needsBridge
+    ? origin === "http://localhost:8793"
+      ? "http://localhost:8794"
+      : "http://127.0.0.1:8790"
+    : "";
   let response;
   try {
     response = await fetch(`${base}/api/local-runner${route}`, {
@@ -27,7 +32,7 @@ export async function localRunnerRequest(
     });
   } catch (cause) {
     throw Error(
-      "无法连接本机 Agent 服务。请在轻单目录运行 npm run dev，再重试。",
+      "无法连接本机 Agent 服务。请在轻岛设置中检查本地服务，或启动已有本机工作区后重试。",
       { cause },
     );
   }

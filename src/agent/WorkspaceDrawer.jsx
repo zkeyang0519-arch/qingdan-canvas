@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { Button } from "./ui/button.jsx";
 
 export default function WorkspaceDrawer({
   title,
@@ -33,6 +34,7 @@ export default function WorkspaceDrawer({
           "button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],summary",
         ),
       ].filter((item) => {
+        if (item.closest("[hidden], [inert]")) return false;
         const collapsed = item.closest("details:not([open])");
         return !collapsed || collapsed.querySelector("summary") === item;
       });
@@ -77,13 +79,15 @@ export default function WorkspaceDrawer({
             <h2>{title}</h2>
             {description && <p id={descriptionId}>{description}</p>}
           </div>
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             className="agent-icon-button"
             aria-label={closeLabel}
             onClick={onClose}
           >
             <X size={19} />
-          </button>
+          </Button>
         </header>
         <div className="agent-workspace-drawer-body">{children}</div>
       </section>

@@ -78,6 +78,16 @@ npm run dev
 
 ## Agent / MCP 接入
 
+本机 Pi 聊天可接入第三方 MCP 服务。运行 `npm run dev:pi`，打开启动器列出的「打开轻单.html」，在项目聊天输入框旁选择 **工具 → 添加 MCP**。填入 Streamable HTTP 地址，按服务要求使用网页登录或 Bearer Token，再勾选本项目要使用的工具。勾选从下一条消息生效。在「我的项目」切换项目可以分别选择工具。回复下方的调用记录可展开查看服务、工具和结果。
+
+**工具 → Codex** 使用轻单内置的 stdio MCP 服务调用本机 `codex app-server`。它沿用本机 Codex 登录。勾选「新建 Codex 对话」和「继续 Codex 对话」后，可以说「问 Codex，这段代码怎么改」，再说「继续问 Codex，给一个例子」。每个项目使用独立的只读工作区，续聊只使用当前轻单聊天中的 Codex 记录。连接异常时点击「测试连接」查看原因。[OpenAI 接口迁移说明](https://learn.chatgpt.com/docs/mcp-server)
+
+**工具 → WAAO** 使用官网 `https://www.waao.studio/api/mcp`。可在工具卡片选择独立官网连接，或复用本机 Codex 已配置的 WAAO 连接。连接来源会保存；独立连接需要自己的 WAAO 授权，Codex 托管凭据不会被导出。已有生成任务继续使用原连接核对回执。选用「项目查询工具」后，可以在聊天里说「列出我在 WAAO 的项目」。短片制作同样遵循当前项目已勾选的工具。[WAAO 项目页](https://www.waao.studio/projects)
+
+本机连接器自动检测 Codex 协议兼容性；明确的字段变化可由独立 Pi 维护会话提出适配，经固定验证器通过后启用，支持版本回滚和原调用恢复。工具面板区分连接、项目启用和实际调用验证状态。自动适配范围、维护预算与回执恢复规则见[连接器自动维护](docs/agent-connector-maintenance.md)。
+
+主聊天已接入持续任务 Harness：记录目标和信息缺口、读取资料、发现与加载工具、组合已有能力、提问后恢复，并按实际证据验收。原账号、会话、模型选择和项目 MCP 勾选继续沿用。已配置的主入口随 `npm run dev` 启动 Pi；`npm run dev:pi` 保留为独立试用。WAAO 等待任务会查询原回执，就绪后自动继续；任务卡片支持回答和停止。预算和支持范围见[任务 Harness](docs/agent-task-harness.md)。
+
 Router 第 1 步已实现共享任务规则：执行要求、验收条件、依赖校验、稳定排序、手工顺序校验与时区转换。运行 `npm run test:agent` 验证，详细字段、接口和范围见 [任务规则说明](docs/agent-task-rules.md)。本步骤尚未接入真实清单或网页操作入口，后续按 [实施计划](docs/superpowers/plans/2026-11-03-qingdan-router.md) 继续。
 
 第 2 步已接通本机 Codex：独立总结/任务会话、流式结果、原会话续聊、审批、取消和历史恢复。真实三会话与文件交接验证通过。Runner 需要 Node.js 24，先执行 `npm ci --prefix runner`，再运行 `npm run runner:build` 和 `npm run test:runner`；环境、复验命令和证据见 [本机 Codex 兼容性记录](docs/agent-codex-compatibility.md)。设备配对与网页入口按后续步骤接入。

@@ -1,15 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Bot,
-  Activity,
-  Folder,
-  ListTodo,
-  MessageSquare,
-  Monitor,
-  Plus,
-  Sparkles,
-  StickyNote,
-} from "lucide-react";
+import { Activity, Bot, Folder, Inbox, ListTodo, Monitor } from "lucide-react";
+import WorkspaceNavigation from "./WorkspaceNavigation.jsx";
 import { api } from "../api.js";
 import ChatPanel from "./ChatPanel.jsx";
 import ChecklistPanel from "./ChecklistPanel.jsx";
@@ -23,7 +14,11 @@ import { useWorkspaceDraft } from "./workspace-state.js";
 import "./experience.css";
 import "./agent.css";
 import "./workbench.css";
+import "./film.css";
 import "./luma.css";
+import "./noto-sans-sc.css";
+import "./ui/theme.css";
+import "./redesign.css";
 
 function validTarget(target) {
   return (
@@ -46,6 +41,8 @@ const validTargets = (value) =>
     ([id, target]) => validTarget(target) && target.sectionId === id,
   );
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const monitorKey = (t) =>
+  JSON.stringify([t.sectionId, t.bindingId, t.bindingRevision, t.runId]);
 const countTasks = (page) => {
   const tasks = canvasChecklistTasks(page);
   return {
@@ -69,6 +66,10 @@ function WorkspaceScope({
   pages = [],
   initialBatchTarget,
   startAtBatch = false,
+  fullWorkspaceUrl,
+  localQuestionInbox = false,
+  chatTasksPreview = false,
+  chatTaskPreviewContent,
   onBatchTargetChange,
   onCreateProject,
   onAddTodo,
@@ -95,12 +96,33 @@ function WorkspaceScope({
     true,
     { storageKey: storage + ":batches", validate: validTargets },
   );
-  const [mobilePane, setMobilePane] = useState("chat");
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [pane, setPane] = useState("chat");
+  const [collection, setCollection] = useState("pending");
+  const [previewTasksOpen, setPreviewTasksOpen] = useState(false);
+  const [historyHost, setHistoryHost] = useState(null);
+  const [executionSettingsHost, setExecutionSettingsHost] = useState(null);
+  const [noticeCounts, setNoticeCounts] = useState({});
+  const [localQuestionCount, setLocalQuestionCount] = useState(0);
+  const [inboxTargets, setInboxTargets] = useState({});
+  const [inboxRead, setInboxRead] = useState("idle");
+  const receiveNotice = useCallback((key, count, status) => {
+    setNoticeCounts((previous) => {
+      if (previous[key]?.count === count && previous[key]?.status === status)
+        return previous;
+      if (!status && !previous[key]) return previous;
+      const next = { ...previous };
+      if (status) next[key] = { count, status };
+      else delete next[key];
+      return next;
+    });
+  }, []);
+  const [filmTodo, setFilmTodo] = useState(null);
+  const memoryOpen = pane === "memory";
+  const summaryOpen = pane === "summary";
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [settingsView, setSettingsView] = useState("binding");
   const [creating, setCreating] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [createError, setCreateError] = useState("");
   const [connection, setConnection] = useState("checking");
@@ -128,20 +150,110 @@ function WorkspaceScope({
   const promptedProjects = useRef(new Set());
   const automaticPicker = useRef(false);
   const otherDrawerOpen = useRef(false);
-  otherDrawerOpen.current = memoryOpen || summaryOpen || creating;
+  otherDrawerOpen.current = !["chat", "tasks"].includes(pane) || creating;
   const progressSeen = useRef(new Map());
   const page = pages.find((item) => item.id === selected) || pages[0];
   const selectedRef = useRef(page?.id);
   selectedRef.current = page?.id;
   const taskPane = useRef(null);
-  const chatPane = useRef(null);
   const pageId = page?.id;
   const bindingToken = bindingTokens[pageId] || 0;
   const initialRunSection =
     startAtBatch && validTarget(initialBatchTarget)
       ? initialBatchTarget.sectionId
       : null;
-  const projectPickerLabel = "绑定 agent";
+  const sectionIds = JSON.stringify(pages.map((item) => item.id));
+  // The persisted selection is a resume point. Discover other pending runs when the inbox opens.
+  useEffect(() => {
+    if (pane !== "inbox" || fullWorkspaceUrl) return;
+    const ids = JSON.parse(sectionIds);
+    const abort = new AbortController();
+    const options = {
+      accountId: userId,
+      signal: abort.signal,
+      isCurrentSession: () => !abort.signal.aborted,
+    };
+    let reading = false;
+    async function refreshInbox() {
+      if (reading || abort.signal.aborted) return;
+      reading = true;
+      let cursor = 0,
+        failed = false;
+      const found = {};
+      async function readProjects() {
+        while (!abort.signal.aborted && cursor < ids.length) {
+          const sectionId = ids[cursor++];
+          try {
+            const { binding } = await requestCloud(
+              `/api/agent/bindings?canvasId=${encodeURIComponent(roomId)}&sectionId=${encodeURIComponent(sectionId)}`,
+              options,
+            );
+            if (!binding?.enabled) {
+              found[sectionId] = [];
+              continue;
+            }
+            const data = await requestCloud(
+              `/api/agent/execution/runs?bindingId=${encodeURIComponent(binding.bindingId)}`,
+              options,
+            );
+            found[sectionId] = (data.runs || [])
+              .filter(
+                (run) =>
+                  run.bindingId === binding.bindingId &&
+                  (["waiting_approval", "waiting_input"].includes(run.status) ||
+                    ["waiting_human", "blocked", "paused"].includes(
+                      run.queue?.phase,
+                    ) ||
+                    run.pendingRequests?.some(
+                      (r) => r.responseStatus === "pending",
+                    )),
+              )
+              .map((run) => ({
+                sectionId,
+                bindingId: binding.bindingId,
+                bindingRevision: binding.revision,
+                runId: run.runId,
+              }))
+              .filter(validTarget);
+          } catch {
+            failed = true;
+          }
+        }
+      }
+      try {
+        await Promise.all(
+          Array.from({ length: Math.min(2, ids.length) }, readProjects),
+        );
+        if (!abort.signal.aborted) {
+          setInboxTargets((prior) => ({ ...prior, ...found }));
+          setInboxRead(failed ? "partial" : "ready");
+        }
+      } finally {
+        reading = false;
+      }
+    }
+    setInboxRead("loading");
+    void refreshInbox();
+    const timer = window.setInterval(refreshInbox, 15000);
+    return () => {
+      abort.abort();
+      window.clearInterval(timer);
+    };
+  }, [pane, fullWorkspaceUrl, roomId, userId, sectionIds, requestCloud]);
+  const known = [
+    ...Object.values(targets),
+    ...Object.values(inboxTargets).flat(),
+  ].filter((target) => pages.some((item) => item.id === target.sectionId));
+  const monitored = [
+    ...new Map(known.map((target) => [monitorKey(target), target])).values(),
+  ];
+  const notices = monitored.map((target) => noticeCounts[monitorKey(target)]);
+  const pendingCount = notices.reduce((n, item) => n + (item?.count || 0), 0);
+  const noticesReady =
+    inboxRead === "ready" && notices.every((item) => item?.status === "ready");
+  const noticesLoading =
+    inboxRead === "loading" ||
+    notices.some((item) => !item || item.status === "loading");
   const counts = displayedCounts(page);
   const common = { roomId, userId, requestCloud, requestLocal };
   const pageList = page ? [page] : [];
@@ -151,14 +263,17 @@ function WorkspaceScope({
     setSettingsView(view);
   };
   const openProjectPicker = useCallback(() => {
+    if (fullWorkspaceUrl) {
+      setProjectPickerOpen(false);
+      setPane("devices");
+      return;
+    }
     automaticPicker.current = false;
     promptedProjects.current.add(selectedRef.current);
-    setMemoryOpen(false);
-    setSummaryOpen(false);
     setSettingsView("binding");
     setCreating(false);
     setProjectPickerOpen(true);
-  }, []);
+  }, [fullWorkspaceUrl]);
 
   useEffect(() => {
     if (pageId) setSelected(pageId);
@@ -180,7 +295,11 @@ function WorkspaceScope({
       version === bindingRead.current &&
       selectedRef.current === pageId;
     const promptIfNeeded = () => {
-      if (otherDrawerOpen.current || promptedProjects.current.has(pageId))
+      if (
+        fullWorkspaceUrl ||
+        otherDrawerOpen.current ||
+        promptedProjects.current.has(pageId)
+      )
         return;
       promptedProjects.current.add(pageId);
       automaticPicker.current = true;
@@ -211,7 +330,15 @@ function WorkspaceScope({
     return () => {
       active = false;
     };
-  }, [roomId, userId, pageId, bindingToken, initialRunSection, requestCloud]);
+  }, [
+    roomId,
+    userId,
+    pageId,
+    bindingToken,
+    initialRunSection,
+    requestCloud,
+    fullWorkspaceUrl,
+  ]);
   useEffect(() => {
     let active = true,
       reading = false;
@@ -250,8 +377,9 @@ function WorkspaceScope({
   const selectProject = (id) => {
     if (!pages.some((item) => item.id === id)) return;
     setSelected(id);
-    setMemoryOpen(false);
-    setSummaryOpen(false);
+    setFilmTodo(null);
+    setCollection("pending");
+    setPane("chat");
     setProjectPickerOpen(false);
   };
   const selectBatch = useCallback(
@@ -272,17 +400,15 @@ function WorkspaceScope({
       if (!validTarget(target) || target.sectionId !== selectedRef.current)
         return;
       selectBatch(target);
-      setMobilePane("chat");
-      chatPane.current?.scrollIntoView?.({
-        block: "nearest",
-        behavior: "smooth",
-      });
+      setCollection("history");
+      setPane("tasks");
     },
     [selectBatch],
   );
   const openChecklist = useCallback(() => {
-    setMobilePane("tasks");
-    taskPane.current?.scrollTo?.({ top: 0, behavior: "smooth" });
+    setCollection("pending");
+    setPane("tasks");
+    taskPane.current?.scrollTo?.({ top: 0 });
   }, []);
   const onRunChange = useCallback(
     (run) => {
@@ -315,24 +441,40 @@ function WorkspaceScope({
     )
       return;
     selectProject(target.sectionId);
-    setMobilePane("chat");
+    setCollection("history");
+    setPane("tasks");
     setTargets((prior) => ({ ...prior, [target.sectionId]: target }));
     onBatchTargetChange?.(target);
   };
-  function createProject(event) {
+  async function createProject(event) {
     event.preventDefault();
-    if (!projectName.trim() || !onCreateProject) return;
+    if (!projectName.trim() || !onCreateProject || savingProject) return;
+    setSavingProject(true);
     try {
-      const id = onCreateProject(projectName.trim());
+      const result = onCreateProject(projectName.trim());
+      const id = typeof result === "string" ? result : await result;
       if (typeof id !== "string" || !id) throw Error("项目尚未创建，请重试。");
       setSelected(id);
+      setPane("chat");
+      setCollection("pending");
       setCreating(false);
       setProjectName("");
       setCreateError("");
     } catch (error) {
       setCreateError(error.message || "项目创建失败。");
+    } finally {
+      setSavingProject(false);
     }
   }
+  const fullPage =
+    fullWorkspaceUrl &&
+    {
+      film: "短片制作",
+      tasks: "待办与执行",
+      inbox: localQuestionInbox ? null : "待处理请求",
+      summary: "项目摘要",
+      devices: "设备与绑定",
+    }[pane];
   const connectionText =
     {
       checking: "正在连接电脑",
@@ -344,198 +486,147 @@ function WorkspaceScope({
       error: "电脑连接异常",
     }[connection] || "电脑未连接";
   return (
-    <section className="agent-workspace" aria-label="Agent 工作区">
-      <aside className="agent-workspace-sidebar" aria-label="Agent 项目导航">
-        <div className="agent-sidebar-heading">
-          <span>
-            我的项目 <small>{pages.length}</small>
-          </span>
-          {onCreateProject && (
-            <button
-              className="agent-icon-button"
-              aria-label="新建项目"
-              onClick={() => {
-                setProjectPickerOpen(false);
-                setCreating((value) => !value);
-              }}
-            >
-              <Plus size={17} />
-            </button>
-          )}
-        </div>
-        <div className="agent-project-list">
-          {pages.map((item) => {
-            const count = displayedCounts(item);
-            return (
-              <button
-                key={item.id}
-                className="agent-project-item"
-                aria-label={`选择项目：${item.title || "未命名项目"}`}
-                aria-current={item.id === pageId ? "page" : undefined}
-                onClick={() => selectProject(item.id)}
-              >
-                <Folder size={16} />
-                <span>{item.title || "未命名项目"}</span>
-                <small aria-label={`${count.pending} 项未完成`}>
-                  {count.pending}
-                </small>
-              </button>
-            );
-          })}
-        </div>
-      </aside>
-      <div className="agent-workspace-tools agent-workspace-utilities">
-        <div className="agent-project-tools" role="group" aria-label="项目工具">
-          <button
-            aria-label={projectPickerLabel}
-            title={projectPickerLabel}
-            onClick={openProjectPicker}
-          >
-            <Folder size={16} />
-            <span>{projectPickerLabel}</span>
-          </button>
-          <button
-            aria-label="打开项目摘要"
-            title="项目摘要"
-            onClick={() => {
-              setProjectPickerOpen(false);
-              setSummaryOpen(true);
-              setMemoryOpen(false);
-              setMobilePane("chat");
-            }}
-          >
-            <StickyNote size={16} />
-            <span>项目摘要</span>
-          </button>
-          <button
-            aria-label="打开记忆"
-            title="记忆"
-            onClick={() => {
-              setProjectPickerOpen(false);
-              setMemoryOpen(true);
-              setSummaryOpen(false);
-              setMobilePane("chat");
-            }}
-          >
-            <Sparkles size={16} />
-            <span>记忆</span>
-          </button>
-        </div>
-        <div
-          className="agent-device-tools"
-          role="group"
-          aria-label="电脑连接与设置"
-        >
-          <span
-            className={`agent-connection-chip ${connection === "online" ? "is-online" : ""}`}
-            role="status"
-          >
-            <i aria-hidden="true" />
-            {connectionText}
-          </span>
-        </div>
-      </div>
-      <div className="agent-workspace-main">
+    <section
+      className="agent-workspace studio-workspace"
+      data-chat-tasks-preview={chatTasksPreview || undefined}
+      aria-label="Agent 工作区"
+    >
+      <WorkspaceNavigation
+        pages={pages}
+        page={page}
+        pane={pane}
+        countsFor={displayedCounts}
+        selectProject={selectProject}
+        navigate={setPane}
+        pendingCount={pendingCount + localQuestionCount}
+        openDevices={openProjectPicker}
+        connection={connection}
+        connectionText={connectionText}
+        onCreate={
+          onCreateProject &&
+          (() => {
+            setProjectPickerOpen(false);
+            setCreating(true);
+          })
+        }
+      />
+      <div className="agent-workspace-main studio-main">
         {(projectStorage.warning || targetStorage.warning) && (
           <p className="agent-error" role="alert">
             {projectStorage.warning || targetStorage.warning}
           </p>
         )}
-
-        <div className="agent-mobile-navigation">
-          <label>
-            当前项目
-            <select
-              aria-label="Agent 当前项目"
-              value={pageId || ""}
-              onChange={(event) => selectProject(event.target.value)}
-            >
-              {pages.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title || "未命名项目"}
-                </option>
-              ))}
-            </select>
-          </label>
-          {onCreateProject && (
-            <button
-              className="agent-icon-button"
-              aria-label="新建项目"
-              onClick={() => {
-                setProjectPickerOpen(false);
-                setCreating(true);
-                setMobilePane("projects");
-              }}
-            >
-              <Plus size={18} />
-            </button>
+        {fullPage && (
+          <section className="studio-page studio-resource">
+            <header className="studio-page-heading">
+              <div>
+                <small>本机 Pi 对话</small>
+                <h2>{fullPage}</h2>
+              </div>
+            </header>
+            <div className="studio-surface">
+              <p>
+                {pane === "film"
+                  ? "本机 Pi 在项目对话中使用 Codex 和 WAAO。制作卡、分镜、素材及出片回执在完整工作区管理。"
+                  : "在完整工作区选择画布，进入 Agent 即可使用" +
+                    fullPage +
+                    "。"}
+              </p>
+              <div className="studio-handoff">
+                <a href={fullWorkspaceUrl} target="_blank" rel="noreferrer">
+                  打开完整本地工作区
+                </a>
+                <button type="button" onClick={() => setPane("chat")}>
+                  回到项目对话
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+        <section
+          className="studio-page studio-inbox-page"
+          hidden={pane !== "inbox" || !!fullPage || localQuestionInbox}
+          aria-label="待处理请求"
+        >
+          <header className="studio-page-heading">
+            <div>
+              <small>工作区</small>
+              <h2>
+                <Inbox size={20} />
+                待处理请求
+              </h2>
+            </div>
+          </header>
+          {monitored.map((target) => (
+            <PendingBatchNotice
+              key={monitorKey(target)}
+              monitorKey={monitorKey(target)}
+              target={target}
+              roomId={roomId}
+              userId={userId}
+              projectName={
+                pages.find((item) => item.id === target.sectionId)?.title
+              }
+              onCount={receiveNotice}
+              requestCloud={requestCloud}
+              onOpen={openPending}
+            />
+          ))}
+          {inboxRead === "partial" && (
+            <p role="status" className="agent-note">
+              部分项目暂时无法读取，稍后会自动刷新。
+            </p>
           )}
-          <div
-            className="agent-mobile-tabs"
-            role="tablist"
-            aria-label="Agent 工作区内容"
-          >
-            <button
-              role="tab"
-              aria-selected={mobilePane === "chat"}
-              onClick={() => setMobilePane("chat")}
-            >
-              <MessageSquare size={16} />
-              项目聊天
-            </button>
-            <button
-              role="tab"
-              aria-selected={mobilePane === "tasks"}
-              onClick={() => setMobilePane("tasks")}
-            >
-              <ListTodo size={16} />
-              待办与执行
-            </button>
-          </div>
-        </div>
-        <div className="agent-background-requests">
-          {Object.values(targets)
-            .filter(
-              (target) =>
-                target.sectionId !== pageId &&
-                pages.some((item) => item.id === target.sectionId),
-            )
-            .map((target) => (
-              <PendingBatchNotice
-                key={target.runId}
-                roomId={roomId}
-                userId={userId}
-                target={target}
-                requestCloud={requestCloud}
-                onOpen={openPending}
-              />
-            ))}
-        </div>
+          {!pendingCount && (noticesReady || noticesLoading) && (
+            <p className="studio-empty" role="status">
+              {noticesLoading ? "正在核对待处理请求…" : "当前没有待处理请求。"}
+            </p>
+          )}
+        </section>
         {page ? (
-          <div className="agent-workspace-columns" data-pane={mobilePane}>
+          <div
+            className="agent-workspace-columns"
+            data-pane={pane}
+            hidden={(pane === "inbox" && !localQuestionInbox) || !!fullPage}
+          >
             <div
               className="agent-workspace-chat-pane"
               aria-label="项目对话"
-              ref={chatPane}
+              hidden={pane === "tasks"}
             >
               <ChatPanel
                 key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
                 {...common}
                 pages={pageList}
                 embedded
-                memoryOpen={memoryOpen}
-                onMemoryClose={() => setMemoryOpen(false)}
-                summaryOpen={summaryOpen}
-                onSummaryClose={() => setSummaryOpen(false)}
+                workspaceView={fullPage ? "external" : pane}
+                externalFilmWorkspace={!!fullWorkspaceUrl}
+                onNavigate={setPane}
+                onQuestionCount={
+                  localQuestionInbox ? setLocalQuestionCount : undefined
+                }
+                workspaceTitle={page.title}
+                onExecutionSettingsHost={setExecutionSettingsHost}
+                executionSettingsUrl={fullWorkspaceUrl}
+                memoryOpen={memoryOpen && !fullPage}
+                onMemoryClose={() => setPane("chat")}
+                summaryOpen={summaryOpen && !fullPage}
+                onSummaryClose={() => setPane("chat")}
                 onOpenSummary={() => {
-                  setSummaryOpen(true);
-                  setMemoryOpen(false);
+                  setPane("summary");
                 }}
                 onOpenSettings={openProjectPicker}
                 onOpenChecklist={openChecklist}
                 onTasksSaved={() => refreshChecklist(page.id)}
                 execution={{
                   page,
+                  detailHost:
+                    pane === "tasks" && collection === "history"
+                      ? historyHost
+                      : null,
+                  onSetTodoDone,
+                  filmTodo: filmTodo?.pageId === page.id ? filmTodo : null,
+                  onFilmTodoOpened: () => setFilmTodo(null),
                   initialTarget: targets[page.id],
                   onSelectBatch: selectBatch,
                   onRunChange,
@@ -546,36 +637,102 @@ function WorkspaceScope({
               className="agent-workspace-task-pane"
               aria-label="项目待办与执行"
               ref={taskPane}
+              hidden={
+                pane !== "tasks" && !(chatTasksPreview && pane === "chat")
+              }
+              data-preview-collapsed={
+                (chatTasksPreview && pane === "chat" && !previewTasksOpen) ||
+                undefined
+              }
             >
               <div className="agent-pane-title">
                 <div>
                   <ListTodo size={17} />
-                  <h2>待办与执行</h2>
+                  <h2>
+                    {chatTasksPreview && pane === "chat"
+                      ? "我的待办"
+                      : "待办与执行"}
+                  </h2>
                 </div>
                 <span className="agent-pane-count">
                   {counts.pending} 项待办
                 </span>
+                {chatTasksPreview && pane === "chat" && (
+                  <button
+                    className="preview-todos-toggle"
+                    type="button"
+                    aria-expanded={previewTasksOpen}
+                    onClick={() => setPreviewTasksOpen((open) => !open)}
+                  >
+                    {previewTasksOpen ? "收起" : "展开待办"}
+                  </button>
+                )}
               </div>
-              <div className="agent-workspace-checklist">
-                <ChecklistPanel
-                  key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
-                  {...common}
-                  pages={pageList}
-                  embedded
-                  refreshToken={refreshTokens[page.id] || 0}
-                  onOpenBatch={openBatch}
-                  onOpenSettings={openProjectPicker}
-                  onAddTodo={onAddTodo}
-                  onDeleteTodo={onDeleteTodo}
-                  onReopenTodo={onReopenTodo}
-                  onSetTodoDone={onSetTodoDone}
-                  onCountsChange={receiveCounts}
-                />
-              </div>
+              {chatTasksPreview && pane === "chat" && chatTaskPreviewContent ? (
+                chatTaskPreviewContent
+              ) : (
+                <>
+                  <div
+                    className="studio-tabs"
+                    role="group"
+                    aria-label="待办分组"
+                  >
+                    {[
+                      ["pending", "待办"],
+                      ["review", "待核对"],
+                      ["done", "已完成"],
+                      ["history", "执行记录"],
+                    ].map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        aria-pressed={key === collection}
+                        onClick={() => setCollection(key)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    className="studio-history agent-trial"
+                    ref={setHistoryHost}
+                    hidden={collection !== "history"}
+                  />
+                  <div
+                    className="agent-workspace-checklist"
+                    hidden={collection === "history"}
+                  >
+                    <ChecklistPanel
+                      key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
+                      {...common}
+                      pages={pageList}
+                      embedded
+                      collection={collection}
+                      centralSettings
+                      settingsHost={executionSettingsHost}
+                      refreshToken={refreshTokens[page.id] || 0}
+                      onOpenBatch={openBatch}
+                      onOpenSettings={openProjectPicker}
+                      onAddTodo={onAddTodo}
+                      onDeleteTodo={onDeleteTodo}
+                      onReopenTodo={onReopenTodo}
+                      onSetTodoDone={onSetTodoDone}
+                      onFilmTodo={(source) => {
+                        setFilmTodo({ pageId: page.id, source });
+                        setPane("film");
+                      }}
+                      onCountsChange={receiveCounts}
+                    />
+                  </div>
+                </>
+              )}
             </aside>
           </div>
         ) : (
-          <div className="agent-workspace-empty">
+          <div
+            className="agent-workspace-empty"
+            hidden={pane === "inbox" || !!fullPage}
+          >
             <div>
               <Bot size={34} />
             </div>
@@ -673,7 +830,7 @@ function WorkspaceScope({
           title="新建项目"
           onClose={() => {
             setCreating(false);
-            setMobilePane("chat");
+            setPane("chat");
           }}
         >
           <form className="agent-project-create" onSubmit={createProject}>
@@ -689,14 +846,17 @@ function WorkspaceScope({
               />
             </label>
             <div>
-              <button className="primary" disabled={!projectName.trim()}>
+              <button
+                className="primary"
+                disabled={!projectName.trim() || savingProject}
+              >
                 创建项目
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setCreating(false);
-                  setMobilePane("chat");
+                  setPane("chat");
                 }}
               >
                 取消

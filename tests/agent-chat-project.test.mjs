@@ -12,7 +12,7 @@ const { Miniflare, Log, LogLevel, convertV4MiniflareOptions } = createRequire(
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 
 test(
-  "chat requires and consumes a ready project summary; refresh invalidates old facts and in-flight replies",
+  "chat works without a summary, consumes ready context, and excludes stale facts and in-flight replies",
   { timeout: 60000 },
   async (t) => {
     const root = path.resolve(".");
@@ -161,19 +161,21 @@ test(
           bound({ requestId: "early", text: "项目现在怎样？" }),
         )
       ).http,
-      409,
+      202,
     );
-    assert.equal((await state()).messages.length, 0);
+    const early = await settled();
+    assert.equal(early.job.status, "succeeded");
+    assert.equal(early.messages.at(-1).provenance.project, undefined);
     const chat = await call("/api/agent/chat/new", bound({ requestId: "new" }));
     assert.equal(chat.http, 200);
     assert.equal(
       (await call("/api/agent/chat/new", bound({ requestId: "new" }))).id,
       chat.id,
     );
-    assert.equal((await call("/fixture/project/count")).count, 1);
+    assert.equal((await call("/fixture/project/count")).count, 0);
     await state(chat.id);
     await state(chat.id);
-    assert.equal((await call("/fixture/project/count")).count, 1);
+    assert.equal((await call("/fixture/project/count")).count, 0);
     const summary = (overview) => ({
       overview,
       completed: [],
@@ -191,7 +193,10 @@ test(
       sourceRunId: "run-a",
       capturedAt: "2026-11-05T00:00:00Z",
       cwd: "D:/demo",
-      summary: { ...structuredClone(handoffSummary), overview: "只读检查事实甲" },
+      summary: {
+        ...structuredClone(handoffSummary),
+        overview: "只读检查事实甲",
+      },
     };
     await call("/fixture/project/set", ready);
     const imported = await state(chat.id);
@@ -202,9 +207,13 @@ test(
     );
     assert.equal(imported.messages[0].provenance.kind, "project_summary");
     assert.match(imported.messages[0].text, /只读检查事实甲/);
-    assert.match(imported.messages[0].text, /项目交接报告/);
-    assert.match(imported.messages[0].text, /src\/export\.ts/);
-    assert.match(imported.messages[0].text, /空列表、中文与引号/);
+    assert.match(imported.messages[0].text, /项目资料/);
+    assert.doesNotMatch(imported.messages[0].text, /src\/export\.ts/);
+    assert.match(JSON.stringify(imported.project.summary), /src\/export\.ts/);
+    assert.match(
+      JSON.stringify(imported.project.summary),
+      /空列表、中文与引号/,
+    );
     assert.equal(imported.messages[0].invalidated, false);
     assert.equal(
       (await state(chat.id)).messages.length,
@@ -230,7 +239,7 @@ test(
       (await call("/api/agent/chat/send", send)).job.status,
       "succeeded",
     );
-    assert.equal((await call("/fixture/model/count")).count, 1);
+    assert.equal((await call("/fixture/model/count")).count, 2);
     await call("/fixture/project/set", {
       ...ready,
       summaryRevision: 2,
@@ -296,8 +305,12 @@ test(
           }),
         )
       ).http,
-      409,
+      202,
     );
+    s = await settled(chat.id);
+    assert.equal(s.job.status, "succeeded");
+    assert.equal(s.messages.at(-1).provenance.project, undefined);
+    assert.doesNotMatch(s.messages.at(-1).text, /更新事实乙|只读检查事实甲/);
     await call("/fixture/project/set", { ready: true, status: "ready" });
     assert.equal(
       (

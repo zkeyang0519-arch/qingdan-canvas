@@ -87,7 +87,11 @@ test("diagnosis cannot occupy a port while the application starts", async (t) =>
   });
   await manager.diagnose({ ...f, probePort: undefined });
   const error = await startup;
-  assert.equal(error?.code, undefined, "the diagnostic probe blocked application startup");
+  assert.equal(
+    error?.code,
+    undefined,
+    "the diagnostic probe blocked application startup",
+  );
   assert.equal(application.listening, true);
 });
 
@@ -153,12 +157,32 @@ async function fixture(t) {
     probeReady: async () => true,
   };
   t.after(async () => {
-    await manager.stop({ ...f, interruptActive: true }).catch(() => {});
+    await manager.stop({ ...f, interruptActive: true }).catch(async (error) => {
+      const runtime = await readFile(
+        path.join(f.stateDir, "runtime.json"),
+        "utf8",
+      )
+        .then(JSON.parse)
+        .catch((readError) => {
+          if (readError.code === "ENOENT") return null;
+          throw readError;
+        });
+      // Incomplete installations need no stop, but a failed stop of a live
+      // fixture must remain visible instead of being hidden by a later EBUSY.
+      if (runtime && manager.processExists(runtime.pid)) throw error;
+    });
     const resolvedRoot = path.resolve(root);
     assert.ok(
       resolvedRoot.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`),
     );
-    await rm(resolvedRoot, { recursive: true, force: true });
+    // Windows can retain directory handles briefly after the process exits.
+    // Retry only cleanup; never rerun a failed test or suppress a persistent lock.
+    await rm(resolvedRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
   return f;
 }

@@ -16,6 +16,10 @@ export interface Env {
   ROUTER_BASE_URL?: string;
   ROUTER_MODEL?: string;
   ROUTER_API_FORMAT?: string;
+  LOCAL_PI_URL?: string;
+  LOCAL_PI_SECRET?: string;
+  LOCAL_PI_OWNER?: string;
+  RUNTIME_CONTROL_SECRET?: string;
   ASSETS: Fetcher;
   APP_ENV: string;
   RESEND_API_KEY?: string;

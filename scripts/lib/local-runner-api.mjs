@@ -57,6 +57,7 @@ export function createLocalRunnerApi({
   prepareTrial,
   listTrials,
   getDiagnostics,
+  onAuthenticated,
 }) {
   const sessionUrl = new URL("/api/session", upstream);
   if (sessionUrl.protocol !== "http:" || sessionUrl.hostname !== "127.0.0.1")
@@ -91,6 +92,7 @@ export function createLocalRunnerApi({
       throw reject(401, "登录账号已变化，请刷新页面。");
     const controller = getController();
     if (!controller) throw reject(503, "本机 Runner 正在准备，请稍后重试。");
+    await onAuthenticated?.(ownerId);
     const revocationEvidence = async (target, revoke = false) => {
       if (
         target.ownerId !== ownerId ||

@@ -1,0 +1,55 @@
+.agent-task-progress {
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #deded8);
+  border-radius: 14px;
+  background: var(--surface, #fafaf7);
+  color: inherit;
+}
+.agent-task-progress > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+}
+.agent-task-progress > header strong {
+  font-size: 13px;
+}
+.agent-task-progress > header span {
+  font-size: 13px;
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+.agent-task-progress > p {
+  font-size: 13px;
+  line-height: 1.65;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+.agent-task-progress details {
+  font-size: 13px;
+}
+.agent-task-progress summary {
+  cursor: pointer;
+}
+.agent-task-result {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+.agent-task-progress li {
+  padding: 4px 0;
+}
+.agent-task-progress .agent-human-card {
+  margin-top: 12px;
+}
+.agent-task-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.agent-task-options button[aria-pressed="true"] {
+  background: var(--accent, #32463c);
+  color: white;
+}

@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { browserLocks } from "./fixtures/browser-locks.mjs";
 const dom = new JSDOM('<div id="root"></div>', {
   url: "http://127.0.0.1:8790",
+  pretendToBeVisual: true,
 });
 Object.assign(globalThis, {
   window: dom.window,
@@ -16,6 +17,9 @@ Object.assign(globalThis, {
   localStorage: dom.window.localStorage,
   sessionStorage: dom.window.sessionStorage,
   IS_REACT_ACT_ENVIRONMENT: true,
+  getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
+  requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+  cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
 });
 Object.defineProperty(globalThis, "navigator", {
   value: dom.window.navigator,
@@ -335,6 +339,9 @@ test("formal workspace submits saved todos together and shows the execution resu
       /整理正式界面说明.*已附带项目信息/s,
     );
     assert.ok(button("停止"));
+    const history = document.querySelector(".studio-history");
+    assert.equal(history.hidden, false);
+    assert.ok(history.querySelector(".agent-batch-toolbar"));
     f.complete();
     await act(async () => new Promise((resolve) => setTimeout(resolve, 800)));
     const output = document.querySelector(".agent-chat-execution").textContent;
@@ -389,5 +396,137 @@ test("switching project restores its own unsent chat and task drafts without sub
     assert.deepEqual(f.canvasAdds, []);
   } finally {
     await act(async () => root.unmount());
+  }
+});
+
+test("full workspace creates BYOK connections in settings and applies centralized execution defaults to submitted tasks", async () => {
+  const f = fixture(),
+    originalCloud = f.requestCloud;
+  let catalog = {
+    modelsEndpoint: "/api/agent/chat/models",
+    defaultId: "xingchi",
+    profiles: [
+      {
+        id: "xingchi",
+        model: "existing",
+        service: "已有连接",
+        configured: true,
+      },
+    ],
+  };
+  f.requestCloud = async (route, options = {}) => {
+    if (route === "/api/agent/chat/models") {
+      f.calls.push({ route, ...options });
+      if (options.body?.action === "add")
+        catalog = {
+          ...catalog,
+          added: "my-model",
+          profiles: [
+            ...catalog.profiles,
+            {
+              id: "my-model",
+              model: options.body.model,
+              service: options.body.service,
+              configured: true,
+            },
+          ],
+        };
+      return catalog;
+    }
+    if (route === "/api/agent/chat/select-model") {
+      f.calls.push({ route, ...options });
+      return {
+        id: "chat-a",
+        bindingId: "binding-a",
+        title: "文档项目",
+        modelProfileId: options.body.modelProfileId,
+      };
+    }
+    return originalCloud(route, options);
+  };
+  f.requestLocal = async (route) =>
+    route.startsWith("/codex/models")
+      ? {
+          models: [
+            {
+              id: "execution-model",
+              name: "执行模型",
+              supportsFast: true,
+              isDefault: true,
+            },
+          ],
+          current: { model: "execution-model", fastMode: false },
+        }
+      : { runnerId: "runner", connectionStatus: "online" };
+  const originalFormData = globalThis.FormData;
+  globalThis.FormData = window.FormData;
+  const root = await mount(f);
+  try {
+    await edit("聊天消息", "保留对话草稿");
+    await click(button("设置"));
+    assert.ok(
+      document.querySelector('[role="tablist"][aria-label="设置分类"]'),
+    );
+    await click(button("新建模型连接"));
+    const form = document.querySelector(".qd-model-form");
+    assert.ok(form.closest('[role="dialog"]'));
+    for (const [name, value] of Object.entries({
+      service: "我的连接",
+      model: "custom-model",
+      baseUrl: "https://models.example.com/v1",
+      apiKey: "fake-ui-key",
+    }))
+      form.querySelector(`[name="${name}"]`).value = value;
+    assert.equal(form.querySelector('[name="apiKey"]').type, "password");
+    await act(async () =>
+      form.dispatchEvent(
+        new window.Event("submit", { bubbles: true, cancelable: true }),
+      ),
+    );
+    assert.equal(field("当前对话主模型").value, "my-model");
+    assert.equal(document.querySelector('[name="apiKey"]'), null);
+    assert.ok(
+      f.calls.some(
+        (call) =>
+          call.route === "/api/agent/chat/models" &&
+          call.body?.model === "custom-model",
+      ),
+    );
+    await click(button("工具与 Agent"));
+    await act(async () =>
+      document.querySelector(".qd-agent-preferences > summary").click(),
+    );
+    assert.ok(
+      document.querySelector(
+        ".agent-settings-execution .agent-execution-settings-form",
+      ),
+    );
+    assert.equal(
+      document.querySelector(".agent-execution-settings-entry"),
+      null,
+    );
+    await click(field("新会话默认模型"));
+    await click(
+      document.querySelector('[role="option"][value="execution-model"]'),
+    );
+    await click(button("快速模式"));
+    await click(button("保存执行设置"));
+    assert.match(
+      document.querySelector(".agent-settings-execution").textContent,
+      /执行设置已保存/,
+    );
+    await click(button("项目聊天"));
+    assert.equal(field("聊天消息").value, "保留对话草稿");
+    await click(button("保存到真实清单"));
+    await click(field("选中待办：整理正式界面说明"));
+    await click(button("提交所选待办"));
+    const intent = f.calls.find((call) => call.route.endsWith("/intents")).body;
+    assert.deepEqual(intent.executionSettings, {
+      model: "execution-model",
+      fastMode: true,
+    });
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.FormData = originalFormData;
   }
 });

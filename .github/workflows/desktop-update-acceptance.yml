@@ -1,0 +1,66 @@
+name: Qingdao isolated update acceptance
+
+on:
+  push:
+    branches: [feat/qingdan-mcp]
+    paths:
+      - .github/workflows/desktop-update-acceptance.yml
+      - scripts/verify-desktop-update.mjs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      QINGDAO_REQUIRE_SIGNING: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Build and inspect the first unsigned installer
+        shell: pwsh
+        run: |
+          $env:QINGDAO_BUILD_VERSION = '0.3.12-beta.1'
+          $env:QINGDAO_OUTPUT_DIR = 'output/update-qa/beta1'
+          npm run desktop:package
+          if ($LASTEXITCODE -ne 0) { throw 'First installer build failed.' }
+          npm run desktop:inspect
+          if ($LASTEXITCODE -ne 0) { throw 'First installer inspection failed.' }
+      - name: Build and inspect the second unsigned installer
+        shell: pwsh
+        run: |
+          $env:QINGDAO_BUILD_VERSION = '0.3.12-beta.2'
+          $env:QINGDAO_OUTPUT_DIR = 'output/update-qa/beta2'
+          npm run desktop:package
+          if ($LASTEXITCODE -ne 0) { throw 'Second installer build failed.' }
+          npm run desktop:inspect
+          if ($LASTEXITCODE -ne 0) { throw 'Second installer inspection failed.' }
+      - name: Install isolated UI test dependency
+        shell: pwsh
+        run: |
+          $qaTools = Join-Path $env:RUNNER_TEMP 'qingdao-qa-tools'
+          npm install --prefix $qaTools playwright@1.65.1 --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'UI test dependency installation failed.' }
+          "QINGDAN_QA_PLAYWRIGHT=$qaTools/node_modules/playwright" >> $env:GITHUB_ENV
+      - name: Exercise real one-click update and automatic restart
+        run: node scripts/verify-desktop-update.mjs output/update-qa/beta1 output/update-qa/beta2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Qingdao-unsigned-update-acceptance
+          path: |
+            output/update-qa/*/*.exe
+            output/update-qa/*/*.blockmap
+            output/update-qa/*/beta.yml
+            output/desktop-update-evidence/**
+          if-no-files-found: error
+          retention-days: 14

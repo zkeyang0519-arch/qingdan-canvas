@@ -1,0 +1,21 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "radix-luma",
+  "rsc": false,
+  "tsx": false,
+  "tailwind": {
+    "config": "",
+    "css": "src/agent/ui/theme.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": "qd"
+  },
+  "iconLibrary": "lucide",
+  "aliases": {
+    "components": "@/agent",
+    "utils": "@/agent/ui/utils",
+    "ui": "@/agent/ui",
+    "lib": "@/agent/lib",
+    "hooks": "@/agent/hooks"
+  }
+}

@@ -747,6 +747,7 @@ async function fixture(
   const electron = {
     screen,
     app: {
+      getVersion: () => "0.3.12",
       setPath() {},
       setName() {},
       requestSingleInstanceLock: () => false,

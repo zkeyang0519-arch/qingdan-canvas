@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Check, Copy, Quote } from "lucide-react";
+import { Check, Clapperboard, Copy, Quote } from "lucide-react";
 
 export function appendQuotedReply(draft, text) {
   const quote = text
@@ -11,7 +11,12 @@ export function appendQuotedReply(draft, text) {
   return next.length <= 12000 ? next : null;
 }
 
-export default function AnswerActions({ text, onQuote, disabled = false }) {
+export default function AnswerActions({
+  text,
+  onQuote,
+  onFilm,
+  disabled = false,
+}) {
   const [status, setStatus] = useState("");
   const controls = useRef(null);
   useEffect(() => setStatus(""), [text]);
@@ -39,7 +44,12 @@ export default function AnswerActions({ text, onQuote, disabled = false }) {
   }
   return (
     <div className="agent-answer-actions" ref={controls}>
-      <button type="button" onClick={copy} aria-label="复制回答" title={status === "已复制" ? "已复制" : "复制回答"}>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label="复制回答"
+        title={status === "已复制" ? "已复制" : "复制回答"}
+      >
         {status === "已复制" ? <Check size={14} /> : <Copy size={14} />}
       </button>
       {onQuote && (
@@ -53,7 +63,22 @@ export default function AnswerActions({ text, onQuote, disabled = false }) {
           <Quote size={14} />
         </button>
       )}
-      <span role="status" className={status === "已复制" ? "agent-visually-hidden" : undefined}>{status}</span>
+      {onFilm && (
+        <button
+          type="button"
+          onClick={() => onFilm(text)}
+          title="带入短片制作"
+          aria-label="带入短片制作"
+        >
+          <Clapperboard size={14} />
+        </button>
+      )}
+      <span
+        role="status"
+        className={status === "已复制" ? "agent-visually-hidden" : undefined}
+      >
+        {status}
+      </span>
     </div>
   );
 }

@@ -2,10 +2,11 @@ import { check } from "../http";
 import { canonicalJson } from "../mcp/room-storage";
 import { CHAT_INPUT_LIMIT, type AgentReply } from "../../shared/agent/chat";
 import type { ProjectContext } from "../../shared/agent/project";
-import { projectSummaryMessage } from "./project-summary-message";
+import { projectSummaryNotice } from "./project-summary-message";
 export type { AgentReply } from "../../shared/agent/chat";
 export type ChatThread = {
   id: string;
+  modelProfileId: string | null;
   bindingId: string;
   title: string;
   createdAt: string;
@@ -38,6 +39,8 @@ export type ChatProvenance = {
 };
 export type ChatJob = {
   id: string;
+  modelProfileId: string | null;
+  retryOf: string | null;
   bindingId: string;
   chatId: string;
   userMessageId: string;
@@ -89,9 +92,9 @@ const visible = `WITH RECURSIVE hidden(id) AS (
     JOIN hidden h ON h.id=p.value WHERE m.chat_id=?1
 )`;
 const sqlThread =
-  "id,binding_id AS bindingId,title,created_at AS createdAt,updated_at AS updatedAt";
+  "id,binding_id AS bindingId,title,created_at AS createdAt,updated_at AS updatedAt,model_profile_id AS modelProfileId";
 const sqlJob =
-  "id,binding_id AS bindingId,chat_id AS chatId,user_message_id AS userMessageId,status,revision,memory_epoch AS memoryEpoch,lease_until AS leaseUntil,assistant_message_id AS assistantMessageId,error,partial_text AS partialText";
+  "id,binding_id AS bindingId,chat_id AS chatId,user_message_id AS userMessageId,status,revision,memory_epoch AS memoryEpoch,lease_until AS leaseUntil,assistant_message_id AS assistantMessageId,error,partial_text AS partialText,model_profile_id AS modelProfileId,retry_of AS retryOf";
 const sqlMessage =
   "id,binding_id AS bindingId,chat_id AS chatId,sequence,role,text,created_at AS createdAt,tasks,memories,reply_to AS replyTo,provenance";
 const sqlMemory =
@@ -155,6 +158,21 @@ export class ChatStore {
       this.sql.exec(
         "ALTER TABLE agent_chat_jobs ADD COLUMN partial_text TEXT NOT NULL DEFAULT ''",
       );
+    for (const [table, column] of [
+      ["agent_chat_threads", "model_profile_id"],
+      ["agent_chat_jobs", "model_profile_id"],
+      ["agent_chat_jobs", "retry_of"],
+    ]) {
+      if (
+        !this.sql
+          .exec(
+            `SELECT 1 FROM pragma_table_info('${table}') WHERE name=?`,
+            column,
+          )
+          .toArray().length
+      )
+        this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+    }
   }
   private receipt<T>(requestId: string, payload: unknown): T | null {
     const stored = this.sql
@@ -190,32 +208,52 @@ export class ChatStore {
     check(row, "当前项目中找不到该聊天。", 404);
     return row;
   }
-  private makeThread(bindingId: string, title: string) {
+  private makeThread(
+    bindingId: string,
+    title: string,
+    modelProfileId: string | null = null,
+  ) {
     const now = this.now();
     const row: ChatThread = {
       id: crypto.randomUUID(),
+      modelProfileId,
       bindingId,
       title,
       createdAt: now,
       updatedAt: now,
     };
     this.sql.exec(
-      "INSERT INTO agent_chat_threads VALUES(?,?,?,?,?)",
+      "INSERT INTO agent_chat_threads(id,binding_id,title,created_at,updated_at,model_profile_id) VALUES(?,?,?,?,?,?)",
       row.id,
       bindingId,
       title,
       now,
       now,
+      modelProfileId,
     );
     return row;
   }
-  createThread({ requestId, bindingId }: RequestIdentity) {
+  createThread({
+    requestId,
+    bindingId,
+    defaultProfileId,
+  }: RequestIdentity & { defaultProfileId?: string }) {
     const payload = { action: "createThread", bindingId };
     const prior = this.receipt<ChatThread>(requestId, payload);
     if (prior) return prior;
-    const thread = this.makeThread(bindingId, "新聊天");
+    const thread = this.makeThread(bindingId, "新聊天", defaultProfileId);
     this.rememberReceipt(requestId, payload, thread);
     return thread;
+  }
+  selectModel(bindingId: string, chatId: string, modelProfileId: string) {
+    this.thread(bindingId, chatId);
+    this.sql.exec(
+      "UPDATE agent_chat_threads SET model_profile_id=? WHERE binding_id=? AND id=?",
+      modelProfileId,
+      bindingId,
+      chatId,
+    );
+    return this.thread(bindingId, chatId);
   }
   listThreads(bindingId: string) {
     return this.sql
@@ -262,7 +300,7 @@ export class ChatStore {
     const published = this.appendMessage(
       thread,
       "assistant",
-      projectSummaryMessage(project),
+      projectSummaryNotice(project),
       undefined,
       {
         kind: "project_summary",
@@ -336,6 +374,18 @@ export class ChatStore {
   isMessageUsable(messageId: string) {
     const row = this.messageRow(messageId);
     return !!row && !!this.contextMessage(row.bindingId, row.chatId, messageId);
+  }
+  taskMessageIds(bindingId: string, chatId: string): string[] {
+    this.thread(bindingId, chatId);
+    return this.sql
+      .exec<{ id: string }>(
+        `${visible} SELECT id FROM agent_chat_messages WHERE chat_id=?1 AND binding_id=?2
+        AND role='user' AND id NOT IN (SELECT id FROM hidden) ORDER BY sequence`,
+        chatId,
+        bindingId,
+      )
+      .toArray()
+      .map((row) => row.id);
   }
   canAdoptMemoryCandidate(
     bindingId: string,
@@ -430,22 +480,34 @@ export class ChatStore {
     chatId,
     text,
     project,
+    modelProfileId,
+    defaultProfileId,
+    retryOf,
+    taskReply,
   }: RequestIdentity & {
     chatId?: string;
-    text: string;
+    text?: string;
+    modelProfileId?: string;
+    defaultProfileId?: string;
+    retryOf?: string;
+    taskReply?: { taskId: string; questionId: string };
     project?: ChatProvenance["project"];
   }) {
     check(
-      typeof text === "string" &&
-        text.trim().length &&
-        text.length <= CHAT_INPUT_LIMIT,
+      retryOf
+        ? !!chatId && !!modelProfileId && text === undefined
+        : typeof text === "string" &&
+            text.trim().length &&
+            text.length <= CHAT_INPUT_LIMIT,
       `聊天消息不能为空或超过 ${CHAT_INPUT_LIMIT} 字符。`,
     );
     const payload = {
       action: "beginMessage",
       bindingId,
       chatId: chatId ?? null,
-      text,
+      ...(retryOf ? { retryOf } : { text }),
+      ...(modelProfileId ? { modelProfileId } : {}),
+      ...(taskReply ? { taskReply } : {}),
     };
     const old = this.receipt<{ jobId: string }>(requestId, payload);
     if (old) {
@@ -456,12 +518,12 @@ export class ChatStore {
         job,
       };
     }
-    const title = Array.from(text.trim().replace(/\s+/gu, " "))
+    const title = Array.from((text ?? "").trim().replace(/\s+/gu, " "))
       .slice(0, 36)
       .join("");
     const thread = chatId
       ? this.thread(bindingId, chatId)
-      : this.makeThread(bindingId, title);
+      : this.makeThread(bindingId, title, modelProfileId ?? defaultProfileId);
     check(
       !this.sql
         .exec(
@@ -472,12 +534,54 @@ export class ChatStore {
       "这条聊天还有一条消息正在处理。",
       409,
     );
-    const user = this.appendMessage(thread, "user", text, undefined, {
-      messageIds: [],
-      memories: [],
-      ...(project ? { project } : {}),
-    });
-    if (thread.title === "新聊天" && user.sequence === 1)
+    let user: ChatMessage;
+    if (retryOf) {
+      const failed = this.getJob(retryOf);
+      const latest = this.sql
+        .exec<{ id: string }>(
+          "SELECT id FROM agent_chat_jobs WHERE chat_id=? ORDER BY rowid DESC LIMIT 1",
+          thread.id,
+        )
+        .toArray()[0];
+      check(
+        failed?.status === "failed" &&
+          failed.bindingId === bindingId &&
+          failed.chatId === thread.id &&
+          latest?.id === retryOf,
+        "这次失败已处理或聊天已更新，请刷新。",
+        409,
+      );
+      check(
+        modelProfileId !== (failed.modelProfileId ?? "xingchi"),
+        "请选择另一个模型连接重试。",
+        409,
+      );
+      const original = this.readMessage(
+        bindingId,
+        thread.id,
+        failed.userMessageId,
+      );
+      check(
+        original?.role === "user" && !original.invalidated,
+        "原消息已不能用于重试。",
+        409,
+      );
+      user = original;
+    } else {
+      user = this.appendMessage(thread, "user", text!, undefined, {
+        messageIds: [],
+        memories: [],
+        ...(project ? { project } : {}),
+      });
+    }
+    const selected =
+      modelProfileId ??
+      thread.modelProfileId ??
+      (chatId && defaultProfileId ? "xingchi" : defaultProfileId) ??
+      null;
+    if (selected && thread.modelProfileId !== selected)
+      this.selectModel(bindingId, thread.id, selected);
+    if (!retryOf && thread.title === "新聊天" && user.sequence === 1)
       this.sql.exec(
         "UPDATE agent_chat_threads SET title=? WHERE id=?",
         title,
@@ -485,6 +589,8 @@ export class ChatStore {
       );
     const job: ChatJob = {
       id: crypto.randomUUID(),
+      modelProfileId: selected,
+      retryOf: retryOf ?? null,
       bindingId,
       chatId: thread.id,
       userMessageId: user.id,
@@ -497,7 +603,7 @@ export class ChatStore {
       partialText: "",
     };
     this.sql.exec(
-      "INSERT INTO agent_chat_jobs(id,binding_id,chat_id,user_message_id,status,revision,memory_epoch,lease_until,assistant_message_id,error) VALUES(?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO agent_chat_jobs(id,binding_id,chat_id,user_message_id,status,revision,memory_epoch,lease_until,assistant_message_id,error,model_profile_id,retry_of) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
       job.id,
       bindingId,
       thread.id,
@@ -508,6 +614,8 @@ export class ChatStore {
       null,
       null,
       null,
+      job.modelProfileId,
+      job.retryOf,
     );
     this.rememberReceipt(requestId, payload, { jobId: job.id });
     return { thread: this.thread(bindingId, thread.id), message: user, job };

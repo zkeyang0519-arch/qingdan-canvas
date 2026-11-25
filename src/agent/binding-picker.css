@@ -74,9 +74,14 @@
   text-overflow: ellipsis;
 }
 
-.agent-project-binding-picker :is(button, select, input):focus-visible {
+.agent-project-binding-picker button:focus-visible {
   outline: 2px solid var(--binding-accent);
   outline-offset: 2px;
+}
+
+.agent-project-binding-picker :is(input, select):is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: none;
 }
 
 .agent-binding-destinations {

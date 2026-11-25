@@ -212,6 +212,7 @@ export function createDesktopInstallation({
   wait = delay,
   release,
   downloadTimeoutMs = 15 * 60 * 1000,
+  allowInitialInstall = false,
 } = {}) {
   if (!path.isAbsolute(env.LOCALAPPDATA || ""))
     throw Error("Missing local application directory");
@@ -240,6 +241,14 @@ export function createDesktopInstallation({
     onStatus("正在检查轻岛安装和版本…");
     signal?.throwIfAborted();
     let current = await inspectCurrent();
+    if (current.version) {
+      onStatus("正在打开已安装的轻岛；更新由应用内统一处理…");
+      return { executable: current.executable, version: current.version };
+    }
+    if (!allowInitialInstall)
+      throw publicError(
+        "尚未安装轻岛，请从官网下载页安装后再打开；网页不会自动运行安装器。",
+      );
     let latest;
     try {
       if (release) latest = await release();

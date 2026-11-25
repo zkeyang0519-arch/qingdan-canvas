@@ -100,7 +100,9 @@ export function useCodexModelCatalog(
             identity,
             status: "error",
             models: [],
-            error: error.message,
+            error: /\bENOENT\b/.test(error.message)
+              ? "未找到本机 Codex，暂时无法读取执行模型。请检查「设备与绑定」。"
+              : error.message,
           });
       });
     return () => {

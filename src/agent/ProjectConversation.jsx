@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Bot, Circle, LoaderCircle, Square } from "lucide-react";
+import { Circle, LoaderCircle, Square } from "lucide-react";
 import {
   BoundBatch,
   batchStatusLabel,
@@ -25,7 +25,9 @@ function newestRun(primary, other) {
       return (primary[key] || 0) > (other[key] || 0) ? primary : other;
   }
   if ((primary.updatedAt || "") !== (other.updatedAt || ""))
-    return (primary.updatedAt || "") > (other.updatedAt || "") ? primary : other;
+    return (primary.updatedAt || "") > (other.updatedAt || "")
+      ? primary
+      : other;
   if (primary.turnId !== other.turnId)
     return (primary.updatedAt || "") >= (other.updatedAt || "")
       ? primary
@@ -190,11 +192,8 @@ function RunMessages({
       <li
         className="agent-chat-message agent-chat-assistant agent-chat-execution"
         data-run={run.runId}
+        aria-label="Agent 执行结果"
       >
-        <strong className="agent-message-author">
-          <Bot size={15} aria-hidden="true" />
-          Codex
-        </strong>
         {current ? (
           <ExecutionOutput
             key={run.runId}
@@ -259,6 +258,9 @@ export function ConversationMessages({
   runs = [],
   detail,
   notices,
+  questionsContent,
+  questionKey,
+  nativePrompt,
   ...runProps
 }) {
   const list = useRef(null);
@@ -302,11 +304,19 @@ export function ConversationMessages({
     if (list.current && (following.current || newestUser !== lastUser.current))
       list.current.scrollTop = list.current.scrollHeight;
     lastUser.current = newestUser;
-  }, [messages, detail, job?.partialText, job?.status, newestUser]);
+  }, [
+    messages,
+    detail,
+    job?.partialText,
+    job?.status,
+    newestUser,
+    questionKey,
+    detail?.run?.pendingRequests?.length,
+  ]);
   return (
     <>
       <ol
-        className={`agent-chat-messages${!entries.length && !partial ? " is-empty" : ""}`}
+        className={`agent-chat-messages${!entries.length && !partial && !questionsContent && !nativePrompt ? " is-empty" : ""}`}
         aria-label="聊天消息记录"
         ref={list}
         onScroll={(event) => {
@@ -334,10 +344,6 @@ export function ConversationMessages({
             className="agent-chat-message agent-chat-assistant"
             aria-label="助手流式回复"
           >
-            <strong className="agent-message-author">
-              <Bot size={15} />
-              助手
-            </strong>
             {job.partialText && (
               <StreamingMarkdown
                 timeline
@@ -371,6 +377,12 @@ export function ConversationMessages({
             </div>
           </li>
         )}
+        {questionsContent && (
+          <li className="agent-human-message">{questionsContent}</li>
+        )}
+        {nativePrompt && (
+          <li className="agent-human-message">{nativePrompt}</li>
+        )}
       </ol>
       {notices && <div className="agent-chat-execution-notices">{notices}</div>}
     </>
@@ -395,6 +407,7 @@ export default function ProjectConversation({
       callCloud={call}
       loadBinding={loadBinding}
       embedded
+      detailHost={execution.detailHost}
       initialTarget={execution.initialTarget}
       onSelectBatch={execution.onSelectBatch}
       onRunChange={execution.onRunChange}

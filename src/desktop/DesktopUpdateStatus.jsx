@@ -1,48 +1,62 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  updateIsBusy,
+  updateIsReady,
+  updateOperation,
+  updateLabel,
+  updateMessage,
+} from "./update-ui.js";
 
 export default function DesktopUpdateStatus({ bridge }) {
-  const [update, setUpdate] = useState(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [dismissedVersion, setDismissedVersion] = useState(null);
+  const [update, setUpdate] = useState(null),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [dismissedVersion, setDismissedVersion] = useState(null);
+  const session = useRef(null);
   useEffect(() => {
-    if (!bridge?.getUpdateState || !bridge.onUpdateState) return;
-    let active = true;
-    let receivedEvent = false;
+    const current = { active: true, received: false, busy: false };
+    session.current = current;
+    setUpdate(null);
+    setError("");
+    setBusy(false);
+    if (!bridge?.getUpdateState || !bridge.onUpdateState)
+      return () => {
+        current.active = false;
+      };
     const unsubscribe = bridge.onUpdateState((value) => {
-      receivedEvent = true;
-      if (active) setUpdate(value);
+      current.received = true;
+      if (current.active) {
+        setUpdate(value);
+        setError("");
+      }
     });
     Promise.resolve(bridge.getUpdateState())
       .then((value) => {
-        if (active && !receivedEvent) setUpdate(value);
+        if (current.active && !current.received) setUpdate(value);
       })
       .catch((reason) => {
-        if (active) setError(reason.message);
+        if (current.active) setError(reason.message);
       });
     return () => {
-      active = false;
+      current.active = false;
       unsubscribe?.();
     };
   }, [bridge]);
-  // Checks and downloads stay in the background; only an actionable update
-  // or an ongoing restart needs space in the task panel.
-  if (!update || !["downloaded", "installing"].includes(update.status))
+  const ready = updateIsReady(update),
+    locked = updateIsBusy(update),
+    waiting = update?.status === "waiting";
+  if (!update || (!ready && !locked && !waiting && update.status !== "error"))
     return null;
-  const run = async (action) => {
-    setError("");
-    setBusy(true);
-    try {
-      await action();
-    } catch (reason) {
-      setError(reason.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const ready = update.status === "downloaded";
   const version = update.version || "";
-  if (ready && dismissedVersion === version && !error && !update.error)
+  if (
+    ready &&
+    !waiting &&
+    !locked &&
+    update.status !== "error" &&
+    dismissedVersion === version &&
+    !error &&
+    !update.error
+  )
     return (
       <div className="desktop-update-status desktop-update-status-compact">
         <button type="button" onClick={() => setDismissedVersion(null)}>
@@ -50,27 +64,44 @@ export default function DesktopUpdateStatus({ bridge }) {
         </button>
       </div>
     );
-  const message = ready
-    ? `新版${version ? ` ${version}` : ""}已就绪`
-    : "正在保存并重启更新…";
+  const operation = updateOperation(update);
+  async function run() {
+    const current = session.current;
+    if (!current?.active || current.busy || !bridge?.[operation]) return;
+    current.busy = true;
+    setBusy(true);
+    setError("");
+    try {
+      await bridge[operation]();
+    } catch (reason) {
+      if (current.active) setError(reason.message);
+    } finally {
+      current.busy = false;
+      if (current.active) setBusy(false);
+    }
+  }
   return (
     <div className="desktop-update-status" role="status">
-      <span>{message}</span>
-      {ready && (
-        <>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => run(() => bridge.installUpdate())}
-          >
-            {busy ? "正在保存…" : "重启更新"}
-          </button>
-          {dismissedVersion !== version && (
-            <button type="button" onClick={() => setDismissedVersion(version)}>
-              稍后
-            </button>
-          )}
-        </>
+      <span>{updateMessage(update)}</span>
+      {!locked && (
+        <button
+          type="button"
+          disabled={busy || !bridge?.[operation]}
+          onClick={run}
+        >
+          {busy ? "正在处理…" : updateLabel(update)}
+        </button>
+      )}
+      {ready && !waiting && !locked && !error && !update.error && (
+        <button type="button" onClick={() => setDismissedVersion(version)}>
+          稍后
+        </button>
+      )}
+      {waiting && update.tasks?.length > 0 && (
+        <small>
+          等待 {update.tasks.filter((task) => !task.checkpointedRemote).length}{" "}
+          项任务
+        </small>
       )}
       {(error || update.error) && <p role="alert">{error || update.error}</p>}
     </div>

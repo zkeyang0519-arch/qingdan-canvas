@@ -27,7 +27,7 @@ function guardedAgent(
   Implementation: new (ctx: DurableObjectState, env: Env) => AgentRuntime,
 ) {
   return class extends DurableObject<Env> {
-    private active?: AgentRuntime;
+    protected active?: AgentRuntime;
     constructor(ctx: DurableObjectState, env: Env) {
       super(ctx, env);
       // Do not construct a development implementation in production: its
@@ -71,4 +71,42 @@ function guardedAgent(
 
 // Keep deployed namespace class names and migration history unchanged.
 export class RunnerHub extends guardedAgent(DevelopmentRunnerHub) {}
-export class AgentChatRouter extends guardedAgent(DevelopmentAgentChatRouter) {}
+export class AgentChatRouter extends guardedAgent(DevelopmentAgentChatRouter) {
+  piRetentionResult(
+    ...args: Parameters<DevelopmentAgentChatRouter["piRetentionResult"]>
+  ) {
+    return this.active
+      ? (this.active as DevelopmentAgentChatRouter).piRetentionResult(...args)
+      : { error: "Agent 尚未在此环境开放。", status: 404 };
+  }
+  executionRetentionResult(
+    ...args: Parameters<DevelopmentAgentChatRouter["executionRetentionResult"]>
+  ) {
+    return this.active
+      ? (this.active as DevelopmentAgentChatRouter).executionRetentionResult(
+          ...args,
+        )
+      : { error: "Agent 尚未在此环境开放。", status: 404 };
+  }
+  runtimeActivityResult(
+    ...args: Parameters<DevelopmentAgentChatRouter["runtimeActivityResult"]>
+  ) {
+    if (!this.active)
+      return { tasks: [], unknown: ["Agent 尚未在此环境开放。"] };
+    return (this.active as DevelopmentAgentChatRouter).runtimeActivityResult(
+      ...args,
+    );
+  }
+  piScopeResult(
+    ...args: Parameters<DevelopmentAgentChatRouter["piScopeResult"]>
+  ) {
+    return this.active
+      ? (this.active as DevelopmentAgentChatRouter).piScopeResult(...args)
+      : { error: "Agent 尚未在此环境开放。", status: 404 };
+  }
+  piContextResult(jobId: string) {
+    return this.active
+      ? (this.active as DevelopmentAgentChatRouter).piContextResult(jobId)
+      : { error: "Agent 尚未在此环境开放。", status: 404 };
+  }
+}

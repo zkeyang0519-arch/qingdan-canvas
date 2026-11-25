@@ -97,8 +97,23 @@ export async function openControlBridge(manifest, hooks) {
         const payload = request.payload;
         if (!["status", "stop", "recover-web"].includes(payload?.command))
           return socket.destroy();
-        const active = await inspectActive(root);
         const currentHooks = hooks || lifecycleHooks;
+        const active = await inspectActive(root);
+        if (currentHooks?.active) {
+          try {
+            const additional = await currentHooks.active();
+            if (
+              !Number.isSafeInteger(additional.count) ||
+              additional.count < 0 ||
+              !Array.isArray(additional.unknown)
+            )
+              throw Error("Invalid active state");
+            active.count += additional.count;
+            active.unknown.push(...additional.unknown);
+          } catch {
+            active.unknown.push("Pi task state unavailable");
+          }
+        }
         let result = {
           ...identity,
           active,

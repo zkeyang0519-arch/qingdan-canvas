@@ -1,9 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
+import { filmInternal } from "./film-route";
+import { FilmStore } from "./film-store";
 import { z } from "zod";
 import type { Env } from "../types";
 import { body, check, failure, HttpError, json } from "../http";
 import {
   authorizeExecution,
+  bindingPrincipal,
   type ExecutionPrincipal,
 } from "../execution/execution-auth";
 import { canonicalJson } from "../mcp/room-storage";
@@ -28,6 +31,22 @@ import {
   type ChatGenerationOptions,
 } from "./chat-model";
 import { agentReplySchema, CHAT_INPUT_LIMIT } from "../../shared/agent/chat";
+import {
+  ChatModelConnections,
+  modelSettingsSchema,
+} from "./chat-model-connections";
+import { piEnabled, piCall, piModel } from "./pi-bridge";
+import { chatInput } from "../../scripts/pi-local/chat-input.mjs";
+import { RetentionStore, type RetentionJob } from "./retention-store";
+import { runtimeAdmissionsPaused } from "../runtime-maintenance";
+import {
+  retentionModeSchema,
+  retentionReportSchema,
+  retentionOutputSchema,
+  retentionInstructions,
+  retentionHasSecrets,
+  retentionContext,
+} from "../../shared/agent/retention";
 
 const id = z
   .string()
@@ -42,6 +61,36 @@ const source = {
   messageId: id,
 };
 const schemas = {
+  retention: z.discriminatedUnion("action", [
+    z.strictObject({
+      action: z.literal("settings"),
+      requestId: id,
+      mode: retentionModeSchema,
+      expectedRevision: rev,
+    }),
+    z.strictObject({
+      action: z.literal("adopt"),
+      requestId: id,
+      bindingId: id,
+      bindingRevision: rev,
+      jobId: id,
+      index: z.number().int().min(0).max(2),
+      scope: z.enum(["personal", "project"]),
+      key: z.string().trim().min(1).max(100),
+      value: z.string().trim().min(1).max(1000),
+      expectedMemoryId: id.optional(),
+      expectedRevision: rev.optional(),
+    }),
+    z.strictObject({
+      action: z.enum(["ignore", "undo", "retry"]),
+      requestId: id,
+      bindingId: id,
+      bindingRevision: rev,
+      jobId: id,
+      index: z.number().int().min(0).max(2).optional(),
+    }),
+  ]),
+  models: modelSettingsSchema,
   request: z.strictObject({
     requestId: id,
     bindingId: id,
@@ -55,14 +104,35 @@ const schemas = {
       beforeSequence: rev.optional(),
     })
     .refine((v) => !v.chatId || !!v.bindingId),
-  new: z.strictObject({ requestId: id, bindingId: id, bindingRevision: rev }),
-  send: z.strictObject({
+  new: z.strictObject({
     requestId: id,
     bindingId: id,
     bindingRevision: rev,
-    chatId: id.optional(),
-    text: z.string().trim().min(1).max(CHAT_INPUT_LIMIT),
+    defaultProfileId: id.optional(),
   }),
+  "select-model": z.strictObject({
+    bindingId: id,
+    bindingRevision: rev,
+    chatId: id,
+    modelProfileId: id,
+  }),
+  send: z
+    .strictObject({
+      requestId: id,
+      bindingId: id,
+      bindingRevision: rev,
+      chatId: id.optional(),
+      text: z.string().trim().min(1).max(CHAT_INPUT_LIMIT).optional(),
+      modelProfileId: id.optional(),
+      defaultProfileId: id.optional(),
+      retryOf: id.optional(),
+      taskReply: z.strictObject({ taskId: id, questionId: id }).optional(),
+    })
+    .refine((v) =>
+      v.retryOf
+        ? !!v.chatId && !!v.modelProfileId && v.text === undefined
+        : !!v.text,
+    ),
   cancel: z.strictObject({
     requestId: id,
     bindingId: id,
@@ -132,6 +202,19 @@ const instructions = [
 ].join("\n");
 
 export class AgentChatRouter extends DurableObject<Env> {
+  private retentionStore?: RetentionStore;
+  private get retention() {
+    return (this.retentionStore ??= new RetentionStore(this.ctx.storage.sql));
+  }
+  private retentionRunning?: Promise<void>;
+  private modelConnections?: ChatModelConnections;
+  private get models() {
+    return (this.modelConnections ??= new ChatModelConnections(
+      this.ctx.storage.sql,
+      this.env,
+    ));
+  }
+  private films?: FilmStore;
   private store: ChatStore;
   private running = new Map<string, Promise<void>>();
   private controllers = new Map<string, AbortController>();
@@ -240,7 +323,7 @@ export class AgentChatRouter extends DurableObject<Env> {
       this.store.isMessageUsable(message.id) &&
       !!auth &&
       canonicalJson(auth.principal) === canonicalJson(p) &&
-      (!project ||
+      (!projectSource(project) ||
         (!!projectSource(project) &&
           sameProjectSource(
             message.provenance.project,
@@ -248,7 +331,7 @@ export class AgentChatRouter extends DurableObject<Env> {
           )))
     );
   }
-  private readState(
+  protected readState(
     bindingId?: string,
     chatId?: string,
     beforeSequence?: number,
@@ -261,10 +344,31 @@ export class AgentChatRouter extends DurableObject<Env> {
       bindingId && selected
         ? this.store.readThread(bindingId, selected, { beforeSequence })
         : null;
-    const memories = this.store.listMemories(bindingId ?? "");
+    const memories = this.retention.decorate(
+      this.store.listMemories(bindingId ?? ""),
+    );
     const messages =
       data?.messages.map((message) => {
         const usable = p ? this.messageAllowed(message, p, project) : false;
+        const filmRef =
+          message.role === "user" &&
+          message.text.match(
+            /\[轻单制作 ([a-zA-Z0-9_-]{1,100})\/([a-zA-Z0-9_-]{1,100})\]/,
+          );
+        let media: ReturnType<FilmStore["imagesForVersion"]> | undefined;
+        if (p && filmRef) {
+          this.films ??= new FilmStore(this.ctx.storage.sql, (fn) =>
+            this.ctx.storage.transactionSync(fn),
+          );
+          const version = this.films.job(filmRef[2]);
+          if (
+            version?.filmId === filmRef[1] &&
+            version.binding?.bindingId === p.bindingId &&
+            version.binding.ownerId === p.ownerId &&
+            (!version.input.chatId || version.input.chatId === message.chatId)
+          )
+            media = this.films.imagesForVersion(version);
+        }
         const proposal = this.proposal(message.id);
         const adopted = this.ctx.storage.sql
           .exec<{ item_index: number; memory_id: string; revision: number }>(
@@ -295,6 +399,7 @@ export class AgentChatRouter extends DurableObject<Env> {
         const receipt = proposal?.receipt ? JSON.parse(proposal.receipt) : null;
         return {
           ...message,
+          ...(media?.length ? { media } : {}),
           ...(message.role === "assistant"
             ? { invalidated: !usable, memoryStates }
             : {}),
@@ -313,13 +418,16 @@ export class AgentChatRouter extends DurableObject<Env> {
         };
       }) ?? [];
     return {
-      provider: chatModelStatus(this.env),
+      provider: this.externalModelCatalog
+        ? chatModelStatus(this.env)
+        : this.models.status(data?.thread?.modelProfileId ?? undefined),
       ...(project ? { project } : {}),
       threads,
       thread: data?.thread ?? null,
       messages,
       job: data?.job ?? null,
       memories,
+      retention: this.retention.view(bindingId, chatId),
       memoryEpoch: this.store.getMemoryEpoch(),
       hasMore: !!data?.beforeSequence,
       nextBeforeSequence: data?.beforeSequence ?? null,
@@ -327,6 +435,12 @@ export class AgentChatRouter extends DurableObject<Env> {
   }
   async fetch(request: Request) {
     try {
+      if (new URL(request.url).pathname.startsWith("/films/")) {
+        this.films ??= new FilmStore(this.ctx.storage.sql, (fn) =>
+          this.ctx.storage.transactionSync(fn),
+        );
+        return await filmInternal(request, this.ctx, this.env, this.films);
+      }
       check(this.env.CHAT_ENABLED === "true", "聊天与记忆功能尚未启用。", 404);
       check(request.method === "POST", "方法不支持。", 405);
       const envelope = await body(request, 250000);
@@ -335,7 +449,25 @@ export class AgentChatRouter extends DurableObject<Env> {
       const parsed = schemas[action].safeParse(envelope.input);
       check(parsed.success, "聊天请求格式无效。", 400);
       const input = parsed.data as any;
+      if (input.modelProfileId || input.defaultProfileId || input.retryOf)
+        check(this.supportsModelSelection, "此聊天服务未启用模型切换。", 400);
       const identity = await this.identity(envelope.identity);
+      if (action === "send")
+        check(
+          !(await runtimeAdmissionsPaused(this.env)),
+          "已预约更新，暂不接收新任务。",
+          423,
+        );
+      if (action === "models") {
+        check(
+          !this.externalModelCatalog,
+          "请通过本机模型设置管理此入口。",
+          400,
+        );
+        return json(
+          this.ctx.storage.transactionSync(() => this.models.change(input)),
+        );
+      }
       const p = await this.principal(
         identity,
         envelope.principal,
@@ -348,6 +480,19 @@ export class AgentChatRouter extends DurableObject<Env> {
         "项目绑定已变化，请刷新后重试。",
         409,
       );
+      if (action === "select-model") {
+        if (!this.externalModelCatalog)
+          this.models.requireConfigured(input.modelProfileId);
+        return json(
+          this.ctx.storage.transactionSync(() =>
+            this.store.selectModel(
+              input.bindingId,
+              input.chatId,
+              input.modelProfileId,
+            ),
+          ),
+        );
+      }
       if (action === "request") {
         const receipt = this.store.readSendRequest(
           input.bindingId,
@@ -385,6 +530,16 @@ export class AgentChatRouter extends DurableObject<Env> {
           this.store.cancelJob(input),
         );
         if (job.status === "cancelled") this.controllers.get(job.id)?.abort();
+        if (
+          job.status === "cancelled" &&
+          piEnabled(this.env, identity.accountId)
+        )
+          await piCall(
+            this.env,
+            "cancel",
+            { accountId: identity.accountId, jobId: job.id },
+            AbortSignal.timeout(5000),
+          ).catch(() => {});
         await this.schedule();
         return json({ job });
       }
@@ -410,38 +565,100 @@ export class AgentChatRouter extends DurableObject<Env> {
               input.chatId,
             ),
           );
-        return json(
-          this.readState(
-            input.bindingId,
-            input.chatId,
-            input.beforeSequence,
-            p,
-            project,
-          ),
+        const state = this.readState(
+          input.bindingId,
+          input.chatId,
+          input.beforeSequence,
+          p,
+          project,
         );
+        if (p && piEnabled(this.env, identity.accountId)) {
+          const scope = {
+            accountId: identity.accountId,
+            bindingId: p.bindingId,
+            chatId: state.thread?.id,
+            projectSource: projectSource(project) ?? null,
+            visible: state.messages
+              .filter((m) => !m.invalidated)
+              .flatMap((m) =>
+                m.role === "user" ? [m.id] : m.replyTo ? [m.replyTo] : [],
+              ),
+            authorizedMessages: state.thread
+              ? this.store.taskMessageIds(p.bindingId, state.thread.id)
+              : [],
+            memoryEpoch: state.memoryEpoch,
+          };
+          try {
+            const extra = await piCall(
+              this.env,
+              "state",
+              {
+                accountId: identity.accountId,
+                scope,
+                messages: state.messages,
+                modelProfileId:
+                  state.thread?.modelProfileId ?? this.models.defaultId,
+                model: piModel(
+                  this.models.configuration(
+                    state.thread?.modelProfileId ?? this.models.defaultId,
+                  ),
+                ),
+              },
+              AbortSignal.timeout(20000),
+            );
+            return json({
+              ...state,
+              ...extra,
+              provider: {
+                ...state.provider,
+                runtime: "Pi harness",
+                harness: true,
+              },
+            });
+          } catch {
+            return json({
+              ...state,
+              provider: {
+                ...state.provider,
+                runtime: "Pi harness",
+                harness: true,
+              },
+              harnessUnavailable:
+                "Pi 本机执行端暂时不可用，聊天记录仍保留；请恢复本机服务后继续。",
+            });
+          }
+        }
+        return json(state);
       }
       if (action === "new") {
+        if (!this.externalModelCatalog)
+          input.defaultProfileId = this.models.defaultId;
         const thread = this.ctx.storage.transactionSync(() =>
           this.store.createThread(input),
         );
-        if (this.env.PROJECT_SUMMARY_ENABLED === "true" && p)
-          await callExecutionHub(this.env, p, "project-initialize", {
-            bindingId: p.bindingId,
-            bindingRevision: p.bindingRevision,
-            requestId: `chat-init:${thread.id}`,
-            chatId: thread.id,
-          });
         return json(thread);
       }
       if (action === "send") {
         check(p, "请先选择已绑定的真实项目。", 409);
-        check(
-          !project ||
-            (project.ready && project.summary && projectSource(project)),
-          "项目摘要尚未准备好，请先完成第 7 步项目总结，或在失败后明确使用上次摘要。",
-          409,
-        );
+        if (!this.externalModelCatalog) {
+          input.defaultProfileId = this.models.defaultId;
+          if (input.modelProfileId)
+            this.models.requireConfigured(input.modelProfileId);
+        }
         const result = this.ctx.storage.transactionSync(() => {
+          if (input.retryOf) {
+            const failed = this.store.getJob(input.retryOf);
+            const original = failed && this.authorization(failed.userMessageId);
+            check(
+              failed?.chatId === input.chatId &&
+                original?.identity.accountId === identity.accountId &&
+                canonicalJson(original.principal) === canonicalJson(p) &&
+                (!project ||
+                  sameProjectSource(original.project, projectSource(project))),
+              "原消息的项目授权或摘要已变化，请重新发送。",
+              409,
+            );
+          }
           const created = this.store.beginMessage({
             ...input,
             project: projectSource(project),
@@ -457,9 +674,16 @@ export class AgentChatRouter extends DurableObject<Env> {
             JSON.stringify({
               identity,
               principal: p,
+              ...(input.taskReply ? { taskReply: input.taskReply } : {}),
               ...(project ? { project: projectSource(project) } : {}),
             }),
           );
+          if (input.retryOf)
+            this.ctx.storage.sql.exec(
+              "UPDATE agent_chat_authorizations SET value=json_set(value,'$.identity',json(?)) WHERE user_message_id=?",
+              JSON.stringify(identity),
+              created.message.id,
+            );
           return created;
         });
         await this.schedule();
@@ -469,13 +693,63 @@ export class AgentChatRouter extends DurableObject<Env> {
       if (action === "memory") {
         const memory = this.ctx.storage.transactionSync(() => {
           const { action: operation, ...fields } = input;
-          return operation === "save"
-            ? this.store.saveMemory(fields)
-            : this.store.deleteMemory(fields);
+          if (operation === "save") return this.store.saveMemory(fields);
+          const previous = this.store
+            .listMemories(fields.bindingId || "")
+            .find((memory) => memory.id === fields.id);
+          const deleted = this.store.deleteMemory(fields);
+          if (previous) this.retention.suppress(previous);
+          return deleted;
         });
         return json({
           memory,
           memories: this.store.listMemories(input.bindingId ?? ""),
+          memoryEpoch: this.store.getMemoryEpoch(),
+        });
+      }
+      if (action === "retention") {
+        const job = input.jobId ? this.retention.get(input.jobId) : null;
+        if (input.action !== "settings") {
+          check(
+            p && job?.bindingId === p.bindingId,
+            "沉淀记录不属于当前项目。",
+            403,
+          );
+          if (["adopt", "retry"].includes(input.action))
+            await this.retentionSource(job!);
+        }
+        const result = this.ctx.storage.transactionSync(() =>
+          this.retention.receipt(input.requestId, input, () => {
+            if (input.action === "settings")
+              this.retention.updateSettings(input.mode, input.expectedRevision);
+            else if (input.action === "adopt")
+              this.retention.adopt(job!, input.index, this.store, input);
+            else if (input.action === "retry") {
+              check(
+                job!.status === "failed" && job!.attempts < 2,
+                "这次复盘无法再次重试。",
+                409,
+              );
+              job!.status = "queued";
+              delete job!.error;
+              this.retention.save(job!);
+            } else
+              this.retention.dismiss(
+                job!,
+                input.index,
+                this.store,
+                input.action === "undo",
+              );
+            return { ok: true };
+          }),
+        );
+        await this.schedule();
+        return json({
+          ...result,
+          retention: this.retention.view(input.bindingId),
+          memories: this.retention.decorate(
+            this.store.listMemories(input.bindingId || ""),
+          ),
           memoryEpoch: this.store.getMemoryEpoch(),
         });
       }
@@ -679,11 +953,201 @@ export class AgentChatRouter extends DurableObject<Env> {
       throw error;
     }
   }
-  protected generate(
+  async piScope(identity: Identity, bindingId?: string, chatId?: string) {
+    await this.identity(identity);
+    check(
+      piEnabled(this.env, identity.accountId),
+      "当前账号未启用本机 Pi。",
+      403,
+    );
+    if (chatId) {
+      const row = this.ctx.storage.sql
+        .exec<{ binding_id: string }>(
+          "SELECT binding_id FROM agent_chat_threads WHERE id=?",
+          chatId,
+        )
+        .toArray()[0];
+      check(
+        row && (!bindingId || row.binding_id === bindingId),
+        "聊天不属于该项目。",
+        403,
+      );
+      bindingId = row.binding_id;
+    }
+    if (bindingId)
+      await bindingPrincipal(this.env, identity.accountId, bindingId);
+    const visible =
+      bindingId && chatId ? this.store.taskMessageIds(bindingId, chatId) : [];
+    return {
+      accountId: identity.accountId,
+      bindingId,
+      chatId,
+      memoryEpoch: this.store.getMemoryEpoch(),
+      visible,
+      authorizedMessages: visible,
+    };
+  }
+  async piScopeResult(identity: Identity, bindingId?: string, chatId?: string) {
+    try {
+      return { scope: await this.piScope(identity, bindingId, chatId) };
+    } catch (error) {
+      return {
+        error:
+          error instanceof HttpError ? error.message : "暂时无法核实项目权限。",
+        status: error instanceof HttpError ? error.status : 503,
+      };
+    }
+  }
+  async piContextResult(jobId: string) {
+    try {
+      return { context: await this.piContext(jobId) };
+    } catch (error) {
+      return {
+        error:
+          error instanceof HttpError ? error.message : "暂时无法核实原任务。",
+        status: error instanceof HttpError ? error.status : 503,
+      };
+    }
+  }
+  async piContext(jobId: string) {
+    const owner = this.env.LOCAL_PI_OWNER;
+    check(
+      piEnabled(this.env, owner) &&
+        this.ctx.id.equals(this.env.AGENT_CHATS.idFromName(owner!)),
+      "Pi 账号不匹配。",
+      403,
+    );
+    const job = this.store.getJob(jobId);
+    check(
+      job && job.status !== "cancelled" && job.status !== "stale",
+      "原聊天任务已停止或失效。",
+      409,
+    );
+    const auth = this.authorization(job.userMessageId);
+    check(
+      auth && auth.identity.accountId === owner,
+      "原任务不属于此 Pi 账号。",
+      403,
+    );
+    await this.identity(auth.identity);
+    await authorizeExecution(this.env, auth.principal);
+    check(
+      this.store.getMemoryEpoch() === job.memoryEpoch,
+      "任务引用的记忆已变化。",
+      409,
+    );
+    const project = await this.projectContext(auth.principal);
+    check(
+      !auth.project ||
+        (project?.ready &&
+          sameProjectSource(auth.project, projectSource(project))),
+      "项目摘要已变化，请重新发送。",
+      409,
+    );
+    const context = buildChatContext(this.store, {
+      bindingId: job.bindingId,
+      chatId: job.chatId,
+      currentMessageId: job.userMessageId,
+      project: auth.project ? project : undefined,
+    });
+    const visible = context.provenance.messageIds.flatMap((id) => {
+      const m = this.store.readMessage(job.bindingId, job.chatId, id);
+      return m && !m.invalidated
+        ? m.role === "user"
+          ? [m.id]
+          : m.replyTo
+            ? [m.replyTo]
+            : []
+        : [];
+    });
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pi_main_sessions(chat TEXT PRIMARY KEY, session TEXT NOT NULL)",
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO pi_main_sessions VALUES(?,?)",
+      job.chatId,
+      crypto.randomUUID(),
+    );
+    const sessionId = this.ctx.storage.sql
+      .exec<{ session: string }>(
+        "SELECT session FROM pi_main_sessions WHERE chat=?",
+        job.chatId,
+      )
+      .one().session;
+    const taskReply = (auth as Authorization & { taskReply?: unknown })
+      .taskReply;
+    return {
+      jobId,
+      sessionId,
+      modelProfileId: job.modelProfileId ?? "xingchi",
+      model: piModel(
+        this.models.configuration(job.modelProfileId ?? "xingchi"),
+      ),
+      scope: {
+        accountId: owner,
+        bindingId: job.bindingId,
+        chatId: job.chatId,
+        userMessageId: job.userMessageId,
+        grantJobId: jobId,
+        visible,
+        authorizedMessages: this.store.taskMessageIds(
+          job.bindingId,
+          job.chatId,
+        ),
+        memoryEpoch: job.memoryEpoch,
+        projectSource: auth.project ?? null,
+        retry: !!job.retryOf,
+      },
+      input: {
+        ...chatInput(context.messages.at(-1)!.content, context.background),
+        ...(taskReply ? { taskReply } : {}),
+      },
+    };
+  }
+  protected async generate(
     context: Parameters<typeof generateChatReply>[1],
     options: ChatGenerationOptions = {},
-  ) {
-    return generateChatReply(this.env, context, fetch, options);
+    turn?: {
+      job: ChatJob;
+      accountId: string;
+      messageIds: string[];
+      background: ReturnType<typeof buildChatContext>["background"];
+    },
+  ): Promise<
+    Awaited<ReturnType<typeof generateChatReply>> & { retention?: unknown }
+  > {
+    if (turn && piEnabled(this.env, turn.accountId)) {
+      const result = await piCall(
+        this.env,
+        "turn",
+        await this.piContext(turn.job.id),
+        AbortSignal.any([
+          ...(options.signal ? [options.signal] : []),
+          AbortSignal.timeout(575000),
+        ]),
+      );
+      return {
+        reply: agentReplySchema.parse({
+          text: result.text,
+          tasks: result.tasks || [],
+          memories: result.memories || [],
+        }),
+        retention: result.retention,
+      };
+    }
+    const configuration = this.models.configuration(
+      turn?.job.modelProfileId ?? "xingchi",
+    );
+    return generateChatReply(configuration, context, fetch, options);
+  }
+  protected get chatLeaseMs() {
+    return piEnabled(this.env, this.env.LOCAL_PI_OWNER) ? 600000 : 60000;
+  }
+  protected get supportsModelSelection() {
+    return true;
+  }
+  protected get externalModelCatalog() {
+    return false;
   }
   private launch(jobId: string) {
     if (this.running.has(jobId)) return;
@@ -709,8 +1173,8 @@ export class AgentChatRouter extends DurableObject<Env> {
       await authorizeExecution(this.env, auth.principal);
       const project = await this.projectContext(auth.principal);
       check(
-        !project ||
-          (project.ready &&
+        !auth.project ||
+          (project?.ready &&
             project.summary &&
             projectSource(project) &&
             sameProjectSource(auth.project, projectSource(project))),
@@ -718,13 +1182,17 @@ export class AgentChatRouter extends DurableObject<Env> {
         409,
       );
       const context = this.ctx.storage.transactionSync(() => {
-        claimed = this.store.claimJob(jobId, initial.revision, 60000);
+        claimed = this.store.claimJob(
+          jobId,
+          initial.revision,
+          this.chatLeaseMs,
+        );
         if (!claimed) return null;
         return buildChatContext(this.store, {
           bindingId: claimed.bindingId,
           chatId: claimed.chatId,
           currentMessageId: claimed.userMessageId,
-          project,
+          project: auth.project ? project : undefined,
         });
       });
       if (!claimed || !context) return;
@@ -744,6 +1212,12 @@ export class AgentChatRouter extends DurableObject<Env> {
             if (!current) controller.abort();
           },
         },
+        {
+          job: active,
+          accountId: auth.identity.accountId,
+          messageIds: context.provenance.messageIds,
+          background: context.background,
+        },
       );
       const current = this.store.getJob(jobId);
       if (
@@ -756,7 +1230,7 @@ export class AgentChatRouter extends DurableObject<Env> {
       await authorizeExecution(this.env, auth.principal);
       const latestProject = await this.projectContext(auth.principal);
       check(
-        !project ||
+        !auth.project ||
           (latestProject?.ready &&
             sameProjectSource(
               projectSource(project),
@@ -781,6 +1255,8 @@ export class AgentChatRouter extends DurableObject<Env> {
             result.usage.outputTokens,
           );
       });
+      if (result.retention)
+        await this.acceptRetention(result.retention).catch(() => {});
     } catch (error) {
       this.ctx.storage.transactionSync(() => {
         const current = this.store.getJob(jobId);
@@ -807,7 +1283,8 @@ export class AgentChatRouter extends DurableObject<Env> {
   }
   private async schedule() {
     const jobs = this.store.listPendingJobs();
-    if (!jobs.length) {
+    const pendingRetention = this.retention.pending();
+    if (!jobs.length && !pendingRetention.length) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
@@ -820,6 +1297,9 @@ export class AgentChatRouter extends DurableObject<Env> {
               ? Date.now() + 1000
               : (j.leaseUntil ?? Date.now() + 60000),
           ),
+          ...(pendingRetention.length
+            ? [Date.now() + (jobs.length ? 30000 : 2500)]
+            : []),
         ),
       ),
     );
@@ -836,6 +1316,306 @@ export class AgentChatRouter extends DurableObject<Env> {
         );
       else if (job.status === "queued") this.launch(job.id);
     }
+    if (!this.retentionRunning && !this.store.listPendingJobs().length) {
+      this.retentionRunning = this.processRetention().finally(() => {
+        this.retentionRunning = undefined;
+      });
+      await this.retentionRunning;
+    }
     await this.schedule();
+  }
+  private async retentionSource(job: RetentionJob) {
+    if (job.origin?.kind === "execution") {
+      const p = job.origin.principal;
+      check(
+        p.bindingId === job.bindingId &&
+          this.ctx.id.equals(this.env.AGENT_CHATS.idFromName(p.ownerId)),
+        "执行复盘不属于当前账号或项目。",
+        403,
+      );
+      await authorizeExecution(this.env, p);
+      return {
+        source: { status: "succeeded" },
+        auth: {
+          identity: { accountId: p.ownerId, sessionHash: "" },
+          principal: p,
+        },
+      };
+    }
+    const source = this.store.getJob(job.sourceJobId);
+    const auth = source && this.authorization(source.userMessageId);
+    check(
+      source &&
+        auth &&
+        source.bindingId === job.bindingId &&
+        source.chatId === job.chatId &&
+        !["cancelled", "stale"].includes(source.status),
+      "原任务已停止或上下文已失效。",
+      409,
+    );
+    await this.identity(auth.identity);
+    await authorizeExecution(this.env, auth.principal);
+    const visible = new Set(
+      this.store.taskMessageIds(job.bindingId, job.chatId),
+    );
+    check(
+      job.report.messageIds.every((id) => visible.has(id)),
+      "任务引用的消息已被删除或失效。",
+      409,
+    );
+    return { source, auth };
+  }
+  private async acceptRetention(value: unknown) {
+    const report = retentionReportSchema.parse(value);
+    check(
+      !retentionHasSecrets(JSON.stringify(report)),
+      "复盘材料包含不应保存的凭据。",
+      409,
+    );
+    const source = this.store.getJob(report.jobId);
+    check(
+      source && !["cancelled", "stale", "failed"].includes(source.status),
+      "原任务已停止或失效。",
+      409,
+    );
+    const auth = this.authorization(source.userMessageId);
+    check(
+      auth && report.messageIds.includes(source.userMessageId),
+      "复盘来源无效。",
+      409,
+    );
+    await this.identity(auth.identity);
+    await authorizeExecution(this.env, auth.principal);
+    const visible = new Set(
+      this.store.taskMessageIds(source.bindingId, source.chatId),
+    );
+    check(
+      report.messageIds.every((id) => visible.has(id)),
+      "复盘来源不属于当前任务。",
+      409,
+    );
+    const users = report.messageIds.flatMap((id) => {
+      const m = this.store.contextMessage(source.bindingId, source.chatId, id);
+      return m?.role === "user"
+        ? [
+            {
+              id,
+              text: retentionHasSecrets(m.text)
+                ? "[含凭据的输入已从复盘排除]"
+                : m.text.slice(0, 12000),
+            },
+          ]
+        : [];
+    });
+    this.ctx.storage.transactionSync(() =>
+      this.retention.enqueue({
+        bindingId: source.bindingId,
+        chatId: source.chatId,
+        sourceJobId: source.id,
+        modelProfileId: source.modelProfileId || this.models.defaultId,
+        memoryEpoch: this.store.getMemoryEpoch(),
+        report,
+        users,
+      }),
+    );
+    await this.schedule();
+    return { ok: true };
+  }
+  async piRetentionResult(value: unknown) {
+    try {
+      check(
+        piEnabled(this.env, this.env.LOCAL_PI_OWNER) &&
+          this.ctx.id.equals(
+            this.env.AGENT_CHATS.idFromName(this.env.LOCAL_PI_OWNER!),
+          ),
+        "Pi 账号不匹配。",
+        403,
+      );
+      return await this.acceptRetention(value);
+    } catch (error) {
+      return {
+        error: error instanceof HttpError ? error.message : "复盘材料无效。",
+        status: error instanceof HttpError ? error.status : 400,
+      };
+    }
+  }
+  async executionRetentionResult(value: {
+    principal: ExecutionPrincipal;
+    report: unknown;
+  }) {
+    try {
+      const p = value.principal;
+      check(
+        p && this.ctx.id.equals(this.env.AGENT_CHATS.idFromName(p.ownerId)),
+        "执行复盘账号不匹配。",
+        403,
+      );
+      await authorizeExecution(this.env, p);
+      const report = retentionReportSchema.parse(value.report);
+      check(
+        report.taskId.startsWith("execution:") &&
+          !retentionHasSecrets(JSON.stringify(report)),
+        "执行复盘材料无效。",
+        400,
+      );
+      this.ctx.storage.transactionSync(() =>
+        this.retention.enqueue({
+          bindingId: p.bindingId,
+          chatId: "",
+          sourceJobId: report.jobId,
+          origin: { kind: "execution", principal: p },
+          modelProfileId:
+            this.store.listThreads(p.bindingId)[0]?.modelProfileId ||
+            this.models.defaultId,
+          memoryEpoch: this.store.getMemoryEpoch(),
+          report,
+          users: [],
+        }),
+      );
+      await this.schedule();
+      return { ok: true };
+    } catch (error) {
+      return {
+        error:
+          error instanceof HttpError ? error.message : "执行复盘材料无效。",
+        status: error instanceof HttpError ? error.status : 400,
+      };
+    }
+  }
+  private async processRetention() {
+    const job = this.retention.pending()[0];
+    if (!job) return;
+    try {
+      const { source, auth } = await this.retentionSource(job);
+      if (
+        ["queued", "running"].includes(source.status) ||
+        this.store.listPendingJobs().length
+      )
+        return;
+      check(
+        source.status === "succeeded",
+        "原任务未完成验收，本次复盘已停止。",
+        409,
+      );
+      if (job.status === "reviewing")
+        throw Error("上次复盘中断；可手动重试，不会自动重复调用模型。");
+      if (!(await this.retentionIdle(auth.identity.accountId))) return;
+      if (job.status === "queued") {
+        job.status = "reviewing";
+        job.attempts++;
+        job.memoryEpoch = this.store.getMemoryEpoch();
+        this.retention.save(job);
+        const result = await generateChatReply(
+          this.models.configuration(job.modelProfileId),
+          {
+            instructions: retentionInstructions,
+            messages: [
+              {
+                role: "user",
+                content: JSON.stringify(
+                  retentionContext(
+                    job.report,
+                    job.users,
+                    this.store.listMemories(job.bindingId),
+                  ),
+                ),
+              },
+            ],
+          },
+          fetch,
+          { signal: AbortSignal.timeout(30000), maxOutputTokens: 2400 },
+        );
+        if (this.retention.get(job.id)?.status !== "reviewing") return;
+        await this.retentionSource(job);
+        check(
+          job.memoryEpoch === this.store.getMemoryEpoch(),
+          "记忆已变化，本次复盘结果未写入。",
+          409,
+        );
+        const output = retentionOutputSchema.parse(
+          JSON.parse(result.reply.text),
+        );
+        this.retention.prepare(job, output.candidates, this.store);
+      }
+      if (
+        job.status === "awaiting_commit" &&
+        !this.store.listPendingJobs().length
+      ) {
+        await this.retentionSource(job);
+        if (!(await this.retentionIdle(auth.identity.accountId))) return;
+        check(
+          job.memoryEpoch === this.store.getMemoryEpoch(),
+          "记忆已变化，本次复盘结果未写入。",
+          409,
+        );
+        // No await between the final idle check and the atomic memory changes.
+        this.ctx.storage.transactionSync(() => {
+          if (!this.store.listPendingJobs().length)
+            this.retention.commit(structuredClone(job), this.store);
+        });
+      }
+    } catch (error) {
+      if (this.retention.get(job.id)?.status === "skipped") return;
+      job.status = "failed";
+      job.error =
+        error instanceof ChatModelError || error instanceof HttpError
+          ? error.message
+          : "任务后复盘未完成，原任务结果不受影响。";
+      this.retention.save(job);
+    }
+  }
+  private async retentionIdle(accountId: string) {
+    if (await runtimeAdmissionsPaused(this.env)) return false;
+    if (this.store.listPendingJobs().length) return false;
+    const native = await this.env.DB.prepare(
+      "SELECT 1 FROM agent_workspace_leases l JOIN agent_devices d ON d.runner_id=l.runner_id WHERE d.owner_id=? AND l.expires_at>? LIMIT 1",
+    )
+      .bind(accountId, Date.now())
+      .first();
+    if (native) return false;
+    if (piEnabled(this.env, accountId)) {
+      try {
+        const activity = await piCall(
+          this.env,
+          "retention-activity",
+          { accountId, memoryEpoch: this.store.getMemoryEpoch() },
+          AbortSignal.timeout(5000),
+        );
+        if (activity.busy !== false) return false;
+      } catch {
+        return false;
+      }
+    }
+    return !this.store.listPendingJobs().length;
+  }
+  async runtimeActivityResult(secret: string) {
+    check(
+      !!this.env.RUNTIME_CONTROL_SECRET &&
+        secret === this.env.RUNTIME_CONTROL_SECRET &&
+        ["local", "test"].includes(this.env.APP_ENV),
+      "本机维护身份无效。",
+      403,
+    );
+    await this.ctx.storage.sync();
+    return {
+      tasks: [
+        ...this.store
+          .listPendingJobs()
+          .map((job) => ({
+            id: job.id,
+            label: "主聊天任务",
+            status: job.status,
+          })),
+        ...this.retention
+          .pending()
+          .filter((job) => job.status === "reviewing")
+          .map((job) => ({
+            id: job.id,
+            label: "任务后复盘",
+            status: job.status,
+          })),
+      ],
+      unknown: [] as string[],
+    };
   }
 }

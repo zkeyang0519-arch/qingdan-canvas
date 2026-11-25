@@ -169,12 +169,21 @@ test("formal workspace scopes every panel to the selected project and preserves 
     "a",
   );
   const chat = document.querySelector("[data-chat]");
+  await click(button("短片制作"));
+  assert.equal(
+    document.querySelector(".agent-workspace-columns").dataset.pane,
+    "film",
+  );
+  assert.equal(document.querySelector("[data-chat]"), chat);
   await click(button("待办与执行"));
   await click(button("项目聊天"));
   assert.equal(document.querySelector("[data-chat]"), chat);
-  await click(button("打开记忆"));
+  await click(button("打开项目资料"));
   assert.equal(document.querySelector("[data-chat]"), chat);
-  assert.match(document.body.textContent, /记忆已打开/);
+  assert.equal(
+    document.querySelector(".agent-workspace-columns").dataset.pane,
+    "summary",
+  );
   await click(button("选择项目：项目乙"));
   assert.equal(document.querySelector("[data-chat]").dataset.chat, "b");
   assert.equal(

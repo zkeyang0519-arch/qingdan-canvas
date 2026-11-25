@@ -4,10 +4,10 @@ const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
-function settingsDirectory(appData) {
+function settingsDirectory(appData, channel = "stable") {
   if (typeof appData !== "string" || !path.isAbsolute(appData))
     throw new Error("无法确定轻岛用户数据目录。");
-  return path.join(appData, "Qingdao");
+  return path.join(appData, channel === "beta" ? "QingdaoBeta" : "Qingdao");
 }
 
 function validateProfile(profile) {
@@ -21,9 +21,9 @@ function validateProfile(profile) {
   return path.resolve(profile);
 }
 
-function readRegisteredProfile({ appData, fsImpl = fs }) {
+function readRegisteredProfile({ appData, fsImpl = fs, channel = "stable" }) {
   const pointer = path.join(
-    settingsDirectory(appData),
+    settingsDirectory(appData, channel),
     "profile-location.json",
   );
   if (!fsImpl.existsSync(pointer)) return null;
@@ -45,12 +45,17 @@ function readRegisteredProfile({ appData, fsImpl = fs }) {
 // Keep Chromium's complete profile in place, including its encryption metadata.
 // Never copy Cookies/IndexedDB while another version may still have it open.
 // Registration contains a local directory only; it cannot select an executable.
-function registerDesktopProfile({ appData, profile, fsImpl = fs }) {
-  const existing = readRegisteredProfile({ appData, fsImpl });
+function registerDesktopProfile({
+  appData,
+  profile,
+  fsImpl = fs,
+  channel = "stable",
+}) {
+  const existing = readRegisteredProfile({ appData, fsImpl, channel });
   if (existing) return existing;
   const selected = validateProfile(profile);
   fsImpl.mkdirSync(selected, { recursive: true });
-  const directory = settingsDirectory(appData);
+  const directory = settingsDirectory(appData, channel);
   fsImpl.mkdirSync(directory, { recursive: true });
   const pointer = path.join(directory, "profile-location.json");
   try {
@@ -61,7 +66,7 @@ function registerDesktopProfile({ appData, profile, fsImpl = fs }) {
     );
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    return readRegisteredProfile({ appData, fsImpl });
+    return readRegisteredProfile({ appData, fsImpl, channel });
   }
   return selected;
 }
@@ -72,9 +77,20 @@ function resolveDesktopProfile({
   appData,
   env = process.env,
   fsImpl = fs,
+  channel = "stable",
 }) {
   if (env.QINGDAN_DESKTOP_PROFILE)
     return validateProfile(path.resolve(env.QINGDAN_DESKTOP_PROFILE));
+  if (channel === "beta")
+    return (
+      readRegisteredProfile({ appData, fsImpl, channel }) ||
+      registerDesktopProfile({
+        appData,
+        fsImpl,
+        channel,
+        profile: path.join(settingsDirectory(appData, channel), "profile"),
+      })
+    );
   const legacy =
     projectRoot && path.join(projectRoot, ".tmp", "desktop-profile");
   // Explicitly isolated dev/test environments need no global registration.

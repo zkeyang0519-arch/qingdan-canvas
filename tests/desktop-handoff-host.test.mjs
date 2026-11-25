@@ -18,6 +18,7 @@ async function fixture(t, { packaged = false } = {}) {
   const electron = {
     app: {
       isPackaged: packaged,
+      getVersion: () => "0.3.11",
       setPath() {},
       setName() {},
       requestSingleInstanceLock: () => false,
