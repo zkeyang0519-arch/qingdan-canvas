@@ -2,7 +2,7 @@
 
 这是独立的 React + Cloudflare Workers 项目，不是 `cloudflare-docs` 文档站点。
 
-- 工作目录：`D:/TODO/qingdan-canvas`。不要修改父目录原项目。
+- 工作目录：本仓库根目录（原开发机为 `D:/TODO/qingdan-canvas`）。不要修改父目录中的其他项目。维护交接从 `docs/MAINTAINER-HANDOFF.md` 开始阅读。
 - 仅保留 `feat/qingdan-mcp`（Agent 日常开发）和 `main`（生产）两个分支。默认在 `feat/qingdan-mcp` 继续开发、验证，再按用户授权合入 `main`；保留现有分支名称，除非用户另有要求，不新建功能分支。
 - 包管理器：npm；Node.js >= 24。`npm ci` 安装。
 - 开发：`npm run dev`（Node.js 24+；自动构建网页和 Runner、迁移本地 D1，同时启动 127.0.0.1:8788 网页服务与 127.0.0.1:8790 Agent 入口）。

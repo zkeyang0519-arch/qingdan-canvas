@@ -2,6 +2,8 @@
 
 从 `D:/TODO` 提取的独立画布项目。保留原来的便签、清单、图片编辑、灵感板和收纳，新增邀请加入、实时协作、在线成员、冲突处理和断线恢复。原项目和原浏览器数据库未修改。
 
+维护者交接请先阅读 [接手指南与交接事项](docs/MAINTAINER-HANDOFF.md)，再查看 [2026-11-27 改动清单](docs/handoff/2026-11-27-changes.md)。开发分支的实现与本机验证不代表已经发布到网站或桌面安装包。
+
 ## 本地运行
 
 本机开发需要 Node.js 24 或以上，以及与 `runner/protocol-version.json` 一致的 Codex CLI。
@@ -78,15 +80,17 @@ npm run dev
 
 ## Agent / MCP 接入
 
-本机 Pi 聊天可接入第三方 MCP 服务。运行 `npm run dev:pi`，打开启动器列出的「打开轻单.html」，在项目聊天输入框旁选择 **工具 → 添加 MCP**。填入 Streamable HTTP 地址，按服务要求使用网页登录或 Bearer Token，再勾选本项目要使用的工具。勾选从下一条消息生效。在「我的项目」切换项目可以分别选择工具。回复下方的调用记录可展开查看服务、工具和结果。
+本机主聊天随 `npm run dev` 从 8790 入口接入 Pi，`npm run dev:pi` 保留为独立试用入口。在设置的工具与 Agent 中添加 Streamable HTTP MCP，按服务要求使用网页登录或 Bearer Token。普通 MCP 按项目选择工具；WAAO 只保留服务级开关，工具自动发现并按需加载。回复下方的调用记录可展开查看服务、工具和结果。
 
 **工具 → Codex** 使用轻单内置的 stdio MCP 服务调用本机 `codex app-server`。它沿用本机 Codex 登录。勾选「新建 Codex 对话」和「继续 Codex 对话」后，可以说「问 Codex，这段代码怎么改」，再说「继续问 Codex，给一个例子」。每个项目使用独立的只读工作区，续聊只使用当前轻单聊天中的 Codex 记录。连接异常时点击「测试连接」查看原因。[OpenAI 接口迁移说明](https://learn.chatgpt.com/docs/mcp-server)
 
-**工具 → WAAO** 使用官网 `https://www.waao.studio/api/mcp`。可在工具卡片选择独立官网连接，或复用本机 Codex 已配置的 WAAO 连接。连接来源会保存；独立连接需要自己的 WAAO 授权，Codex 托管凭据不会被导出。已有生成任务继续使用原连接核对回执。选用「项目查询工具」后，可以在聊天里说「列出我在 WAAO 的项目」。短片制作同样遵循当前项目已勾选的工具。[WAAO 项目页](https://www.waao.studio/projects)
+**工具 → WAAO** 使用官网 `https://www.waao.studio/api/mcp`，通过轻单自己的授权连接，不复用 Codex 的 MCP 或 OAuth 凭据。授权后由 WAAO `account_get` 核验账号及客户端，再开启「在当前项目使用 WAAO」。组织、项目、预算和具体操作权限由 WAAO 决定；旧任务沿用原回执，不能换连接重复提交。主入口和独立试用入口的 OAuth 回调与凭据分别保存。[WAAO 项目页](https://www.waao.studio/projects)
 
 本机连接器自动检测 Codex 协议兼容性；明确的字段变化可由独立 Pi 维护会话提出适配，经固定验证器通过后启用，支持版本回滚和原调用恢复。工具面板区分连接、项目启用和实际调用验证状态。自动适配范围、维护预算与回执恢复规则见[连接器自动维护](docs/agent-connector-maintenance.md)。
 
 主聊天已接入持续任务 Harness：记录目标和信息缺口、读取资料、发现与加载工具、组合已有能力、提问后恢复，并按实际证据验收。原账号、会话、模型选择和项目 MCP 勾选继续沿用。已配置的主入口随 `npm run dev` 启动 Pi；`npm run dev:pi` 保留为独立试用。WAAO 等待任务会查询原回执，就绪后自动继续；任务卡片支持回答和停止。预算和支持范围见[任务 Harness](docs/agent-task-harness.md)。
+
+自建主模型连接支持在「设置 → 对话模型 → 管理连接」编辑或删除。密钥留空保留，修改目标域名时需新密钥或明确选择沿用。修改同步相关聊天的后续请求，运行中的请求保持原配置；删除保留聊天记录并要求重新选择模型。任务卡保留已完成状态，累计预算仍为不限。实模小样本已确认输入消耗下降，但多步计划自动纠错尚未完善，不能把提前停止当作降耗成功。
 
 Router 第 1 步已实现共享任务规则：执行要求、验收条件、依赖校验、稳定排序、手工顺序校验与时区转换。运行 `npm run test:agent` 验证，详细字段、接口和范围见 [任务规则说明](docs/agent-task-rules.md)。本步骤尚未接入真实清单或网页操作入口，后续按 [实施计划](docs/superpowers/plans/2026-11-03-qingdan-router.md) 继续。
 
