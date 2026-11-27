@@ -2095,7 +2095,7 @@ test("旧桌面布局与普通页面不读取或写入双岛外观设置", async
   assert.equal(localStorage.getItem(islandAppearanceKey), "{unreadable");
 });
 
-test("双舱下方的设置弹窗保留草稿，历史版本只预览，检查更新走桌面接口", async (t) => {
+test("双舱设置保留外观、尺寸、服务与更新，移除历史预览且不丢草稿", async (t) => {
   const { host, controls, calls } = await mount(t, {
     desktop: true,
     supportsTwinIsland: true,
@@ -2117,22 +2117,12 @@ test("双舱下方的设置弹窗保留草稿，历史版本只预览，检查�
     assert.equal(host.querySelector(".island-twin-header").hidden, false);
     assert.equal(host.querySelector(".island-tasks-view").hidden, true);
     assert.equal(document.activeElement, button(host, "返回待办列表"));
-    const menu = dialog.querySelector(".island-release-menu");
-    await click(menu.querySelector("summary"));
-    const options = [...menu.querySelectorAll("button")];
-    assert.equal(options.length, 6);
-    for (const option of options) {
-      assert.match(
-        option.querySelector("img").getAttribute("src"),
-        /^\/island-releases\/v0\.3\.[1-6]\.jpg$/,
-      );
-    }
-    await click(button(host, "预览轻岛 v0.3.1"));
-    assert.equal(menu.open, false);
-    assert.equal(
-      dialog.querySelector(".island-release-preview img").getAttribute("alt"),
-      "轻岛 v0.3.1 外观预览",
-    );
+    assert.equal(dialog.querySelector(".island-release-menu"), null);
+    assert.doesNotMatch(dialog.textContent, /历史版本|外观预览/);
+    for (const name of ["四季像素庭院", "四季草地", "清透玻璃", "色块流动"])
+      assert.ok(button(host, name));
+    assert.ok(dialog.querySelector('[aria-label="小舱色值"]'));
+    assert.match(dialog.textContent, /版本更新/);
     assert.equal(localStorage.getItem(islandAppearanceKey), appearanceBefore);
     assert.equal(controls.state(), initial);
     await click(button(host, "检查更新"));

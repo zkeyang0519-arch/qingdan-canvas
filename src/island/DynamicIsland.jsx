@@ -917,7 +917,7 @@ export default function DynamicIsland({
                   aria-haspopup="dialog"
                   aria-expanded={settingsOpen}
                   aria-controls={panelId}
-                  title="外观、更新与历史版本"
+                  title="外观、本地服务与更新"
                   hidden={settingsOpen}
                   onClick={() => {
                     clearTimers();

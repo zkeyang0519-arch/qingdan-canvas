@@ -14,6 +14,10 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { randomUUID } = require("node:crypto");
 const { createUpdateController } = require("./updates.cjs");
+const { createWorkspaceOpener } = require("./workspace-opener.cjs");
+const openWorkspace = createWorkspaceOpener({
+  openExternal: (url) => shell.openExternal(url),
+});
 const {
   createManagedLocalService,
   atomicJson,
@@ -785,7 +789,7 @@ async function failurePage() {
   const previousLayout = layout;
   unavailable = true;
   resize(validateLayout({ mode: "setup" }));
-  const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>启动轻单服务</title><style>body{margin:0;background:#f4f4ee;color:#26352a;font:16px/1.7 'Microsoft YaHei',sans-serif}header{padding:18px 24px;background:#e7ebe1;app-region:drag;user-select:none}main{max-width:600px;margin:70px auto;padding:30px}code{display:block;padding:15px;background:#e1e7dc;border-radius:12px}a{display:inline-block;color:white;background:#435d40;padding:10px 24px;border-radius:24px;text-decoration:none}small{display:block;margin-top:26px;color:#60705f}</style><header>轻岛</header><main><h1>先开启轻单服务</h1><p>桌面窗口暂时无法连接本机轻单。在项目终端运行：</p><code>npm run dev</code><p>等服务启动完成后，点击重新连接。</p><a href="${escapeHtml(application)}">重新连接</a><small>隐藏、重试或退出也可使用系统托盘里的轻岛图标。</small></main></html>`;
+  const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><title>重新连接轻单</title><style>body{margin:0;background:#f4f4ee;color:#26352a;font:16px/1.7 'Microsoft YaHei',sans-serif}header{padding:18px 24px;background:#e7ebe1;app-region:drag;user-select:none}main{max-width:600px;margin:70px auto;padding:30px}a{display:inline-block;color:white;background:#435d40;padding:10px 24px;border-radius:24px;text-decoration:none;margin-right:12px}a.secondary{color:#435d40;background:#e1e7dc}small{display:block;margin-top:26px;color:#60705f}</style><header>轻岛</header><main><h1>暂时无法打开轻单</h1><p>请检查网络或本地服务后重新连接。如果更新后仍无法打开，可以重新下载安装包修复。</p><a href="${escapeHtml(application)}">重新连接</a><a class="secondary" href="https://todo.zky.lol/download/" target="_blank" rel="noreferrer">修复安装</a><small>隐藏、重试或退出也可使用系统托盘里的轻岛图标。</small></main></html>`;
   try {
     await window.loadURL(
       "data:text/html;charset=utf-8," + encodeURIComponent(html),
@@ -857,7 +861,8 @@ async function createWindow({ handoff = false } = {}) {
       partition: "persist:qingdan-desktop",
       spellcheck: false,
       additionalArguments: [
-        `--qingdan-origin=${new URL(localApplication).origin}`,
+        `--qingdan-origin=${new URL(application).origin}`,
+        `--qingdan-allow-origin=${new URL(localApplication).origin}`,
         `--qingdan-allow-origin=${new URL(legacyHandoffApplication).origin}`,
         ...[...desktopOnlineOrigins()].map(
           (origin) => `--qingdan-allow-origin=${origin}`,
@@ -877,7 +882,11 @@ async function createWindow({ handoff = false } = {}) {
     (_wc, _permission, callback) => callback(false),
   );
   window.webContents.session.setPermissionCheckHandler(() => false);
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (url === "https://todo.zky.lol/download/")
+      void shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
   window.webContents.on("will-navigate", (event, url) => {
     if (!isTrustedPage(url, application)) event.preventDefault();
     else unavailable = false;
@@ -1030,6 +1039,15 @@ async function createWindow({ handoff = false } = {}) {
   if (updateQa && nativeUpdater)
     nativeUpdater.setFeedURL({ provider: "generic", url: updateQa.feed });
   updates = createUpdateController({
+    previousAttempt: (() => {
+      try {
+        return JSON.parse(
+          fs.readFileSync(path.join(profile, "update-state.json"), "utf8"),
+        );
+      } catch {
+        return null;
+      }
+    })(),
     updater: nativeUpdater,
     version: app.getVersion(),
     runtime: localService,
@@ -1184,7 +1202,7 @@ ipcMain.handle("qingdan-desktop:hide", (event) => {
 });
 ipcMain.handle("qingdan-desktop:open-workspace", async (event, roomId) => {
   guard(event);
-  await shell.openExternal(workspaceUrl(application, roomId));
+  await openWorkspace(workspaceUrl(application, roomId));
   return true;
 });
 ipcMain.on("qingdan-desktop:prepared-quit", (event, result) => {

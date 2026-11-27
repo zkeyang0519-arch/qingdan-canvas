@@ -1,7 +1,45 @@
 "use strict";
 const path = require("node:path");
+const fs = require("node:fs");
 function configureUpdateQa({ app, profile, channel, env = process.env }) {
-  if (env.QINGDAO_UPDATE_QA !== "1") return null;
+  if (!["1", "local"].includes(env.QINGDAO_UPDATE_QA)) return null;
+  if (channel !== "beta") throw Error("更新验收仅允许独立 Beta 应用。");
+  if (env.QINGDAO_UPDATE_QA === "local") {
+    const localRoot =
+      env.QINGDAO_LOCAL_QA_ROOT && path.resolve(env.QINGDAO_LOCAL_QA_ROOT);
+    if (
+      !localRoot ||
+      !/^qingdao-update-local-[a-f0-9-]{36}$/.test(path.basename(localRoot))
+    )
+      throw Error("本地验收目录无效。");
+    const marker = JSON.parse(
+      fs.readFileSync(path.join(localRoot, "qa-run.json"), "utf8"),
+    );
+    if (
+      marker.id !== env.QINGDAO_LOCAL_QA_ID ||
+      marker.schema !== 1 ||
+      fs.realpathSync(profile) !==
+        fs.realpathSync(path.join(localRoot, "profile")) ||
+      fs.realpathSync(app.getPath("exe")) !==
+        fs.realpathSync(path.join(localRoot, "installed", "QingdaoBeta.exe"))
+    )
+      throw Error("本地验收必须使用本次安装的 Beta 和独立数据目录。");
+    const feed = new URL(env.QINGDAO_QA_FEED);
+    if (
+      feed.href !== marker.feed ||
+      feed.protocol !== "http:" ||
+      feed.hostname !== "127.0.0.1" ||
+      !feed.port ||
+      feed.pathname !== "/updates/" ||
+      feed.username ||
+      feed.password ||
+      feed.search ||
+      feed.hash
+    )
+      throw Error("本地验收更新源无效。");
+    // Local UI is operated through the normal window; never expose a debugging port.
+    return { feed: feed.href };
+  }
   const root = env.RUNNER_TEMP && path.resolve(env.RUNNER_TEMP);
   if (
     env.RUNNER_ENVIRONMENT !== "github-hosted" ||

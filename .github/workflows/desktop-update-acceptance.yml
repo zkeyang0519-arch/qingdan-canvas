@@ -1,11 +1,6 @@
 name: Qingdao isolated update acceptance
 
 on:
-  push:
-    branches: [feat/qingdan-mcp]
-    paths:
-      - .github/workflows/desktop-update-acceptance.yml
-      - scripts/verify-desktop-update.mjs
   workflow_dispatch:
 
 permissions:

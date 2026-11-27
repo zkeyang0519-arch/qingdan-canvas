@@ -99,6 +99,16 @@ export default function LocalServiceSettings({ bridge }) {
           重新检测
         </button>
       )}
+      {(error || ["error", "unsupported"].includes(state?.status)) && (
+        <a
+          className="island-service-repair"
+          href="https://todo.zky.lol/download/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          下载修复安装包
+        </a>
+      )}
     </section>
   );
 }

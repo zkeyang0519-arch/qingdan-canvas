@@ -21,7 +21,14 @@ function createUpdateController({
   persist = async () => {},
   channel = "stable",
   pollMs = 2000,
+  previousAttempt,
 }) {
+  let previousError =
+    previousAttempt?.status === "installing" &&
+    previousAttempt.previousVersion === version &&
+    previousAttempt.version !== version
+      ? "上次更新未完成安装，已继续使用当前版本。请重新检查更新；安装仍失败时可从下载页修复。"
+      : "";
   let state = {
     status: updater ? "idle" : "unsupported",
     currentVersion: version,
@@ -30,6 +37,7 @@ function createUpdateController({
     unknown: [],
     scheduled: false,
     hasUpdate: false,
+    previousError,
   };
   let checking = null,
     action = null,
@@ -53,6 +61,7 @@ function createUpdateController({
       unknown: [],
       hasUpdate: ready,
       scheduled: requested,
+      previousError,
       ...next,
     };
     if (previous === JSON.stringify(state)) return;

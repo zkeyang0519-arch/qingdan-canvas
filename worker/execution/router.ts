@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { trustedExecutionOrigin } from "./trusted-origin";
 import { body, check, json, sameOrigin, validId } from "../http";
 import { digest, requireSession, token } from "../auth";
 import { bindingView, type BindingRow, type DeviceRow } from "./types";
@@ -13,7 +14,7 @@ export async function runnerRoute(
   if (!path.startsWith("/api/runner/") && !path.startsWith("/api/agent/"))
     return null;
   check(
-    url.protocol === "https:" || url.origin === "http://127.0.0.1:8788",
+    trustedExecutionOrigin(url, env),
     "设备连接需要 HTTPS 或指定的本机开发入口。",
     403,
   );

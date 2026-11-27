@@ -190,3 +190,10 @@
 .dynamic-island[data-settings="true"] .island-update-message[role="alert"] {
   color: #9c503a;
 }
+.island-service-repair {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--island-accent);
+  font-size: 12px;
+  text-underline-offset: 3px;
+}

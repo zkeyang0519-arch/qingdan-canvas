@@ -104,6 +104,29 @@ try {
     body: JSON.stringify({ action: "default", id: profile.id }),
   });
   assert.equal(selected.status, 200);
+  const pairing = await fetch(origin + "/api/agent/devices/pairings", {
+    method: "POST",
+    headers: auth,
+    body: "{}",
+  });
+  assert.equal(
+    pairing.status,
+    200,
+    "managed runtime must permit its configured loopback port for pairing",
+  );
+  const native = await fetch(
+    "http://127.0.0.1:" + ports.web + "/api/runner/execution/poll",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  assert.equal(
+    native.status,
+    401,
+    "native authentication must still be required on the configured port",
+  );
   const fixture = {
     model: "existing-model-fixture",
     mcp: "existing-mcp-fixture",

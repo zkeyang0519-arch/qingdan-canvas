@@ -376,6 +376,7 @@ try {
   ).json();
   assert.ok(localSession.user.id);
   const auth = {
+    "X-Qingdan-Local": "1",
     Cookie: localCookie,
     Origin: localOrigin,
     "X-QD-Account": localSession.user.id,
@@ -439,11 +440,12 @@ try {
     "local-service/data/.tmp/pi-main",
     digest(localSession.user.id).slice(0, 24),
   );
-  // These stores are the installed service's own persistence classes and paths.
+  // Use the inspected runtime's classes outside the installed tree so this
+  // checker never locks files that NSIS needs to replace.
   const mcpModule = await import(
     pathToFileURL(
       path.join(
-        installedResources,
+        path.join(firstOutput, "win-unpacked/resources"),
         "local-service/scripts/pi-local/mcp-connections.mjs",
       ),
     )
@@ -484,7 +486,7 @@ try {
   const taskModule = await import(
     pathToFileURL(
       path.join(
-        installedResources,
+        path.join(firstOutput, "win-unpacked/resources"),
         "local-service/runner/harness/task-store.mjs",
       ),
     )

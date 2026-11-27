@@ -11,6 +11,7 @@ function updateFixture({
   prepare = async () => ({ ok: true, draftsPersisted: true }),
   install,
   runtime,
+  previousAttempt,
 } = {}) {
   const updater = new EventEmitter();
   const events = [];
@@ -28,6 +29,7 @@ function updateFixture({
     version: "0.3.0",
     prepare,
     runtime,
+    previousAttempt,
     install: install || (async (run) => run()),
     changed: (state) => events.push(state),
   });
@@ -45,6 +47,30 @@ function directory(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
+
+test("an interrupted installer keeps a recovery notice on the old version without reinstalling automatically", async () => {
+  const f = updateFixture({
+    previousAttempt: {
+      status: "installing",
+      previousVersion: "0.3.0",
+      version: "0.4.0",
+    },
+  });
+  assert.match(f.controller.state().previousError, /上次更新未完成/);
+  await f.controller.check();
+  assert.match(f.controller.state().previousError, /当前版本/);
+  assert.equal(f.installs(), 0);
+  f.controller.close();
+  const succeeded = updateFixture({
+    previousAttempt: {
+      status: "installing",
+      previousVersion: "0.2.0",
+      version: "0.3.0",
+    },
+  });
+  assert.equal(succeeded.controller.state().previousError, "");
+  succeeded.controller.close();
+});
 
 test("updater downloads automatically but never installs on ordinary quit, failure, or before package verification", async () => {
   const f = updateFixture();

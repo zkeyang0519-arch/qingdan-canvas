@@ -20,6 +20,7 @@ export interface Env {
   LOCAL_PI_SECRET?: string;
   LOCAL_PI_OWNER?: string;
   RUNTIME_CONTROL_SECRET?: string;
+  LOCAL_RUNTIME_ORIGIN?: string;
   ASSETS: Fetcher;
   APP_ENV: string;
   RESEND_API_KEY?: string;

@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { trustedExecutionOrigin } from "./trusted-origin";
 import { body, check, json, sameOrigin } from "../http";
 import { requireSession } from "../auth";
 import { executionToolsRequestSchema } from "../../shared/agent/execution";
@@ -28,11 +29,7 @@ export async function executionRoute(
     "执行服务尚未启用。",
     404,
   );
-  check(
-    url.protocol === "https:" || url.origin === "http://127.0.0.1:8788",
-    "执行连接需要安全入口。",
-    403,
-  );
+  check(trustedExecutionOrigin(url, env), "执行连接需要安全入口。", 403);
   if (p === "/executor-mcp") return serveExecutionMcp(request, env, ctx);
   if (p.startsWith("/api/runner/execution/")) {
     check(request.method === "POST", "方法不支持。", 405);

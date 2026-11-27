@@ -207,6 +207,7 @@ test("open in browser only constructs a safe same-origin room link", () => {
 });
 
 async function preloadFixture({
+  args,
   allowed = [],
   origin = "http://127.0.0.1:8790",
   pathname = "/app",
@@ -243,7 +244,7 @@ async function preloadFixture({
       },
       process: {
         isMainFrame: mainFrame,
-        argv: [
+        argv: args || [
           "--qingdan-origin=http://127.0.0.1:8790",
           ...allowed.map((origin) => `--qingdan-allow-origin=${origin}`),
         ],
@@ -437,9 +438,17 @@ test("desktop reconnect leaves the page intact after save failure, timeout or ca
   assert.equal(changed, false);
 });
 
-async function mainFixture() {
+async function mainFixture({ resumeUrl } = {}) {
   const listeners = new Map();
+  let capturedWindow;
   const electron = {
+    BrowserWindow: class {
+      constructor(options) {
+        capturedWindow = options;
+        throw Error("captured window creation");
+      }
+    },
+    nativeImage: { createFromBitmap: () => ({}) },
     app: {
       getVersion: () => "0.3.12",
       setPath() {},
@@ -466,6 +475,11 @@ async function mainFixture() {
     require(name) {
       if (name === "electron") return electron;
       if (name === "node:fs") return { mkdirSync() {}, writeFileSync() {} };
+      if (name === "./resume-state.cjs" && resumeUrl)
+        return {
+          ...require("../desktop/resume-state.cjs"),
+          readResume: () => resumeUrl,
+        };
       if (name.startsWith("./")) return require("../desktop/" + name.slice(2));
       return require(name);
     },
@@ -483,11 +497,39 @@ async function mainFixture() {
   );
   vm.runInNewContext(
     source +
-      `\nglobalThis.hostHarness = { loadApplication, prepare: saveBeforeQuit, resize, rememberPosition, clearPlacementTimer: () => clearTimeout(positionTimer), setWindow(value, failed) { window=value; unavailable=failed; }, isUnavailable: () => unavailable };`,
+      `\nglobalThis.hostHarness = { createWindow, loadApplication, prepare: saveBeforeQuit, resize, rememberPosition, clearPlacementTimer: () => clearTimeout(positionTimer), setWindow(value, failed) { window=value; unavailable=failed; }, isUnavailable: () => unavailable };`,
     context,
   );
-  return { host: context.hostHarness, listeners };
+  return {
+    host: context.hostHarness,
+    listeners,
+    captured: () => capturedWindow,
+  };
 }
+
+test("restored workspace keeps the narrow native bridge on its saved loopback origin", async () => {
+  const restored = "http://127.0.0.1:52472/app?room=saved-project";
+  const fixture = await mainFixture({ resumeUrl: restored });
+  await assert.rejects(fixture.host.createWindow(), /captured window creation/);
+  const args = fixture.captured().webPreferences.additionalArguments;
+  assert.ok(
+    (await preloadFixture({ args, origin: new URL(restored).origin })).bridge,
+  );
+  assert.equal(
+    (await preloadFixture({ args, origin: "http://127.0.0.1:52473" })).bridge,
+    undefined,
+  );
+  assert.equal(
+    (
+      await preloadFixture({
+        args,
+        origin: new URL(restored).origin,
+        mainFrame: false,
+      })
+    ).bridge,
+    undefined,
+  );
+});
 
 test("cancelled navigation retains the real page and never tries to replace it with a failure page", async () => {
   const { host } = await mainFixture();

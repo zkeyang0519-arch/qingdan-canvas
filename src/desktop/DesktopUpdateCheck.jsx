@@ -123,6 +123,11 @@ export default function DesktopUpdateCheck({ bridge }) {
           {message}
         </p>
       )}
+      {state?.previousError && !locked && (
+        <p className="island-update-message" role="status">
+          {state.previousError}
+        </p>
+      )}
       {waiting && state.tasks?.length > 0 && (
         <ul className="island-update-tasks" aria-label="等待中的任务">
           {state.tasks.map((task) => (

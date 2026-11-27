@@ -120,6 +120,7 @@ export async function startManagedRuntime({
           ),
         ),
         RUNTIME_CONTROL_SECRET: controlSecret,
+        LOCAL_RUNTIME_ORIGIN: upstream,
         APP_ENV: "local",
         MCP_ENABLED: "false",
         RUNNER_ENABLED: "true",

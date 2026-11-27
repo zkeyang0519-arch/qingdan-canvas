@@ -6,6 +6,17 @@ import { spawn } from "node:child_process";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const stage = path.join(root, ".tmp", "desktop-package");
 const args = process.argv.slice(2);
+if (
+  args.includes("--fast-acceptance") &&
+  !/^\d+\.\d+\.\d+-beta\.\d+$/.test(process.env.QINGDAO_BUILD_VERSION || "")
+)
+  throw Error(
+    "Fast acceptance packaging is only available for an explicit Beta build.",
+  );
+// Differential NSIS archives fix config.compression to normal; use the builder's
+// explicit level override for test builds while retaining a real blockmap.
+if (args.includes("--fast-acceptance"))
+  process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL = "1";
 const run = (command, commandArgs, cwd = root) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, commandArgs, {
@@ -103,6 +114,7 @@ await run(process.execPath, [
   "--x64",
   "--publish",
   "never",
+  ...(args.includes("--fast-acceptance") ? ["--config.compression=store"] : []),
   ...(args.includes("--dir") ? ["--dir"] : []),
   `--config.electronVersion=${pkg.devDependencies.electron}`,
   ...(process.env.QINGDAO_REQUIRE_SIGNING === "true"
