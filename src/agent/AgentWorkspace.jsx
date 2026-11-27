@@ -97,6 +97,16 @@ function WorkspaceScope({
     { storageKey: storage + ":batches", validate: validTargets },
   );
   const [pane, setPane] = useState("chat");
+  const planHandler = useRef(null);
+  const registerPlanHandler = useCallback((handler) => {
+    planHandler.current = handler;
+  }, []);
+  async function planSelectedTodos(tasks) {
+    if (!planHandler.current) throw Error("聊天正在准备，请稍后再试。");
+    const accepted = await planHandler.current(tasks);
+    if (accepted) setPane("chat");
+    return accepted;
+  }
   const [collection, setCollection] = useState("pending");
   const [previewTasksOpen, setPreviewTasksOpen] = useState(false);
   const [historyHost, setHistoryHost] = useState(null);
@@ -597,6 +607,7 @@ function WorkspaceScope({
               <ChatPanel
                 key={`${scope}/${page.id}/${bindingTokens[page.id] || 0}`}
                 {...common}
+                onPlanHandler={registerPlanHandler}
                 pages={pageList}
                 embedded
                 workspaceView={fullPage ? "external" : pane}
@@ -721,6 +732,7 @@ function WorkspaceScope({
                         setFilmTodo({ pageId: page.id, source });
                         setPane("film");
                       }}
+                      onPlanTasks={planSelectedTodos}
                       onCountsChange={receiveCounts}
                     />
                   </div>

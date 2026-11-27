@@ -20,6 +20,14 @@ const validId = (value) =>
 const fail = (message, status = 400) =>
   Object.assign(Error(message), { status });
 
+export function waaoAuthDirectory(directory, origin) {
+  return path.join(
+    directory,
+    "waao-auth",
+    digest(new URL(origin).origin).slice(0, 24),
+  );
+}
+
 export async function openMainPi({
   root,
   profile,
@@ -205,39 +213,30 @@ export async function openMainPi({
     env: process.env,
     maintenance,
   };
-  const oldLauncher = await readFile(
-    path.join(legacy, "打开轻单.html"),
-    "utf8",
-  ).catch(() => "");
-  const credentialOrigin =
-    oldLauncher.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0] ||
-    "http://127.0.0.1:8797";
+  // The main app and standalone pilot have different OAuth redirect URIs.
+  // Never share their registration, PKCE verifier, pending state or tokens.
+  const authDirectory = waaoAuthDirectory(directory, origin);
+  await mkdir(authDirectory, { recursive: true, mode: 0o700 });
   const webLogin =
     services?.login ??
     (await toolModule
-      .waaoLogin(legacy, origin, vars.QINGDAN_WAAO_MCP_TOKEN, {
-        credentialOrigin,
+      .waaoLogin(authDirectory, origin, vars.QINGDAN_WAAO_MCP_TOKEN, {
+        credentialOrigin: new URL(origin).origin,
+        clientName: "轻单",
       })
       .catch(() => ({
         token: async () => null,
         status: () => ({ connected: false, kind: "web-mcp" }),
         begin: async () => {
           throw Error(
-            "原 WAAO 授权暂时无法读取，请在工具设置检查连接。其他工具仍可使用。",
+            "当前入口的 WAAO 授权暂时无法读取，请在工具设置检查连接。其他工具仍可使用。",
           );
         },
         finish: async () => {
           throw Error("请先从工具设置开始 WAAO 授权。");
         },
       })));
-  const waao =
-    services?.waao ??
-    toolModule.webWaao(
-      webLogin,
-      vars,
-      fetchImpl,
-      toolModule.codexWaaoMcp(directory, nativeOptions),
-    );
+  const waao = services?.waao ?? toolModule.webWaao(webLogin, vars, fetchImpl);
   const tools = toolModule.openTools(directory, false, waao, {
     accountId: ownerId,
     isBinding: (id) => bindings.has(id),
@@ -259,6 +258,7 @@ export async function openMainPi({
     tools,
     mcp,
     taskHarness: true,
+    requirePlanConfirmation: true,
     preloadSelected: true,
     onTaskCompleted: async (report) => {
       if (validateContext) return; // Isolated embedded fixtures have no cloud callback.
@@ -338,7 +338,7 @@ export async function openMainPi({
     if (action === "state")
       return {
         messages: payload.messages.map((message) =>
-          mcp.decorate(tools.decorate(message)),
+          pi.decorate(mcp.decorate(tools.decorate(message)), scope),
         ),
         harnessTask: scope.chatId ? pi.task(scope) : null,
         mcpAvailable: true,
@@ -364,13 +364,12 @@ export async function openMainPi({
       await pi.stopTask(scope, payload.input.taskId);
       return { task: pi.task(scope) };
     }
+    if (action === "task-reply") return pi.queueAnswer(scope, payload.input);
     if (action === "mcp-callback") {
-      await mcp.finish(payload.id, new URLSearchParams(payload.query));
-      return { ok: true };
+      return mcp.finish(payload.id, new URLSearchParams(payload.query));
     }
     if (action === "waao-callback") {
-      await mcp.finish("builtin-waao", new URLSearchParams(payload.query));
-      return { ok: true };
+      return mcp.finish("builtin-waao", new URLSearchParams(payload.query));
     }
     if (action === "waao-capabilities") return waao.capabilities(signal);
     if (action === "waao-task") {

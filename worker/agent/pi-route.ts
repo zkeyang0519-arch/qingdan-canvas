@@ -2,6 +2,10 @@ import type { Env } from "../types";
 import { body, check, json, sameOrigin } from "../http";
 import { requireSession } from "../auth";
 import { piCall, piEnabled, piFetch, requirePiHost } from "./pi-bridge";
+import {
+  isMcpOAuthNavigation,
+  mcpCallbackPage,
+} from "../../shared/agent/oauth-callback.mjs";
 
 export async function piRoute(
   request: Request,
@@ -39,12 +43,21 @@ export async function piRoute(
     ["/local/mcp", "mcp"],
     ["/local/connector-questions", "questions"],
     ["/local/task/stop", "task-stop"],
+    ["/local/task/reply", "task-reply"],
     ["/local/waao/callback", "waao-callback"],
     ["/local/waao/capabilities", "waao-capabilities"],
   ]);
   if (!media && !callback && !task && !simple.has(pathname)) return null;
   check(["local", "test"].includes(env.APP_ENV), "本机 Pi 入口不可用。", 404);
-  sameOrigin(request);
+  const oauthReturn = !!callback || pathname === "/local/waao/callback";
+  if (oauthReturn) {
+    check(request.method === "GET", "授权回调只接受页面跳转。", 405);
+    check(
+      isMcpOAuthNavigation(request),
+      "授权回调参数或导航方式无效，请从轻单重新连接。",
+      403,
+    );
+  } else sameOrigin(request);
   const user = await requireSession(request, env);
   check(
     !request.headers.get("X-QD-Account") ||
@@ -66,10 +79,12 @@ export async function piRoute(
       : task
         ? "waao-task"
         : simple.get(pathname)!;
-  if (["mcp", "questions", "task-stop"].includes(action))
+  if (["mcp", "questions", "task-stop", "task-reply"].includes(action))
     check(typeof bindingId === "string", "请先选择项目。", 400);
-  if (action === "task-stop")
+  if (["task-stop", "task-reply"].includes(action)) {
     check(request.method === "POST", "方法不支持。", 405);
+    check(typeof chatId === "string", "请先选择对话。", 400);
+  }
   const resolved = await env.AGENT_CHATS.get(
     env.AGENT_CHATS.idFromName(user.id),
   ).piScopeResult(
@@ -102,6 +117,10 @@ export async function piRoute(
   }
   const result = await piCall(env, action, payload, request.signal);
   return action.endsWith("callback")
-    ? Response.redirect(new URL("/app", url).href, 303)
+    ? mcpCallbackPage(
+        result.returnTo,
+        result.status === "ready",
+        action === "waao-callback" || payload.id === "builtin-waao",
+      )
     : json(result);
 }

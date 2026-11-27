@@ -276,15 +276,25 @@ async function handle(req, res) {
   }
   if (pathname === "/local/models" || pathname === "/api/agent/chat/models") {
     try {
-      let added;
+      let changed = {};
       if (req.method === "POST") {
-        if (body?.action === "add") added = await catalog.add(body);
-        else if (body?.action === "default") catalog.setDefault(body.id);
+        if (body?.action === "add")
+          changed = { added: await catalog.add(body) };
+        else if (body?.action === "update")
+          changed = await catalog.update(body);
+        else if (body?.action === "delete") {
+          if (piChat.modelBusy(catalog.lineage(body.id).map((r) => r.id)))
+            return reply(res, 409, {
+              error:
+                "这个连接还有任务正在运行，请先停止任务或等待结束后再删除。",
+            });
+          changed = await catalog.remove(body.id);
+        } else if (body?.action === "default") catalog.setDefault(body.id);
         else return reply(res, 400, { error: "未知的模型设置操作。" });
       }
       return reply(res, 200, {
         ...(await catalog.list()),
-        ...(added ? { added } : {}),
+        ...changed,
       });
     } catch (error) {
       return reply(res, 400, {
@@ -332,7 +342,10 @@ async function handle(req, res) {
       });
     }
   }
-  if (pathname === "/local/task/stop" && req.method === "POST") {
+  if (
+    ["/local/task/stop", "/local/task/reply"].includes(pathname) &&
+    req.method === "POST"
+  ) {
     if (
       !body ||
       typeof body.bindingId !== "string" ||
@@ -343,6 +356,8 @@ async function handle(req, res) {
     try {
       const data = await readHarnessChat(body.bindingId, body.chatId);
       const scope = harnessScope(data);
+      if (pathname === "/local/task/reply")
+        return reply(res, 200, await piChat.queueAnswer(scope, body));
       await piChat.stopTask(scope, body.taskId);
       return reply(res, 200, { task: piChat.task(scope) });
     } catch (error) {
@@ -465,6 +480,12 @@ async function handle(req, res) {
       return reply(res, 400, { error: "无效的聊天请求。" });
     if (!pathname.endsWith("select-model"))
       body.defaultProfileId = catalog.defaultId;
+    if (pathname.endsWith("/send") && body.chatId && !body.modelProfileId) {
+      const current = await readHarnessChat(body.bindingId, body.chatId);
+      body.modelProfileId = catalog.currentId(
+        current.thread?.modelProfileId ?? "xingchi",
+      );
+    }
     if (body.modelProfileId || (pathname.endsWith("/send") && !body.chatId)) {
       const { profiles } = await catalog.list();
       const selected = profiles.find(
@@ -496,6 +517,15 @@ async function handle(req, res) {
     data.job?.status === "cancelled"
   )
     piChat.cancel(data.job.id);
+  if (data.thread)
+    data.thread.modelProfileId = catalog.currentId(
+      data.thread.modelProfileId ?? "xingchi",
+    );
+  if (data.threads)
+    data.threads = data.threads.map((thread) => ({
+      ...thread,
+      modelProfileId: catalog.currentId(thread.modelProfileId ?? "xingchi"),
+    }));
   if (data.provider)
     data.provider = await catalog.status(
       data.thread ? (data.thread.modelProfileId ?? "xingchi") : undefined,
@@ -505,7 +535,9 @@ async function handle(req, res) {
   if (Array.isArray(data.messages)) {
     const profiles = new Map(data.provider.profiles.map((p) => [p.id, p]));
     data.messages = data.messages.map((message) => {
-      const used = profiles.get(message.modelProfileId);
+      const used =
+        profiles.get(message.modelProfileId) ||
+        catalog.describe(message.modelProfileId);
       if (used) message.modelLabel = used.model + " · " + used.service;
       if (message.previousAttempt)
         message.previousAttempt.diagnostic = catalog.diagnostic(
@@ -519,6 +551,9 @@ async function handle(req, res) {
     if (bindingId) data.connectorQuestions = mcp.questions(bindingId);
     if (bindingId && data.thread?.id) {
       data.harnessTask = piChat.task(harnessScope(data));
+      data.messages = data.messages.map((message) =>
+        piChat.decorate(message, harnessScope(data)),
+      );
       delete data.harnessMessageIds;
     }
     data.waaoConnection = waao.statusOfConnection();
@@ -658,12 +693,7 @@ export async function start({
     env: process.env,
     maintenance,
   };
-  waao = toolModule.webWaao(
-    webLogin,
-    vars,
-    fetch,
-    toolModule.codexWaaoMcp(dir, nativeOptions),
-  );
+  waao = toolModule.webWaao(webLogin, vars, fetch);
   tools = toolModule.openTools(dir, sample, waao);
   mcp = new McpConnections(dir, {
     origin,
@@ -679,7 +709,13 @@ export async function start({
     sample,
     mcp,
     taskHarness: true,
+    requirePlanConfirmation: true,
     authorizeTask: async (envelope) => {
+      try {
+        catalog.connection(envelope.modelProfileId || "xingchi");
+      } catch {
+        return false;
+      }
       const data = await readHarnessChat(
         envelope.scope.bindingId,
         envelope.scope.chatId,

@@ -41,6 +41,11 @@ export default function ChatModelPicker({
     (profile) => profile.configured && profile.id !== failedId,
   );
   const [adding, setAdding] = useState(!!failedId && !choices.length);
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [keyEntered, setKeyEntered] = useState(false);
+  const [reuseKey, setReuseKey] = useState(false);
   const [preset, setPreset] = useState("custom");
   const [managing, setManaging] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -66,6 +71,14 @@ export default function ChatModelPicker({
   const current = catalog.profiles.find((profile) => profile.id === selected);
   const proposed = catalog.profiles.find((profile) => profile.id === pending);
   const deepseek = preset === "deepseek";
+  const formOpen = adding || !!editing;
+  let destinationChanged = false;
+  if (editing) {
+    try {
+      destinationChanged =
+        new URL(editUrl).origin !== new URL(editing.baseUrl).origin;
+    } catch {}
+  }
   const locked = busy || saving || applying;
   async function applySelection() {
     if (savingRef.current || locked) return;
@@ -92,7 +105,7 @@ export default function ChatModelPicker({
   }, []);
 
   async function change(body) {
-    if (savingRef.current) return;
+    if (savingRef.current || busy || applying) return;
     savingRef.current = true;
     setSaving(true);
     setError("");
@@ -108,10 +121,23 @@ export default function ChatModelPicker({
         setPending(next.added);
         setAdding(false);
       }
+      if (next.updated) {
+        if (pending === next.replaced || failedId === next.replaced)
+          setPending(next.updated);
+        setEditing(null);
+      }
+      if (next.deleted) {
+        if (pending === next.deleted) setPending("");
+        setDeleting(null);
+      }
       setNotice(
         next.added
           ? "连接已保存，点击「应用」即可用于当前对话。"
-          : "新对话默认模型已更新。",
+          : next.updated
+            ? "连接已更新，之后的消息将使用新设置。"
+            : next.deleted
+              ? "连接已删除，使用此连接的聊天需重新选择模型。"
+              : "新对话默认模型已更新。",
       );
     } catch (err) {
       if (active.current) setError(err.message);
@@ -155,8 +181,8 @@ export default function ChatModelPicker({
                 setPending(event.target.value);
               }}
             >
-              {!pending && !failedId && (
-                <option value="" disabled>
+              {!catalog.profiles.some((p) => p.id === pending) && !failedId && (
+                <option value={pending} disabled>
                   请选择模型连接
                 </option>
               )}
@@ -230,6 +256,11 @@ export default function ChatModelPicker({
                 setNotice("");
               }}
             >
+              {!catalog.profiles.some((p) => p.id === defaultChoice) && (
+                <option value={defaultChoice} disabled>
+                  请选择默认模型
+                </option>
+              )}
               {catalog.profiles.map((profile) => (
                 <option
                   key={profile.id}
@@ -306,10 +337,11 @@ export default function ChatModelPicker({
             variant="outline"
             type="button"
             className="qd-model-add"
-            disabled={locked || adding}
+            disabled={locked || formOpen}
             aria-haspopup="dialog"
             onClick={() => {
               setPreset("custom");
+              setEditing(null);
               setAdding(true);
               setError("");
               setNotice("");
@@ -326,57 +358,160 @@ export default function ChatModelPicker({
                 <span className="qd-connection-icon">
                   <Server size={18} aria-hidden="true" />
                 </span>
-                <div>
+                <div className="qd-connection-info">
                   <strong>{profile.service}</strong>
                   <small>
                     {profile.model}
                     {profile.id === selected && " · 当前使用"}
                     {profile.id === catalog.defaultId && " · 新对话默认"}
                   </small>
+                  {profile.baseUrl && (
+                    <small className="qd-connection-address">
+                      {profile.baseUrl}
+                    </small>
+                  )}
+                  {profile.editable === false && (
+                    <small>由本机环境配置管理</small>
+                  )}
                 </div>
                 <Badge variant="outline">
                   {profile.configured ? "已配置" : "待配置"}
                 </Badge>
+                {profile.id !== "xingchi" && profile.editable !== false && (
+                  <div className="qd-connection-actions">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={locked || formOpen}
+                      aria-label={`编辑 ${profile.service} ${profile.model}`}
+                      onClick={() => {
+                        setEditing(profile);
+                        setAdding(false);
+                        setEditUrl(profile.baseUrl || "");
+                        setKeyEntered(false);
+                        setReuseKey(false);
+                        setPreset("custom");
+                        setError("");
+                        setNotice("");
+                        setDeleting(null);
+                      }}
+                    >
+                      编辑
+                    </Button>
+                    {profile.removable !== false && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={locked || formOpen}
+                        aria-label={`删除 ${profile.service} ${profile.model}`}
+                        onClick={() => {
+                          setDeleting(profile.id);
+                          setError("");
+                          setNotice("");
+                        }}
+                      >
+                        删除
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {deleting === profile.id && (
+                  <div
+                    className="qd-connection-confirm"
+                    role="group"
+                    aria-label={`确认删除 ${profile.service}`}
+                  >
+                    <p>
+                      删除「{profile.service} · {profile.model}
+                      」连接？聊天记录会保留，使用它的聊天需重新选择模型
+                      {profile.id === catalog.defaultId
+                        ? "，新对话默认模型也需要重新设置"
+                        : ""}
+                      。
+                    </p>
+                    <div>
+                      <Button
+                        type="button"
+                        className="qd-model-delete"
+                        disabled={locked}
+                        onClick={() =>
+                          change({ action: "delete", id: profile.id })
+                        }
+                      >
+                        {saving ? "正在删除…" : "删除连接"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={saving}
+                        onClick={() => setDeleting(null)}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
         )}
-        {adding && (
+        {formOpen && (
           <WorkspaceDrawer
-            title={deepseek ? "添加 DeepSeek 官方连接" : "新建模型连接"}
+            title={
+              editing
+                ? "编辑模型连接"
+                : deepseek
+                  ? "添加 DeepSeek 官方连接"
+                  : "新建模型连接"
+            }
             onClose={() => {
               if (!saving) {
                 setAdding(false);
+                setEditing(null);
                 setError("");
               }
             }}
           >
             <form
-              key={preset}
+              key={editing?.id || preset}
               className="qd-model-form"
               onSubmit={(event) => {
                 event.preventDefault();
                 const values = Object.fromEntries(
                   new FormData(event.currentTarget),
                 );
-                void change({ action: "add", ...values });
+                delete values.reuseApiKey;
+                void change(
+                  editing
+                    ? {
+                        action: "update",
+                        id: editing.id,
+                        ...values,
+                        apiFormat:
+                          values.apiFormat || editing.apiFormat || "responses",
+                        reuseApiKey: reuseKey,
+                      }
+                    : { action: "add", ...values },
+                );
               }}
             >
-              <label>
-                连接模板
-                <select
-                  aria-label="连接模板"
-                  value={preset}
-                  disabled={locked}
-                  onChange={(event) => {
-                    setPreset(event.target.value);
-                    setError("");
-                  }}
-                >
-                  <option value="custom">自定义连接</option>
-                  <option value="deepseek">DeepSeek 官方连接</option>
-                </select>
-              </label>
+              {!editing && (
+                <label>
+                  连接模板
+                  <select
+                    aria-label="连接模板"
+                    value={preset}
+                    disabled={locked}
+                    onChange={(event) => {
+                      setPreset(event.target.value);
+                      setError("");
+                    }}
+                  >
+                    <option value="custom">自定义连接</option>
+                    <option value="deepseek">DeepSeek 官方连接</option>
+                  </select>
+                </label>
+              )}
               {deepseek && (
                 <p className="qd-model-preset-note">
                   已填入官方地址和常用模型，可按需选择。
@@ -386,7 +521,10 @@ export default function ChatModelPicker({
                 服务商
                 <Input
                   name="service"
-                  defaultValue={deepseek ? "DeepSeek 官方" : ""}
+                  disabled={locked}
+                  defaultValue={
+                    editing?.service || (deepseek ? "DeepSeek 官方" : "")
+                  }
                   required
                   maxLength={60}
                   placeholder="例如，团队模型服务"
@@ -396,7 +534,20 @@ export default function ChatModelPicker({
                 API 接口地址
                 <Input
                   name="baseUrl"
-                  defaultValue={deepseek ? "https://api.deepseek.com" : ""}
+                  disabled={locked}
+                  {...(editing
+                    ? {
+                        value: editUrl,
+                        onChange: (event) => {
+                          setEditUrl(event.target.value);
+                          setReuseKey(false);
+                        },
+                      }
+                    : {
+                        defaultValue: deepseek
+                          ? "https://api.deepseek.com"
+                          : "",
+                      })}
                   type="url"
                   required
                   placeholder="https://api.example.com/v1"
@@ -405,7 +556,11 @@ export default function ChatModelPicker({
               {catalog.apiFormats?.includes("chat_completions") ? (
                 <label>
                   接口类型
-                  <select name="apiFormat" defaultValue="responses">
+                  <select
+                    name="apiFormat"
+                    disabled={locked}
+                    defaultValue={editing?.apiFormat || "responses"}
+                  >
                     <option value="responses">OpenAI Responses</option>
                     <option value="chat_completions">
                       OpenAI Chat Completions
@@ -418,7 +573,11 @@ export default function ChatModelPicker({
               <label>
                 模型 ID
                 {deepseek ? (
-                  <select name="model" defaultValue="deepseek-flash">
+                  <select
+                    name="model"
+                    defaultValue="deepseek-flash"
+                    disabled={locked}
+                  >
                     <option value="deepseek-flash">
                       DeepSeek Flash · 日常对话
                     </option>
@@ -429,6 +588,8 @@ export default function ChatModelPicker({
                 ) : (
                   <Input
                     name="model"
+                    disabled={locked}
+                    defaultValue={editing?.model || ""}
                     required
                     maxLength={160}
                     placeholder="填写服务商提供的模型 ID"
@@ -439,26 +600,56 @@ export default function ChatModelPicker({
                 API 密钥
                 <Input
                   name="apiKey"
+                  disabled={locked}
                   type="password"
-                  required
+                  required={!editing}
                   maxLength={4096}
                   autoComplete="off"
+                  placeholder={editing ? "留空保留现有密钥" : undefined}
+                  onChange={(event) =>
+                    setKeyEntered(!!event.target.value.trim())
+                  }
                 />
+                {editing && (
+                  <small>已保存的密钥不会显示。留空保留，填写则替换。</small>
+                )}
               </label>
+              {editing && destinationChanged && !keyEntered && (
+                <label className="qd-model-key-reuse">
+                  <input
+                    type="checkbox"
+                    disabled={locked}
+                    checked={reuseKey}
+                    onChange={(event) => setReuseKey(event.target.checked)}
+                  />
+                  将已保存的密钥用于新地址：{editUrl}
+                </label>
+              )}
               {error && (
                 <p className="agent-error" role="alert">
                   {error}
                 </p>
               )}
               <div className="agent-actions">
-                <Button className="primary" disabled={locked} type="submit">
-                  {saving ? "正在保存…" : "保存模型连接"}
+                <Button
+                  className="primary"
+                  disabled={
+                    locked ||
+                    (editing && destinationChanged && !keyEntered && !reuseKey)
+                  }
+                  type="submit"
+                >
+                  {saving ? "正在保存…" : editing ? "保存修改" : "保存模型连接"}
                 </Button>
                 <Button
                   variant="ghost"
                   type="button"
                   disabled={saving}
-                  onClick={() => setAdding(false)}
+                  onClick={() => {
+                    setAdding(false);
+                    setEditing(null);
+                    setError("");
+                  }}
                 >
                   取消
                 </Button>
@@ -467,7 +658,7 @@ export default function ChatModelPicker({
           </WorkspaceDrawer>
         )}
       </section>
-      {((error && !adding) || selectionError) && (
+      {((error && !formOpen) || selectionError) && (
         <p className="agent-error" role="alert">
           {error || selectionError}
         </p>

@@ -32,11 +32,23 @@ test(
           reason: "确定文案语气",
           options: ["温暖", "简洁"],
         });
-      if (n === 3) return textItem("等用户选择");
-      if (n === 4) {
+      if (n === 3) {
         assert.match(JSON.stringify(req.body.input), /温暖/);
+        return call("update_task", {
+          steps: [
+            {
+              id: "write",
+              title: "撰写温暖语气文案",
+              description: "撰写并交付活动文案",
+              status: "pending",
+            },
+          ],
+        });
+      }
+      if (n === 4) {
         return call("submit_result", {
           summary: "文案已完成",
+          answer: "灯光亮起，我们一起出发。",
           checks: [
             {
               requirementId: "copy",
@@ -99,7 +111,7 @@ test(
       bindingRevision: 1,
       text: "整理活动文案",
     });
-    async function settled() {
+    async function settled(taskStatus) {
       for (let n = 0; n < 150; n++) {
         const state = await call(
           "/api/agent/chat/state?" +
@@ -108,7 +120,11 @@ test(
               chatId: first.thread.id,
             }),
         );
-        if (state.job?.status === "succeeded") return state;
+        if (
+          state.job?.status === "succeeded" &&
+          (!taskStatus || state.harnessTask?.status === taskStatus)
+        )
+          return state;
         assert.notEqual(state.job?.status, "failed", JSON.stringify(state.job));
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -117,20 +133,33 @@ test(
     const waiting = await settled();
     assert.equal(waiting.harnessTask.status, "waiting_user");
     assert.equal(Object.hasOwn(waiting, "harnessMessageIds"), false);
-    await call("/api/agent/chat/send", {
+    const received = await call("/local/task/reply", {
       requestId: randomUUID(),
       bindingId: "pi-local-binding",
       bindingRevision: 1,
       chatId: first.thread.id,
       text: "温暖",
-      taskReply: {
-        taskId: waiting.harnessTask.id,
-        questionId: waiting.harnessTask.questions[0].id,
-      },
+      taskId: waiting.harnessTask.id,
+      questionId: waiting.harnessTask.questions[0].id,
     });
-    const finished = await settled();
+    assert.equal(received.accepted, true);
+    const planned = await settled("waiting_plan");
+    assert.equal(planned.harnessTask.status, "waiting_plan");
+    assert.equal(planned.harnessTask.id, waiting.harnessTask.id);
+    await call("/local/task/reply", {
+      requestId: randomUUID(),
+      bindingId: "pi-local-binding",
+      bindingRevision: 1,
+      chatId: first.thread.id,
+      text: "确认计划并开始执行。",
+      taskId: planned.harnessTask.id,
+      questionId: planned.harnessTask.plan.questionId,
+    });
+    const finished = await settled("completed");
     assert.equal(finished.harnessTask.id, waiting.harnessTask.id);
     assert.equal(finished.harnessTask.status, "completed");
     assert.match(finished.harnessTask.result, /一起出发/);
+    assert.equal(finished.harnessTask.answerEvents[0].answer, "温暖");
+    assert.equal(fixture.requests.length, 4);
   },
 );

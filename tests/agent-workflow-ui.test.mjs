@@ -321,7 +321,7 @@ test("formal workspace submits saved todos together and shows the execution resu
     assert.deepEqual(f.canvasAdds, []);
     assert.equal(f.calls.filter((c) => c.route.endsWith("/intents")).length, 0);
     await click(field("选中待办：整理正式界面说明"));
-    await click(button("提交所选待办"));
+    await click(button("直接交给 Codex"));
     assert.equal(
       f.calls.filter((c) => c.body?.name === "codex_create_run").length,
       1,
@@ -519,7 +519,7 @@ test("full workspace creates BYOK connections in settings and applies centralize
     assert.equal(field("聊天消息").value, "保留对话草稿");
     await click(button("保存到真实清单"));
     await click(field("选中待办：整理正式界面说明"));
-    await click(button("提交所选待办"));
+    await click(button("直接交给 Codex"));
     const intent = f.calls.find((call) => call.route.endsWith("/intents")).body;
     assert.deepEqual(intent.executionSettings, {
       model: "execution-model",

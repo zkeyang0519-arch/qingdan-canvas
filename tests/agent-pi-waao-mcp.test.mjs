@@ -1,4 +1,5 @@
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -35,132 +36,210 @@ const scope = {
 const queryName = "mcp__waao__project_list";
 const read = AbortSignal.timeout;
 
-test("轻单复用 Codex 的 WAAO 注册，限定来源和工具，查询与短片共用授权且失败不会跨账号重发", async (t) => {
+test("移除 Codex 转接的 WAAO 卡片与工具权限，保留历史回执；自行添加后仅使用轻单授权", async (t) => {
   await mkdir(".tmp", { recursive: true });
-  const dir = await mkdtemp(path.resolve(".tmp", "waao-native-grant-"));
-  const mod = path.join(dir, "waao-connector.mjs");
-  await build({
-    entryPoints: ["scripts/pi-local/waao-codex.mjs"],
-    outfile: mod,
-    bundle: true,
-    format: "esm",
-    platform: "node",
-    packages: "external",
-  });
-  const { codexWaaoMcp } = await import(pathToFileURL(mod));
-  const registration = {
-    name: "waao",
-    origin: new URL(waaoMcpUrl).origin,
-    entry: {
-      enabled: true,
-      url: waaoMcpUrl,
-      environment_id: "local",
-      enabled_tools: ["project_list", "node_generate"],
-      disabled_tools: ["node_generate"],
+  const dir = await mkdtemp(path.resolve(".tmp", "waao-direct-only-"));
+  const legacy = new DatabaseSync(path.join(dir, "mcp-connections.sqlite"));
+  legacy.exec(`
+    CREATE TABLE servers(id TEXT PRIMARY KEY,name TEXT NOT NULL,url TEXT NOT NULL,authMode TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'offline',catalog TEXT NOT NULL DEFAULT '[]');
+    CREATE TABLE selections(binding TEXT NOT NULL,server TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,tools TEXT NOT NULL,PRIMARY KEY(binding,server));
+    CREATE TABLE connector_preferences(server TEXT PRIMARY KEY,source TEXT NOT NULL);
+    CREATE TABLE calls(binding TEXT NOT NULL,chat TEXT NOT NULL,message TEXT NOT NULL,callId TEXT NOT NULL,service TEXT NOT NULL,tool TEXT NOT NULL,status TEXT NOT NULL,summary TEXT NOT NULL,details TEXT NOT NULL,PRIMARY KEY(binding,chat,message,callId));
+  `);
+  legacy
+    .prepare("INSERT INTO servers VALUES(?,?,?,?,?,?)")
+    .run(
+      waaoMcpId,
+      "WAAO",
+      waaoMcpUrl,
+      "auto",
+      "ready",
+      JSON.stringify([
+        { name: "project_list", inputSchema: { type: "object" } },
+      ]),
+    );
+  legacy
+    .prepare("INSERT INTO selections VALUES(?,?,?)")
+    .run(scope.bindingId, waaoMcpId, '["project_list"]');
+  legacy
+    .prepare("INSERT INTO connector_preferences VALUES(?,?)")
+    .run(waaoMcpId, "codex");
+  legacy
+    .prepare("INSERT INTO calls VALUES(?,?,?,?,?,?,?,?,?)")
+    .run(
+      scope.bindingId,
+      scope.chatId,
+      "old-message",
+      "old-call",
+      "WAAO",
+      "project_list",
+      "done",
+      "历史查询回执",
+      JSON.stringify({ serverId: waaoMcpId, connectionSource: "codex" }),
+    );
+  legacy.close();
+  const remote = waaoFixture();
+  let delegated = 0,
+    webCalls = 0,
+    signedIn = false;
+  const login = {
+    status: () => ({ connected: signedIn }),
+    token: async () => (signedIn ? "fixture" : null),
+    begin: async () => ({ url: waaoIssuer + "/authorize?state=direct" }),
+    finish: async () => {
+      signedIn = true;
     },
   };
-  const config = path.join(dir, "waao-registration.json");
-  await writeFile(config, JSON.stringify(registration));
-  const upstream = codexWaaoMcp(dir, {
-    command: process.execPath,
-    args: [path.resolve("tests/fixtures/codex-mcp-app-server.mjs"), dir],
-  });
-  let webCalls = 0,
-    requestsForToken = 0;
-  const legacyLogin = {
-    status: () => ({ connected: true }),
-    token: async () => {
-      requestsForToken++;
-      return "unused-fixture";
-    },
-  };
-  const waao = webWaao(
-    legacyLogin,
-    {},
-    async () => {
+  // A legacy caller passing a delegated adapter must not re-enable it.
+  const service = webWaao(
+    login,
+    webEnv,
+    async (url, init) => {
       webCalls++;
-      throw Error("unexpected direct HTTP request");
+      return remote.http(url, init);
     },
-    upstream,
+    {
+      connect: async () => {
+        delegated++;
+        throw Error("must not delegate");
+      },
+    },
   );
-  const manager = new McpConnections(dir, { waaoService: waao });
+  const codexService = {
+    connect: async () => ({
+      listTools: async () => [
+        { name: "codex", inputSchema: { type: "object" } },
+      ],
+      close: async () => {},
+    }),
+  };
+  const create = () =>
+    new McpConnections(dir, { waaoService: service, codexService });
+  let manager = create();
   t.after(async () => {
     await manager.close();
+    assert.equal(path.dirname(dir), path.resolve(".tmp"));
     await rm(dir, { recursive: true, force: true, maxRetries: 5 });
   });
   await manager.initialCheck;
-  const [row] = manager.list(scope.bindingId);
-  assert.equal(row.status, "ready", row.diagnostic);
-  assert.equal(row.connectionSource, "codex");
   assert.deepEqual(
-    row.tools.map((item) => item.name),
-    ["project_list"],
+    manager.list(scope.bindingId).map((row) => row.kind),
+    ["codex"],
   );
-  await manager.action(scope.bindingId, {
+  assert.deepEqual(manager.turn(scope).specs, []);
+  assert.equal(manager.turn(scope).waaoAccess.enabled, false);
+  assert.equal(
+    manager.db
+      .prepare("SELECT count(*) AS n FROM selections WHERE server=?")
+      .get(waaoMcpId).n,
+    0,
+  );
+  assert.equal(
+    manager.db
+      .prepare("SELECT summary FROM calls WHERE callId='old-call'")
+      .get().summary,
+    "历史查询回执",
+  );
+  assert.equal(delegated, 0);
+  assert.equal(webCalls, 0);
+  await assert.rejects(
+    manager.action(scope.bindingId, { id: waaoMcpId, action: "test" }),
+    /已移除/,
+  );
+  await assert.rejects(
+    manager.action(scope.bindingId, {
+      id: waaoMcpId,
+      action: "source",
+      source: "codex",
+    }),
+    /轻单自己的授权/,
+  );
+  await manager.add({ name: "WAAO", url: waaoMcpUrl });
+  let row = manager.list(scope.bindingId).find((row) => row.kind === "waao");
+  assert.equal(row.status, "authorization");
+  assert.deepEqual(row.tools, []);
+  assert.deepEqual(row.selected, []);
+  const auth = await manager.action(scope.bindingId, {
     id: waaoMcpId,
-    action: "enable",
-    tools: ["project_list"],
+    action: "login",
   });
-  assert.deepEqual(
-    manager.turn({ ...scope, bindingId: "project-b" }).specs,
-    [],
-  );
+  await manager.finish(waaoMcpId, new URL(auth.url).searchParams);
+  manager.setSelection(scope.bindingId, waaoMcpId, ["project_list"]);
   const turn = manager.turn(scope);
   try {
     assert.equal(
-      (await turn.execute(queryName, {}, randomUUID(), read(18000))).isError,
+      (await turn.execute(queryName, {}, randomUUID(), read(5000))).isError,
       false,
     );
-    const [trace] = manager.decorate({
-      role: "assistant",
-      replyTo: scope.userMessageId,
-      chatId: scope.chatId,
-      bindingId: scope.bindingId,
-    }).mcpCalls;
-    assert.equal(trace.connectionSource, "codex");
-    assert.deepEqual(await waao.targets({}, read(15000), turn.waaoAccess), {
-      projects: [],
-      truncated: undefined,
-    });
-    await writeFile(
-      config,
-      JSON.stringify({ ...registration, rejectCall: true }),
+    assert.ok(remote.calls.includes("account_get"));
+    assert.deepEqual(
+      remote.calls.filter((name) => name !== "account_get"),
+      ["project_list"],
     );
-    await assert.rejects(
-      turn.execute(queryName, {}, randomUUID(), read(10000)),
-      /未取得/,
-    );
-    manager.setSelection(scope.bindingId, waaoMcpId, []);
-    await assert.rejects(
-      turn.execute(queryName, {}, randomUUID(), read(8000)),
-      /停用/,
+    assert.equal(
+      manager.decorate({
+        role: "assistant",
+        replyTo: scope.userMessageId,
+        chatId: scope.chatId,
+        bindingId: scope.bindingId,
+      }).mcpCalls[0].connectionSource,
+      "web",
     );
   } finally {
     await turn.close();
   }
-  await writeFile(
-    config,
-    JSON.stringify({ ...registration, origin: "https://unrelated.example" }),
+  const before = webCalls;
+  manager.db
+    .prepare(
+      "UPDATE calls SET delivery='not_sent',status='error',requestHash=(SELECT requestHash FROM calls WHERE message=? LIMIT 1) WHERE callId='old-call'",
+    )
+    .run(scope.userMessageId);
+  const retry = manager.turn({
+    ...scope,
+    userMessageId: "old-message",
+    retry: true,
+  });
+  try {
+    await assert.rejects(
+      retry.execute(queryName, {}, randomUUID(), read(5000)),
+      /已移除的转接连接/,
+    );
+  } finally {
+    await retry.close();
+  }
+  await assert.rejects(
+    service.status({ connectionSource: "codex" }, read(5000)),
+    /历史任务/,
   );
-  assert.equal(
-    (await manager.action(scope.bindingId, { id: waaoMcpId, action: "test" }))
-      .status,
-    "offline",
+  await assert.rejects(
+    service.video({ connectionSource: "codex" }, read(5000)),
+    /历史任务/,
   );
-  const events = (await readFile(path.join(dir, "events.jsonl"), "utf8"))
-    .trim()
-    .split("\n")
-    .map(JSON.parse);
-  assert.equal(
-    events.some((e) => e.method === "turn/start"),
-    false,
-  );
+  assert.equal(webCalls, before);
+  await manager.close();
+  manager = create();
+  await manager.initialCheck;
+  row = manager.list(scope.bindingId).find((row) => row.kind === "waao");
+  assert.equal(row.connectionSource, "web");
+  assert.equal(row.enabled, true);
   assert.deepEqual(
-    events.filter((e) => e.method === "mcpServer/tool/call").map((e) => e.tool),
-    ["project_list", "project_list", "project_list"],
+    row.selected,
+    row.tools.map((tool) => tool.name),
   );
-  assert.equal(webCalls, 0);
-  assert.equal(requestsForToken, 0);
+  assert.equal(delegated, 0);
+  // An account may have had both its own OAuth login and the old delegated
+  // connection. Retain the former, but never inherit the latter's selections.
+  manager.db
+    .prepare("UPDATE connector_preferences SET source='codex' WHERE server=?")
+    .run(waaoMcpId);
+  await manager.close();
+  manager = create();
+  await manager.initialCheck;
+  row = manager.list(scope.bindingId).find((row) => row.kind === "waao");
+  assert.equal(row.status, "ready");
+  assert.equal(row.connectionSource, "web");
+  assert.deepEqual(row.selected, []);
+  assert.equal(delegated, 0);
 });
 
 test("官网 OAuth 使用固定回调和 PKCE，过期令牌只刷新一次，重启不会重新采用已失效的环境凭据", async (t) => {
@@ -179,6 +258,27 @@ test("官网 OAuth 使用固定回调和 PKCE，过期令牌只刷新一次，�
   const { waaoLogin } = await import(pathToFileURL(file));
   const origin = "http://127.0.0.1:8797",
     callback = origin + "/local/waao/callback";
+  const clientOnly = await waaoLogin(dir, origin, undefined, {
+    store: {
+      load: async () => ({ client: { client_id: "unfinished-registration" } }),
+      save: async () => {
+        throw Error("read-only inspection must not save");
+      },
+    },
+  });
+  assert.equal(clientOnly.status().configured, false);
+  assert.equal(clientOnly.status().connected, false);
+  const unconfigured = new McpConnections(dir, {
+    waaoService: webWaao(clientOnly, {}, async () => {
+      throw Error("an unfinished OAuth client must not be probed");
+    }),
+  });
+  try {
+    await unconfigured.initialCheck;
+    assert.deepEqual(unconfigured.list(scope.bindingId), []);
+  } finally {
+    await unconfigured.close();
+  }
   let saved = {},
     refreshes = 0;
   const store = {
@@ -248,7 +348,7 @@ test("官网 OAuth 使用固定回调和 PKCE，过期令牌只刷新一次，�
     fetchImpl,
   });
   login.rejected("old-fixture");
-  const { url } = await login.begin();
+  const { url } = await login.begin("/app?room=fixture-project");
   const page = new URL(url);
   assert.equal(page.origin, waaoIssuer);
   assert.equal(page.searchParams.get("scope"), waaoScopes);
@@ -262,7 +362,9 @@ test("官网 OAuth 使用固定回调和 PKCE，过期令牌只刷新一次，�
     login.finish(new URLSearchParams({ state: "wrong", code: "fixture-code" })),
     /过期/,
   );
-  await login.finish(returned);
+  assert.deepEqual(await login.finish(returned), {
+    returnTo: "/app?room=fixture-project#mcp=waao",
+  });
   assert.deepEqual(await Promise.all([login.token(), login.token()]), [
     "fixture-renewed",
     "fixture-renewed",
@@ -285,6 +387,7 @@ async function setup(t, signedIn = false) {
     challenge = "",
     failure;
   const login = {
+    status: () => ({ configured: granted || !!challenge, connected: granted }),
     token: async () => (granted ? "fixture" : null),
     rejected: () => {
       granted = false;
@@ -336,6 +439,8 @@ async function setup(t, signedIn = false) {
 test("WAAO 是固定的官网 MCP 服务，沿用原授权、读取全部分页，项目链接定位同一卡片", async (t) => {
   const app = await setup(t);
   const { manager } = app;
+  assert.deepEqual(manager.list(scope.bindingId), []);
+  await manager.add({ name: "WAAO", url: waaoMcpUrl });
   let [row] = manager.list(scope.bindingId);
   assert.equal(row.kind, "waao");
   assert.equal(row.url, waaoMcpUrl);
@@ -359,29 +464,58 @@ test("WAAO 是固定的官网 MCP 服务，沿用原授权、读取全部分页�
   assert.deepEqual(row.selected, []);
   await assert.rejects(
     manager.action(scope.bindingId, { id: waaoMcpId, action: "remove" }),
-    /内置/,
+    /轻单自己的授权/,
   );
-  manager.setSelection(scope.bindingId, waaoMcpId, ["project_list"]);
+  manager.setServiceEnabled(scope.bindingId, waaoMcpId, true);
   await app.restart();
-  assert.deepEqual(app.manager.list(scope.bindingId)[0].selected, [
-    "project_list",
-  ]);
+  const enabled = app.manager.list(scope.bindingId)[0];
+  assert.equal(enabled.enabled, true);
+  assert.equal(enabled.selectionMode, "service");
+  assert.deepEqual(
+    enabled.selected,
+    enabled.tools.map((tool) => tool.name),
+  );
   assert.equal(
     app.manager.turn({ ...scope, bindingId: "another" }).specs.length,
     0,
   );
-  assert.equal(app.remote.calls.length, 0);
+  assert.ok(app.remote.calls.includes("account_get"));
+  assert.equal(
+    app.remote.calls.filter((name) => name !== "account_get").length,
+    0,
+  );
+  assert.equal(
+    app.manager.list(scope.bindingId)[0].authorization.verified,
+    true,
+  );
 });
 
-test("真实 Pi 调用已选 WAAO 项目查询，模型和回执均收到官网协议结果", async (t) => {
+test("真实 Pi 发现后直接调用 WAAO 项目查询，省去单独加载一轮且保留官网协议回执", async (t) => {
   const app = await setup(t, true),
     manager = app.manager;
   manager.setSelection(scope.bindingId, waaoMcpId, ["project_list"]);
   const responses = await openResponsesFixture((req, index) => {
     const names = req.body.tools.map((t) => t.name);
+    if (index === 1) {
+      assert.equal(
+        names.filter((name) => name.startsWith("mcp__waao__")).length,
+        0,
+      );
+      return callItem(
+        "find_capabilities",
+        { query: "WAAO project_list" },
+        "find_projects",
+      );
+    }
+    if (index === 2) {
+      assert.match(JSON.stringify(req.body.input), /mcp__waao__project_list/);
+      assert.ok(names.includes(queryName));
+      assert.ok(
+        names.filter((name) => name.startsWith("mcp__waao__")).length <= 4,
+      );
+      return callItem(queryName, {}, "call_read_project");
+    }
     assert.ok(names.includes(queryName));
-    assert.ok(!names.includes("mcp__waao__node_generate"));
-    if (index === 1) return callItem(queryName, {}, "call_read_project");
     assert.match(JSON.stringify(req.body.input), /试映/);
     return textItem("已找到试映项目。");
   });
@@ -391,6 +525,7 @@ test("真实 Pi 调用已选 WAAO 项目查询，模型和回执均收到官网�
     settings: responses.settings,
     tools: { references: () => [] },
     mcp: manager,
+    taskHarness: true,
   });
   try {
     const answer = await pi.fetch(
@@ -410,10 +545,14 @@ test("真实 Pi 调用已选 WAAO 项目查询，模型和回执均收到官网�
     const data = await answer.json();
     assert.equal(answer.status, 200, JSON.stringify(data));
     assert.match(data.text, /试映/);
+    assert.equal(responses.requests.length, 3);
   } finally {
     await pi.close();
   }
-  assert.deepEqual(app.remote.calls, ["project_list"]);
+  assert.deepEqual(
+    app.remote.calls.filter((name) => name !== "account_get"),
+    ["project_list"],
+  );
   assert.equal(app.remote.submitted, 0);
   const [receipt] = manager.decorate({
     role: "assistant",
@@ -426,24 +565,19 @@ test("真实 Pi 调用已选 WAAO 项目查询，模型和回执均收到官网�
   assert.equal(receipt.status, "done");
 });
 
-test("撤销项目勾选对已开启轮次和短片助手同时生效，工具权限不足和账户过期可区分", async (t) => {
+test("关闭项目服务对已开启轮次和短片助手同时生效，工具权限不足和账户过期可区分", async (t) => {
   const app = await setup(t, true),
     manager = app.manager;
-  manager.setSelection(scope.bindingId, waaoMcpId, ["project_list"]);
+  manager.setServiceEnabled(scope.bindingId, waaoMcpId, true);
   const turn = manager.turn(scope);
   try {
-    await assert.rejects(
-      app.waao.targets({ project: "private" }, read(5000), turn.waaoAccess),
-      /未提供工具/,
-    );
-    assert.deepEqual(app.remote.calls, []);
     const projects = await app.waao.targets({}, read(5000), turn.waaoAccess);
     assert.equal(projects.projects[0].name, "试映");
     app.fail(403);
     const denied = await turn.execute(queryName, {}, randomUUID(), read(5000));
     assert.equal(denied.isError, true);
     assert.equal(manager.list(scope.bindingId)[0].status, "ready");
-    manager.setSelection(scope.bindingId, waaoMcpId, []);
+    manager.setServiceEnabled(scope.bindingId, waaoMcpId, false);
     await assert.rejects(
       app.waao.targets({}, read(5000), turn.waaoAccess),
       /停用/,
@@ -452,20 +586,35 @@ test("撤销项目勾选对已开启轮次和短片助手同时生效，工具�
       turn.execute(queryName, {}, randomUUID(), read(5000)),
       /停用/,
     );
-    assert.deepEqual(app.remote.calls, ["project_list"]);
-    manager.setSelection(scope.bindingId, waaoMcpId, ["project_list"]);
-    app.fail(401);
+    assert.deepEqual(
+      app.remote.calls.filter((name) => name !== "account_get"),
+      ["project_list"],
+    );
+    manager.setServiceEnabled(scope.bindingId, waaoMcpId, true);
     await assert.rejects(
       turn.execute(queryName, {}, randomUUID(), read(5000)),
-      /连接 WAAO/,
+      /服务设置发生变更/,
     );
+    app.fail(401);
+    const fresh = manager.turn(scope);
+    try {
+      await assert.rejects(
+        fresh.execute(queryName, {}, randomUUID(), read(5000)),
+        /连接 WAAO/,
+      );
+    } finally {
+      await fresh.close();
+    }
     assert.equal(manager.list(scope.bindingId)[0].status, "authorization");
   } finally {
     await turn.close();
   }
+  await app.restart();
+  assert.equal(app.manager.list(scope.bindingId)[0].status, "authorization");
+  assert.equal(app.manager.list(scope.bindingId)[0].connectionSource, "web");
 });
 
-test("服务面板只有一张 WAAO 卡片，显示官网授权、项目入口及本项目可筛选的勾选项", async (t) => {
+test("服务面板仅显示自行添加的 WAAO，提供独立授权且没有转接来源选项", async (t) => {
   const app = await setup(t);
   const pathToUi = path.join(app.dir, "panel.mjs");
   await build({
@@ -518,10 +667,22 @@ test("服务面板只有一张 WAAO 卡片，显示官网授权、项目入口�
     );
   const button = (name) =>
     [...document.querySelectorAll("button")].find(
-      (el) => el.textContent.trim() === name,
+      (el) =>
+        el.textContent.trim() === name ||
+        el.getAttribute("aria-label") === name,
     );
+  await render("unconfigured");
+  assert.equal(document.querySelectorAll(".qd-mcp-service").length, 0);
+  assert.equal(button("连接 WAAO"), undefined);
+  await app.manager.add({ name: "WAAO", url: waaoMcpUrl });
   await render("signed-out");
   assert.equal(document.querySelectorAll(".qd-mcp-service").length, 1);
+  assert.match(
+    document.querySelector(".qd-mcp-row").textContent,
+    /轻单独立连接/,
+  );
+  assert.equal(document.querySelector('[aria-label="WAAO 连接来源"]'), null);
+  assert.doesNotMatch(document.body.textContent, /托管连接|复用本机 Codex/);
   assert.ok(button("连接 WAAO"));
   assert.equal(document.querySelector("a").href, waaoProjectsUrl);
   assert.match(document.querySelector(".qd-mcp-row").textContent, /需要授权/);
@@ -532,9 +693,23 @@ test("服务面板只有一张 WAAO 卡片，显示官网授权、项目入口�
   await app.manager.finish(waaoMcpId, new URL(url).searchParams);
   await render("signed-in");
   assert.equal(button("连接 WAAO"), undefined);
-  await act(async () => button("选用项目查询工具").click());
-  assert.ok(document.querySelector("input[value=project_list]").checked);
-  assert.ok(!document.querySelector("input[value=node_generate]").checked);
+  assert.match(document.body.textContent, /WAAO 服务端已确认授权 · 测试账号/);
+  assert.equal(document.querySelectorAll('[role="switch"]').length, 1);
+  assert.equal(
+    button("在当前项目使用 WAAO").getAttribute("aria-checked"),
+    "false",
+  );
+  await act(async () => button("在当前项目使用 WAAO").click());
+  assert.equal(
+    button("在当前项目使用 WAAO").getAttribute("aria-checked"),
+    "true",
+  );
+  assert.equal(document.querySelectorAll('input[type="checkbox"]').length, 0);
+  assert.equal(button("选用项目查询工具"), undefined);
+  await act(async () => button("项目与画布").click());
+  assert.ok(
+    app.manager.list(scope.bindingId)[0].selected.includes("node_generate"),
+  );
   const filter = document.querySelector('input[aria-label="搜索工具"]');
   await act(async () => {
     Object.getOwnPropertyDescriptor(
@@ -544,8 +719,8 @@ test("服务面板只有一张 WAAO 卡片，显示官网授权、项目入口�
     filter.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   });
   assert.deepEqual(
-    [...document.querySelectorAll("input[type=checkbox]")].map(
-      (el) => el.value,
+    [...document.querySelectorAll(".qd-mcp-choice strong")].map(
+      (el) => el.textContent,
     ),
     ["task_get"],
   );

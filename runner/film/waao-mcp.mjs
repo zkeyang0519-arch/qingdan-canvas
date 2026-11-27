@@ -3,6 +3,10 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { waaoMcpUrl } from "../../shared/agent/waao-endpoint.mjs";
+import {
+  readWaaoAccessError,
+  waaoAccessIssue,
+} from "../../shared/agent/waao-access.mjs";
 export {
   waaoMcpUrl,
   waaoIssuer,
@@ -53,9 +57,10 @@ export async function openWaaoMcp(
         throw authNeeded();
       }
       if (response.status === 403) {
-        await response.body?.cancel().catch(() => {});
-        throw Object.assign(Error("当前 WAAO 账号或授权缺少此操作的权限。"), {
+        const accessIssue = await readWaaoAccessError(response);
+        throw Object.assign(Error(accessIssue.message), {
           status: 403,
+          accessIssue,
           code:
             packet?.method === "tools/call"
               ? "WAAO_TOOL_FORBIDDEN"
@@ -99,10 +104,13 @@ export async function openWaaoMcp(
           { timeout: 90000, ...options },
         );
       } catch (error) {
-        if (error.code !== "WAAO_TOOL_FORBIDDEN") throw error;
+        const accessIssue = waaoAccessIssue(error);
+        if (!accessIssue) throw error;
         return {
           isError: true,
-          content: [{ type: "text", text: error.message }],
+          structuredContent: accessIssue,
+          accessIssue,
+          content: [{ type: "text", text: JSON.stringify(accessIssue) }],
         };
       }
     },
@@ -119,7 +127,7 @@ export async function withWaaoMcp(connection, signal, run) {
   return useWaaoTools(client, signal, run, connection.allows);
 }
 
-export async function useWaaoTools(client, signal, run, allows) {
+export async function useWaaoTools(client, signal, run, allows, onProgress) {
   try {
     const advertised = await client.listTools({ signal });
     const catalog = new Map(
@@ -132,8 +140,14 @@ export async function useWaaoTools(client, signal, run, allows) {
       call: async (name, args) => {
         if (!catalog.has(name))
           throw Error("当前 WAAO 授权未提供工具 " + name + "。");
-        const result = await client.callTool(name, args, { signal });
-        if (result.isError)
+        const result = await client.callTool(name, args, {
+          signal,
+          onprogress: onProgress,
+        });
+        if (result.isError) {
+          const accessIssue = waaoAccessIssue(result);
+          if (accessIssue)
+            throw Object.assign(Error(accessIssue.message), { accessIssue });
           throw Error(
             "WAAO 工具 " +
               name +
@@ -143,6 +157,7 @@ export async function useWaaoTools(client, signal, run, allows) {
                 "平台未返回详情"
               ).slice(0, 240),
           );
+        }
         if (result.structuredContent !== undefined)
           return result.structuredContent;
         const text = result.content

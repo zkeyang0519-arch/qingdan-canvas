@@ -32,6 +32,7 @@ import ChatFilmReceipt from "./ChatFilmReceipt.jsx";
 import McpToolsPanel, { McpCalls } from "./McpToolsPanel.jsx";
 import ConnectorQuestions from "./ConnectorQuestions.jsx";
 import TaskProgress from "./TaskProgress.jsx";
+import { taskPlanInput } from "../../shared/agent/task-plan-input.mjs";
 import { waaoMcpId } from "../../shared/agent/waao-endpoint.mjs";
 import ChatMarkdown from "./ChatMarkdown.jsx";
 import AnswerActions, { appendQuotedReply } from "./AnswerActions.jsx";
@@ -226,8 +227,13 @@ function ChatMessage({
         text={message.text}
         timeline={message.role === "assistant"}
       />
+      {message.harnessTaskCard && (
+        <TaskProgress task={message.harnessTaskCard} />
+      )}
       <ChatImages media={message.media} scope={accountScope} />
-      <McpCalls calls={message.mcpCalls} onOpen={onOpenMcp} />
+      {!message.harnessTaskId && (
+        <McpCalls calls={message.mcpCalls} onOpen={onOpenMcp} />
+      )}
       {message.role === "assistant" && message.submission && (
         <ChatFilmReceipt
           key={message.submission.id}
@@ -331,6 +337,7 @@ function ChatWorkspace({
   onTasksSaved,
   onOpenSettings,
   onQuestionCount,
+  onPlanHandler,
   execution,
 }) {
   const bindingId = binding?.bindingId;
@@ -787,6 +794,7 @@ function ChatWorkspace({
     if (
       !pendingJob &&
       !pendingSend &&
+      !state?.harnessTask?.answerPending &&
       !["running", "waiting_external"].includes(state?.harnessTask?.status) &&
       !["queued", "running", "finalizing", "reconciliation_required"].includes(
         state?.project?.status,
@@ -815,6 +823,7 @@ function ChatWorkspace({
     pendingSend,
     state?.project?.status,
     state?.harnessTask?.status,
+    state?.harnessTask?.answerPending,
     refresh,
     valid,
   ]);
@@ -1010,6 +1019,33 @@ function ChatWorkspace({
   function send() {
     return submitChat(selectedProfile?.id);
   }
+  async function submitTaskReply(text, taskReply) {
+    if (!taskReply || (!pendingJob && state?.harnessTask?.status !== "running"))
+      return submitChat(selectedProfile?.id, null, text, taskReply);
+    const version = epoch.current;
+    const currentChat = state?.thread?.id;
+    try {
+      const result = await call("/local/task/reply", {
+        method: "POST",
+        body: {
+          requestId: crypto.randomUUID(),
+          bindingId,
+          chatId: currentChat,
+          ...taskReply,
+          text,
+        },
+      });
+      if (!valid(version) || chatId.current !== currentChat) return false;
+      if (result.requiresNewTurn) {
+        return submitChat(selectedProfile?.id, null, text, taskReply);
+      }
+      if (result.task) apply({ ...snapshot.current, harnessTask: result.task });
+      return result.accepted;
+    } catch (error) {
+      if (valid(version)) setError(error.message);
+      return false;
+    }
+  }
   function submitChat(modelProfileId, retryJob, submittedText, taskReply) {
     const text = (submittedText ?? draft).trim();
     if (
@@ -1056,7 +1092,8 @@ function ChatWorkspace({
           ],
         });
       } else switchThread(result.thread, added, result.job);
-      if (result.job && !queued(result.job)) await refresh(version);
+      if (taskReply || (result.job && !queued(result.job)))
+        await refresh(version);
     });
   }
   function chooseModel(id) {
@@ -1092,15 +1129,25 @@ function ChatWorkspace({
   }
   function stopReply() {
     if (executionState?.active) return executionState.stop();
-    if (!pendingJob || !state?.thread?.id) return;
+    const task = state?.harnessTask;
+    const taskActive =
+      task && !["completed", "cancelled"].includes(task.status);
+    if ((!pendingJob && !taskActive) || !state?.thread?.id) return;
     return perform(async (version) => {
-      const result = await write(
-        "cancel",
-        { bindingId, chatId: state.thread.id, jobId: job.id },
-        version,
-      );
-      if (!result || !valid(version)) return;
-      apply({ ...snapshot.current, job: result.job });
+      if (pendingJob) {
+        const result = await write(
+          "cancel",
+          { bindingId, chatId: state.thread.id, jobId: job.id },
+          version,
+        );
+        if (!result || !valid(version)) return;
+        apply({ ...snapshot.current, job: result.job });
+      }
+      if (taskActive)
+        await call("/local/task/stop", {
+          method: "POST",
+          body: { bindingId, chatId: state.thread.id, taskId: task.id },
+        });
       await refresh(version);
     });
   }
@@ -1112,6 +1159,43 @@ function ChatWorkspace({
       switchThread(result.thread ?? result);
       await refresh(version);
     });
+  }
+  async function planTodos(tasks) {
+    if (busy || pendingSend || pendingJob || executionState?.active)
+      throw Error("当前对话正在处理任务，请先等待或停止后再规划这批待办。");
+    if (!bindingId || !modelReady)
+      throw Error("请先选择可用的聊天模型，再生成待办计划。");
+    const text = taskPlanInput(tasks);
+    let submitted = false;
+    const accepted = await perform(async (version) => {
+      const created = await write("new", { bindingId }, version);
+      if (!created || !valid(version)) return false;
+      const thread = created.thread ?? created;
+      switchThread(thread);
+      const result = await write(
+        "send",
+        {
+          bindingId,
+          chatId: thread.id,
+          text,
+          ...(selectedProfile?.id
+            ? { modelProfileId: selectedProfile.id }
+            : {}),
+        },
+        version,
+      );
+      if (!result || !valid(version)) return false;
+      submitted = true;
+      apply({
+        ...snapshot.current,
+        thread: result.thread,
+        messages: [result.message],
+        job: result.job,
+      });
+      await refresh(version);
+      return true;
+    });
+    return accepted && submitted;
   }
   function chooseThread(id) {
     const thread = state.threads.find((item) => item.id === id);
@@ -1278,6 +1362,30 @@ function ChatWorkspace({
       ),
     ).values(),
   ];
+  const completedTask = state?.harnessTask;
+  if (
+    completedTask?.status === "completed" &&
+    completedTask.result &&
+    !messages.some(
+      (m) =>
+        m.role === "assistant" &&
+        m.text === completedTask.result &&
+        m.replyTo === completedTask.activeMessageId,
+    )
+  ) {
+    messages.push({
+      id: "harness-result:" + completedTask.id,
+      role: "assistant",
+      text: completedTask.result,
+      replyTo: completedTask.activeMessageId,
+      createdAt: new Date(completedTask.updatedAt || Date.now()).toISOString(),
+      harnessTaskId: completedTask.id,
+      harnessTaskStatus: "completed",
+      harnessTaskCard: completedTask,
+      tasks: [],
+      memories: [],
+    });
+  }
   const provider = state?.provider?.profiles ? state.provider : settingsCatalog;
   const profiles = provider?.profiles;
   const selectedProfile = profiles?.find(
@@ -1287,8 +1395,9 @@ function ChatWorkspace({
         ? (state.thread.modelProfileId ?? "xingchi")
         : (unsentModel ?? provider.defaultId)),
   );
-  const modelReady =
-    selectedProfile?.configured ?? !!state?.provider?.configured;
+  const modelReady = profiles
+    ? !!selectedProfile?.configured
+    : !!state?.provider?.configured;
   const failedProfile = profiles?.find(
     (p) => p.id === (job?.modelProfileId ?? "xingchi"),
   );
@@ -1297,7 +1406,16 @@ function ChatWorkspace({
     modelMenu.chatId === (state?.thread?.id ?? null) &&
     (!modelMenu.jobId ||
       (job?.status === "failed" && modelMenu.jobId === job.id));
-  const processActive = pendingJob || !!executionState?.active;
+  const processActive =
+    pendingJob ||
+    !!executionState?.active ||
+    state?.harnessTask?.status === "running" ||
+    !!state?.harnessTask?.answerPending;
+  const showStop =
+    processActive ||
+    (!draft.trim() &&
+      state?.harnessTask &&
+      !["completed", "cancelled"].includes(state.harnessTask.status));
   const stopping = !!executionState?.stopping;
   const questionKey = (state?.connectorQuestions || [])
     .map((question) => question.id)
@@ -1322,15 +1440,32 @@ function ChatWorkspace({
       inline={!!workspaceView}
       catalog={provider}
       selected={selectedProfile?.id}
-      failedId={pickerOpen && modelMenu.jobId ? failedProfile?.id : null}
+      failedId={
+        pickerOpen && modelMenu.jobId
+          ? (job?.modelProfileId ?? "xingchi")
+          : null
+      }
       busy={busy || pendingSend || processActive}
       call={call}
       selectionError={error}
       onCatalog={(next) => {
         const current = snapshot.current;
         setSettingsCatalog(next);
-        if (current)
-          apply({ ...current, provider: { ...current.provider, ...next } });
+        if (next.updated && unsentModel === next.replaced)
+          setUnsentModel(next.updated);
+        if (next.deleted && unsentModel === next.deleted) setUnsentModel(null);
+        if (current) {
+          const migrate = (thread) =>
+            thread?.modelProfileId === next.replaced && next.updated
+              ? { ...thread, modelProfileId: next.updated }
+              : thread;
+          apply({
+            ...current,
+            thread: migrate(current.thread),
+            threads: current.threads?.map(migrate),
+            provider: { ...current.provider, ...next },
+          });
+        }
       }}
       onChoose={chooseModel}
       onClose={() => setModelMenu(null)}
@@ -1461,6 +1596,41 @@ function ChatWorkspace({
     apply,
   ]);
   const ChatSurface = workspaceView ? "div" : React.Fragment;
+  const taskProgress =
+    state?.harnessTask && state.harnessTask.status !== "completed" ? (
+      <TaskProgress
+        task={state.harnessTask}
+        busy={busy || pendingSend || processActive}
+        allowQueueReply={
+          !!(pendingJob || state.harnessTask.status === "running") &&
+          !pendingSend &&
+          !executionState?.active
+        }
+        replyBlockedReason={
+          processActive
+            ? "上一轮仍在处理，你可以先选择或填写回答，结束后即可发送。"
+            : pendingSend
+              ? "正在核对上一条消息的回执，你可以先填写回答，核对后即可发送。"
+              : undefined
+        }
+        onReply={submitTaskReply}
+        onOpenTools={() => setMcpOpen(true)}
+      />
+    ) : null;
+  useEffect(() => {
+    onPlanHandler?.(planTodos);
+    return () => onPlanHandler?.(null);
+  }, [
+    onPlanHandler,
+    bindingId,
+    busy,
+    pendingSend,
+    pendingJob,
+    executionState?.active,
+    modelReady,
+    selectedProfile?.id,
+    state?.thread?.id,
+  ]);
   return (
     <>
       <ChatSurface
@@ -1497,27 +1667,6 @@ function ChatWorkspace({
           className={`agent-device-card${embedded ? " agent-chat-conversation" : ""}`}
           aria-label="项目聊天"
         >
-          <TaskProgress
-            task={state?.harnessTask}
-            busy={busy || pendingSend || processActive}
-            onReply={(text, taskReply) =>
-              submitChat(selectedProfile?.id, null, text, taskReply)
-            }
-            onOpenTools={() => setMcpOpen(true)}
-            onStop={() =>
-              perform(async (version) => {
-                await call("/local/task/stop", {
-                  method: "POST",
-                  body: {
-                    bindingId,
-                    chatId: state.thread.id,
-                    taskId: state.harnessTask.id,
-                  },
-                });
-                await refresh(version);
-              })
-            }
-          />
           <div
             className={embedded ? "agent-chat-toolbar" : "agent-card-heading"}
           >
@@ -1661,32 +1810,42 @@ function ChatWorkspace({
               record,
               personal: true,
             })),
-          ].map(({ record, personal }) => (
-            <div className="agent-actions" key={record.requestId}>
-              <span className="agent-note">
-                {record.request.path === `${chatApi}/send`
-                  ? "原消息已保留，可核对处理结果。"
-                  : "原操作待核对，重试会使用原内容。"}
-              </span>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  perform(async (version) => {
-                    await refreshPersonal(version);
-                    await refresh(version);
-                  })
-                }
-              >
-                核对原操作
-              </button>
-              <button
-                disabled={busy || !!received[record.requestId]}
-                onClick={() => retry(record, personal)}
-              >
-                重试原操作
-              </button>
-            </div>
-          ))}
+          ]
+            .filter(({ record }) => {
+              const receipt = received[record.requestId];
+              return !(
+                receipt &&
+                queued(receipt.job) &&
+                receipt.job.id === state?.job?.id &&
+                receipt.thread.id === state?.thread?.id
+              );
+            })
+            .map(({ record, personal }) => (
+              <div className="agent-actions" key={record.requestId}>
+                <span className="agent-note">
+                  {record.request.path === `${chatApi}/send`
+                    ? "原消息已保留，可核对处理结果。"
+                    : "原操作待核对，重试会使用原内容。"}
+                </span>
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    perform(async (version) => {
+                      await refreshPersonal(version);
+                      await refresh(version);
+                    })
+                  }
+                >
+                  核对原操作
+                </button>
+                <button
+                  disabled={busy || !!received[record.requestId]}
+                  onClick={() => retry(record, personal)}
+                >
+                  重试原操作
+                </button>
+              </div>
+            ))}
           {notice && (
             <p className="agent-success" role="status">
               {notice}
@@ -1724,6 +1883,8 @@ function ChatWorkspace({
           {bindingId &&
             (execution && embedded ? (
               <ProjectConversation
+                progressContent={taskProgress}
+                progressKey={state?.harnessTask?.revision}
                 questionsContent={
                   workspaceView === "inbox" ? null : questionCards
                 }
@@ -1767,6 +1928,8 @@ function ChatWorkspace({
               />
             ) : (
               <ConversationMessages
+                progressContent={taskProgress}
+                progressKey={state?.harnessTask?.revision}
                 questionsContent={
                   workspaceView === "inbox" ? null : questionCards
                 }
@@ -1986,7 +2149,7 @@ function ChatWorkspace({
             <button
               className="primary"
               disabled={
-                processActive
+                showStop
                   ? busy || executionState?.busy || stopping
                   : busy ||
                     !bindingId ||
@@ -1995,9 +2158,9 @@ function ChatWorkspace({
                     pendingSend ||
                     !draft.trim()
               }
-              onClick={processActive ? stopReply : send}
+              onClick={showStop ? stopReply : send}
               aria-label={
-                processActive
+                showStop
                   ? stopping
                     ? "正在停止"
                     : "停止"
@@ -2005,10 +2168,10 @@ function ChatWorkspace({
                     ? "开始"
                     : "发送"
               }
-              data-state={processActive ? "stop" : "start"}
+              data-state={showStop ? "stop" : "start"}
             >
               <span>
-                {processActive
+                {showStop
                   ? stopping
                     ? "正在停止"
                     : "停止"
@@ -2017,7 +2180,7 @@ function ChatWorkspace({
                     : "发送"}
               </span>
               {embedded &&
-                (processActive ? (
+                (showStop ? (
                   <Square size={13} fill="currentColor" aria-hidden="true" />
                 ) : (
                   <ArrowUp size={15} aria-hidden="true" />

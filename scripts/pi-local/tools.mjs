@@ -9,6 +9,7 @@ import { filmCodexVersions, runFilmCodex } from "../../runner/film/codex.mjs";
 import { FilmJournal, stableId } from "../../runner/film/journal.mjs";
 import { inspectMedia, writeBytes } from "../../runner/film/media.mjs";
 import { modelToolResult } from "./chat-contract.mjs";
+import { waaoAccessIssue } from "../../shared/agent/waao-access.mjs";
 export { waaoLogin } from "./waao-login.mjs";
 import { credentialFile } from "./waao-login.mjs";
 import { credentialTarget } from "../../runner/credentials.ts";
@@ -23,7 +24,6 @@ export function mcpCredentialFile(dir, id, url, kind = "mcp") {
   );
 }
 export { webWaao } from "./waao.mjs";
-export { codexWaaoMcp } from "./waao-codex.mjs";
 
 const exec = promisify(execFile);
 const accountId = "pi-local";
@@ -49,7 +49,7 @@ export function openTools(dir, sample, waao, options = {}) {
       ([name]) => name.toUpperCase() !== "XINGCHI_API_KEY",
     ),
   );
-  async function native(id, turn, signal) {
+  async function native(id, turn, signal, onProgress) {
     const cwd = path.join(tmpdir(), "qingdan-pi-native", id);
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     return runFilmCodex(
@@ -59,6 +59,7 @@ export function openTools(dir, sample, waao, options = {}) {
         cwd,
         journal,
         signal,
+        onProgress,
         env: toolEnv,
         createCodexClient: () =>
           new CodexClient({
@@ -86,7 +87,8 @@ export function openTools(dir, sample, waao, options = {}) {
       turn,
     );
   }
-  async function invoke({ name, args, scope }, signal, waaoAccess) {
+  async function invoke({ name, args, scope }, signal, waaoAccess, onProgress) {
+    if (onProgress && waaoAccess) waaoAccess = { ...waaoAccess, onProgress };
     if (
       scope.accountId !== accountId ||
       !acceptsBinding(scope.bindingId) ||
@@ -135,7 +137,7 @@ export function openTools(dir, sample, waao, options = {}) {
         };
         const result = sample
           ? { text: "【联调样例稿】" + args.brief }
-          : await native(id, task, signal);
+          : await native(id, task, signal, onProgress);
         const row = {
           id,
           label: "稿件 v" + (drafts.length + 1),
@@ -208,7 +210,7 @@ export function openTools(dir, sample, waao, options = {}) {
                     )
                   ).stdout,
                 }
-              : await native(imageId, task, signal);
+              : await native(imageId, task, signal, onProgress);
             const file = await writeBytes({ journal }, imageId, result.bytes);
             const info = await inspectMedia(file, false, signal);
             row = {
@@ -336,7 +338,7 @@ export function openTools(dir, sample, waao, options = {}) {
       }
       return refs;
     },
-    async fetch(request, waaoAccess) {
+    async fetch(request, waaoAccess, onProgress) {
       const input = await request.json();
       const action = input.name + "." + input.args.action;
       const work = stableId(
@@ -348,7 +350,7 @@ export function openTools(dir, sample, waao, options = {}) {
         if (!pending.has(work))
           pending.set(
             work,
-            invoke(input, request.signal, waaoAccess).finally(() =>
+            invoke(input, request.signal, waaoAccess, onProgress).finally(() =>
               pending.delete(work),
             ),
           );
@@ -359,7 +361,12 @@ export function openTools(dir, sample, waao, options = {}) {
         const message = String(error.message).slice(0, 300);
         if (error.uncertain) journal.put(work + ":error", message);
         console.error("Pi local tool", action, message);
-        return Response.json({ error: message }, { status: 422 });
+        const accessIssue =
+          input.name === "waao" ? waaoAccessIssue(error) : null;
+        return Response.json(
+          { error: message, ...(accessIssue && { accessIssue }) },
+          { status: 422 },
+        );
       }
     },
     decorate(message) {

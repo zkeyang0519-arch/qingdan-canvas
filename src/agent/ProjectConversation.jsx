@@ -260,6 +260,8 @@ export function ConversationMessages({
   notices,
   questionsContent,
   questionKey,
+  progressContent,
+  progressKey,
   nativePrompt,
   ...runProps
 }) {
@@ -311,12 +313,13 @@ export function ConversationMessages({
     job?.status,
     newestUser,
     questionKey,
+    progressKey,
     detail?.run?.pendingRequests?.length,
   ]);
   return (
     <>
       <ol
-        className={`agent-chat-messages${!entries.length && !partial && !questionsContent && !nativePrompt ? " is-empty" : ""}`}
+        className={`agent-chat-messages${!entries.length && !partial && !questionsContent && !nativePrompt && !progressContent ? " is-empty" : ""}`}
         aria-label="聊天消息记录"
         ref={list}
         onScroll={(event) => {
@@ -339,7 +342,15 @@ export function ConversationMessages({
             />
           ),
         )}
-        {partial && (
+        {progressContent && (
+          <li
+            className="agent-chat-message agent-chat-assistant"
+            aria-label="助手任务进展"
+          >
+            {progressContent}
+          </li>
+        )}
+        {partial && !progressContent && (
           <li
             className="agent-chat-message agent-chat-assistant"
             aria-label="助手流式回复"

@@ -6,19 +6,42 @@ export function visitTemplate(value, lookup, depth = 0) {
   if (Array.isArray(value))
     return value.map((item) => visitTemplate(item, lookup, depth + 1));
   if (!value || typeof value !== "object") return value;
-  if (Object.hasOwn(value, "$input") || Object.hasOwn(value, "$step")) {
+  if (Object.hasOwn(value, "$literal")) {
+    if (Object.keys(value).length !== 1) throw Error("无效的字面量参数。");
+    const copy = (v, n = 0) => {
+      if (n > 12) throw Error("字面量嵌套过深。");
+      if (Array.isArray(v)) return v.map((x) => copy(x, n + 1));
+      if (!v || typeof v !== "object") return v;
+      if (Object.keys(v).some((k) => forbidden.has(k)))
+        throw Error("字面量包含不允许的字段。");
+      return Object.fromEntries(
+        Object.entries(v).map(([k, x]) => [k, copy(x, n + 1)]),
+      );
+    };
+    return copy(value.$literal);
+  }
+  if (
+    Object.hasOwn(value, "$input") ||
+    Object.hasOwn(value, "$step") ||
+    Object.hasOwn(value, "$artifact")
+  ) {
     if (
       Object.keys(value).some(
-        (key) => !["$input", "$step", "path"].includes(key),
+        (key) => !["$input", "$step", "$artifact", "path"].includes(key),
       ) ||
-      (Object.hasOwn(value, "$input") && Object.hasOwn(value, "$step"))
+      ["$input", "$step", "$artifact"].filter((k) => Object.hasOwn(value, k))
+        .length !== 1
     )
       throw Error("无效的组合参数引用。");
     if (
       value.path !== undefined &&
       (!Array.isArray(value.path) ||
         value.path.length > 10 ||
-        value.path.some((key) => typeof key !== "string" || forbidden.has(key)))
+        value.path.some((key) =>
+          typeof key === "number"
+            ? !Number.isSafeInteger(key) || key < 0
+            : typeof key !== "string" || forbidden.has(key),
+        ))
     )
       throw Error("组合输出字段路径无效。");
     return lookup(value);
@@ -53,6 +76,7 @@ export function validateRecipe(args, known) {
     )
       throw Error("组合只能使用当前项目已授权且可用的基础工具：" + step.tool);
     visitTemplate(step.args, (ref) => {
+      if (ref.$artifact) throw Error("工具组合请把产物作为明确输入传入。");
       if (Object.hasOwn(ref, "$input") && !inputs.has(ref.$input))
         throw Error("组合引用了不存在的输入。");
       if (Object.hasOwn(ref, "$step") && !steps.has(ref.$step))

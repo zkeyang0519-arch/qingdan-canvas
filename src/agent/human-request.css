@@ -144,6 +144,11 @@
   box-shadow: none;
   background: var(--studio-paper, #f4f7f2);
 }
+.agent-human-card .agent-human-content .agent-human-note textarea:focus {
+  outline: 2px solid var(--agent-accent, #345d40);
+  outline-offset: 2px;
+  caret-color: var(--agent-ink, #29362c);
+}
 .agent-human-details {
   font-size: 12px;
   color: var(--agent-muted, #68756a);

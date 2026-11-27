@@ -1,10 +1,178 @@
 .agent-task-progress {
-  margin: 12px 0;
-  padding: 14px 16px;
-  border: 1px solid var(--border, #deded8);
-  border-radius: 14px;
-  background: var(--surface, #fafaf7);
+  margin: 8px 0 16px;
+  padding: 20px 22px 6px;
+  border: 1px solid var(--border, #dce4dc);
+  border-radius: 16px;
+  background: var(--surface, #fff);
   color: inherit;
+}
+.agent-task-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted, #606b63);
+}
+.agent-task-plan-actions {
+  border-top: 1px solid var(--border, #dce4dc);
+  padding: 14px 0;
+}
+.agent-task-plan-actions > p {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted, #606b63);
+}
+.agent-task-plan-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agent-task-plan-buttons button {
+  padding: 8px 14px;
+  border: 1px solid var(--border, #dce4dc);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+}
+.agent-task-plan-buttons button.primary {
+  background: var(--agent-accent, #365e43);
+  color: #fff;
+  border-color: transparent;
+}
+.agent-task-plan-buttons button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.agent-task-plan-edit {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.agent-task-plan-edit textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 70px;
+  border: 1px solid var(--border, #dce4dc);
+  border-radius: 8px;
+  padding: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.agent-task-plan-actions :is(button, textarea):focus-visible {
+  outline: 2px solid var(--agent-accent, #365e43);
+  outline-offset: 3px;
+}
+.agent-task-live-line {
+  margin: 0;
+  color: var(--agent-ink, #253d2e);
+  overflow-wrap: anywhere;
+  animation: task-command-breathe 2.6s ease-in-out infinite;
+}
+@keyframes task-command-breathe {
+  0%,
+  100% {
+    opacity: 0.74;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.agent-task-activities {
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
+}
+.agent-task-progress .agent-task-activity {
+  position: relative;
+  padding: 0 0 18px 26px;
+}
+.agent-task-activity:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 22px;
+  bottom: 3px;
+  border-left: 1px solid var(--border, #deded8);
+}
+.agent-task-activity-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.agent-task-activity-heading strong {
+  overflow-wrap: anywhere;
+  font-weight: 550;
+}
+.agent-task-activity-dot {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  width: 15px;
+  height: 15px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 13px;
+  text-align: center;
+  color: var(--agent-accent, #32463c);
+}
+.is-running > .agent-task-activity-heading .agent-task-activity-dot {
+  border-color: var(--agent-accent, #32463c);
+  border-right-color: transparent;
+  animation: task-activity-spin 1s linear infinite;
+}
+.is-failed > .agent-task-activity-heading .agent-task-activity-dot {
+  color: #a33f32;
+}
+.agent-task-activity-status {
+  flex-shrink: 0;
+  color: var(--text-muted, #606b63);
+  font-size: 11px;
+}
+.agent-task-activity-body {
+  margin-top: 7px;
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.agent-task-activity-body .agent-chat-markdown {
+  font-size: inherit;
+}
+@keyframes task-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-task-live-line {
+    animation: none;
+  }
+  .is-running > .agent-task-activity-heading .agent-task-activity-dot {
+    animation: none;
+    border-right-color: currentColor;
+  }
+}
+@media (max-width: 480px) {
+  .agent-task-progress {
+    padding: 16px 14px 2px;
+  }
+  .agent-task-activity-heading {
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .agent-task-progress > header span {
+    width: 100%;
+    order: 2;
+  }
+  .agent-task-count {
+    order: 1;
+  }
 }
 .agent-task-progress > header {
   display: flex;
@@ -43,13 +211,51 @@
 .agent-task-progress .agent-human-card {
   margin-top: 12px;
 }
+.agent-task-activity-action {
+  display: inline-block;
+  margin: 4px 0 2px 24px;
+  font-size: 12px;
+  color: var(--agent-accent, #32463c);
+  text-underline-offset: 3px;
+}
 .agent-task-options {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
 }
+.agent-task-reply-wait {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--agent-muted, #68756a);
+  font-size: 12px;
+  line-height: 1.6;
+}
 .agent-task-options button[aria-pressed="true"] {
-  background: var(--accent, #32463c);
+  background: var(--agent-accent, #32463c);
   color: white;
+}
+.agent-task-blockers {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-left: 2px solid #b1a172;
+  background: #f8f7f1;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.agent-task-blockers p {
+  margin: 4px 0;
+}
+.agent-task-usage,
+.agent-task-answers {
+  margin-top: 14px;
+  color: var(--agent-muted, #68756a);
+  line-height: 1.65;
+}
+.agent-task-usage p,
+.agent-task-answers p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
 }

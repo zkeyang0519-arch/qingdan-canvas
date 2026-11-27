@@ -75,6 +75,34 @@ async function call(manager, context, name, args) {
   }
 }
 
+test("真实 stdio MCP 将 Codex 命令进展送回宿主，思考通知不会进入操作行", async (t) => {
+  const app = await fixture(t);
+  app.manager.setSelection(scope.bindingId, codexMcpId, ["codex"]);
+  const turn = app.manager.turn(scope),
+    lines = [];
+  try {
+    const result = await turn.execute(
+      fresh,
+      { prompt: "进度检查" },
+      randomUUID(),
+      AbortSignal.timeout(15000),
+      (event) => lines.push(event.message),
+    );
+    assert.equal(result.isError, false);
+    assert.ok(
+      lines.some((line) => line.includes("rg --files")),
+      JSON.stringify(lines),
+    );
+    assert.ok(lines.some((line) => line.includes("turn/start")));
+    assert.equal(
+      lines.some((line) => line.includes("不应成为操作行")),
+      false,
+    );
+  } finally {
+    await turn.close();
+  }
+});
+
 test("Codex 新版本按实际握手检测，非 Codex 版本输出仍拒绝", async (t) => {
   const app = await fixture(t);
   assert.equal(app.manager.list(scope.bindingId)[0].status, "ready");

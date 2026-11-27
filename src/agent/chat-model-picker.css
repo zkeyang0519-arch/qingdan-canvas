@@ -431,6 +431,66 @@
   outline-offset: 3px;
   border-radius: 6px;
 }
+.qd-model-settings.qd-model-settings--compact .qd-model-connections li {
+  flex-wrap: wrap;
+}
+.qd-connection-info {
+  min-width: 0;
+}
+.qd-connection-info strong,
+.qd-connection-info small {
+  overflow-wrap: anywhere;
+}
+.qd-connection-address {
+  display: block;
+  font-size: 11px;
+}
+.qd-model-settings.qd-model-settings--compact
+  .qd-model-connections
+  li
+  > .qd-connection-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+.qd-connection-actions button {
+  padding: 6px 9px;
+  min-height: 32px;
+  font-size: 12px;
+}
+.qd-model-settings.qd-model-settings--compact
+  .qd-model-connections
+  li
+  > .qd-connection-confirm {
+  flex: 1 0 100%;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--studio-paper, #f6f8f4);
+  font-size: 12px;
+}
+.qd-connection-confirm > div {
+  display: flex;
+  gap: 8px;
+}
+.qd-model-settings .qd-model-delete {
+  color: #9c3c31;
+  border: 1px solid #d9b5ac;
+  background: #fffaf8;
+}
+.agent-workspace-drawer .qd-model-form .qd-model-key-reuse {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.agent-workspace-drawer .qd-model-form .qd-model-key-reuse input {
+  width: 16px;
+  min-height: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-top: 3px;
+}
 @media (max-width: 680px) {
   .qd-model-setting-row {
     grid-template-columns: minmax(0, 1fr);
@@ -446,6 +506,10 @@
   }
   .qd-model-settings.qd-model-settings--compact .qd-model-connections {
     padding-inline: 14px;
+  }
+  .qd-model-settings.qd-model-settings--compact .qd-model-connections li > .qd-connection-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
   }
 }
 @media (max-width: 440px) {

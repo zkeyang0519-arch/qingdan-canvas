@@ -17,8 +17,10 @@ test(
       tmp = path.resolve(".tmp");
     await mkdir(tmp, { recursive: true });
     const dir = await mkdtemp(path.join(tmp, "byok-full-"));
-    let mf;
+    let mf, releaseModel;
+    let holdNextModel = false;
     t.after(async () => {
+      releaseModel?.();
       await mf?.dispose();
       assert.equal(path.dirname(dir), tmp);
       await rm(dir, { recursive: true, force: true, maxRetries: 3 });
@@ -66,6 +68,12 @@ test(
           key: request.headers.get("authorization"),
           body,
         });
+        if (holdNextModel) {
+          holdNextModel = false;
+          await new Promise((resolve) => {
+            releaseModel = resolve;
+          });
+        }
         const content = JSON.stringify({
           text: "独立连接回复",
           tasks: [],
@@ -298,5 +306,133 @@ test(
     assert.equal(restored.defaultId, second.added);
     assert.equal(restored.profiles.length, 3);
     assert.equal((await state()).thread.modelProfileId, second.added);
+    holdNextModel = true;
+    await call("send", {
+      requestId: "before-edit",
+      bindingId: "binding",
+      bindingRevision: 1,
+      chatId: thread.id,
+      text: "编辑前启动",
+    });
+    const deadline = Date.now() + 10000;
+    while (calls.length < 3 && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 30));
+    assert.equal(calls.length, 3);
+    const edit = {
+      action: "update",
+      id: second.added,
+      service: "修改后的接口",
+      model: "byok-three",
+      baseUrl: "https://revised.example.com/api/v3",
+      apiFormat: "responses",
+      apiKey: "",
+    };
+    assert.equal(
+      (await call("models", edit)).status,
+      400,
+      "新域名不能默默沿用密钥",
+    );
+    assert.equal(
+      (await call("models", { ...edit, reuseApiKey: true }, "bob")).status,
+      404,
+    );
+    const updated = await call("models", { ...edit, reuseApiKey: true });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.replaced, second.added);
+    assert.equal(
+      (await call("models", { ...edit, reuseApiKey: true })).updated,
+      updated.updated,
+      "丢失保存回执后重试复用同一版本",
+    );
+    assert.notEqual(updated.updated, second.added);
+    assert.equal(updated.defaultId, updated.updated);
+    assert.equal(updated.profiles.length, 3);
+    assert.equal(
+      updated.profiles.some((p) => p.id === second.added),
+      false,
+    );
+    assert.equal((await state()).thread.modelProfileId, updated.updated);
+    assert.equal(
+      (await call("models", { action: "delete", id: updated.updated })).status,
+      409,
+      "旧设置仍有任务运行时不能删除整个连接",
+    );
+    releaseModel();
+    assert.equal((await settle()).job.status, "succeeded");
+    assert.equal(calls[2].body.model, "byok-two");
+    assert.equal(calls[2].key, "Bearer fake-byok-key-two");
+    await call("send", {
+      requestId: "after-edit",
+      bindingId: "binding",
+      bindingRevision: 1,
+      chatId: thread.id,
+      text: "编辑后启动",
+    });
+    const newest = await settle();
+    assert.equal(newest.job.status, "succeeded");
+    assert.equal(calls[3].body.model, "byok-three");
+    assert.equal(calls[3].url, "https://revised.example.com/api/v3/responses");
+    assert.equal(
+      calls[3].key,
+      "Bearer fake-byok-key-two",
+      "密钥留空保留现有值",
+    );
+    assert.equal(
+      (
+        await call("select-model", {
+          bindingId: "binding",
+          bindingRevision: 1,
+          chatId: thread.id,
+          modelProfileId: second.added,
+        })
+      ).status,
+      404,
+    );
+    assert.equal(
+      (await call("models", { action: "delete", id: added.added }, "bob"))
+        .status,
+      404,
+    );
+    const removed = await call("models", {
+      action: "delete",
+      id: updated.updated,
+    });
+    assert.equal(removed.status, 200);
+    assert.equal(removed.deleted, updated.updated);
+    assert.equal(
+      (await call("models", { action: "delete", id: updated.updated })).deleted,
+      updated.updated,
+    );
+    assert.equal(removed.defaultId, "unselected");
+    const afterDelete = await state();
+    assert.equal(afterDelete.provider.configured, false);
+    assert.equal(afterDelete.messages.length, newest.messages.length);
+    assert.equal(
+      (
+        await call("send", {
+          requestId: "deleted-model",
+          bindingId: "binding",
+          bindingRevision: 1,
+          chatId: thread.id,
+          text: "不可使用已删除连接",
+        })
+      ).status,
+      404,
+    );
+    assert.equal(calls.length, 4);
+    assert.doesNotMatch(
+      JSON.stringify({ updated, removed, afterDelete }),
+      /fake-byok-key|apiKey/,
+    );
+    assert.equal(
+      (await call("models", { action: "delete", id: "xingchi" })).status,
+      400,
+    );
+    await mf.dispose();
+    mf = new Miniflare(options);
+    const deletedRestart = await call("models");
+    assert.equal(deletedRestart.profiles.length, 2);
+    assert.equal(deletedRestart.defaultId, "unselected");
+    assert.equal((await state()).provider.configured, false);
   },
 );

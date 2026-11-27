@@ -5,6 +5,11 @@ import {
 } from "./chat-contract.mjs";
 import { chatPrompt } from "./chat-input.mjs";
 import { randomUUID } from "node:crypto";
+import {
+  packMessages,
+  compactControlMessages,
+  estimateTokens,
+} from "../../runner/harness/context-pack.mjs";
 
 function harnessEvent(kind, detail = {}) {
   return new Promise((resolve, reject) => {
@@ -122,7 +127,15 @@ export default async function register(pi) {
       : trigger?.content;
     if (trigger?.role !== "user" || text !== chatPrompt)
       throw new Error("本机 Pi 聊天输入不匹配。");
-    const { messages: rows, task, replay = [] } = await conversation;
+    const {
+      messages: rows,
+      task: initialTask,
+      replay = [],
+      inputBudget: initialBudget = 24000,
+    } = await conversation;
+    const currentContext = harness ? await harnessEvent("context") : null;
+    const task = currentContext?.task ?? initialTask;
+    const inputBudget = currentContext?.inputBudget || initialBudget;
     const messages = rows.map(savedMessage);
     const latest = messages.pop();
     if (task)
@@ -137,7 +150,15 @@ export default async function register(pi) {
     contextApplied = true;
     // Pi owns the current turn's function calls and matching tool outputs.
     // Preserve them verbatim when it asks the model for the final answer.
-    return { messages: [...messages, ...currentTurn] };
+    return {
+      messages: packMessages(
+        harness
+          ? compactControlMessages([...messages, ...currentTurn])
+          : [...messages, ...currentTurn],
+        inputBudget,
+        currentContext?.targetBudget || inputBudget,
+      ),
+    };
   });
   globalThis.fetch = async (input, init) => {
     const url = input?.url ?? String(input);
@@ -149,10 +170,19 @@ export default async function register(pi) {
       headers.get(chatClientHeader) !== chatClientName
     )
       throw new Error("本机 Pi 的模型端点或轻单客户端标识不匹配。");
-    if (harness) await harnessEvent("request");
+    if (harness) {
+      let body;
+      try {
+        body = JSON.parse(init?.body || "{}");
+      } catch {}
+      await harnessEvent("request", {
+        estimatedInputTokens: body ? estimateTokens(body) : undefined,
+        tools: body?.tools?.length,
+      });
+    }
     if (
-      ++requests >
-      (harness ? 100 : process.env.QINGDAN_PI_MAINTENANCE === "1" ? 2 : 7)
+      !harness &&
+      ++requests > (process.env.QINGDAN_PI_MAINTENANCE === "1" ? 2 : 7)
     )
       throw new Error("本轮模型调用已达上限。");
     const response = await nativeFetch(input, { ...init, redirect: "error" });
@@ -204,21 +234,25 @@ export default async function register(pi) {
     // The conversation tools need no filesystem access or machine-specific path.
     event.systemPromptOptions.sections.cwd = "轻单本机工作区";
   });
-  const remoteSpecs = await new Promise((resolve) => {
+  const catalog = await new Promise((resolve) => {
     function receive(message) {
       if (message?.type !== "tool_catalog") return;
       process.off("message", receive);
-      resolve(message.specs);
+      resolve(message);
     }
     process.on("message", receive);
     process.send({ type: "catalog_request" });
   });
+  const remoteSpecs = catalog.specs;
   const localSpecs =
-    process.env.QINGDAN_PI_MAINTENANCE === "1" ? [] : toolSpecs;
-  const registered = new Set();
+    process.env.QINGDAN_PI_MAINTENANCE === "1"
+      ? []
+      : catalog.localSpecs || toolSpecs;
+  const registered = new Map();
   function registerTool(spec, fromMcp) {
-    if (registered.has(spec.name)) return;
-    registered.add(spec.name);
+    const version = JSON.stringify(spec);
+    if (registered.get(spec.name) === version) return;
+    registered.set(spec.name, version);
     pi.registerTool({
       ...spec,
       executionMode: "sequential",
@@ -233,7 +267,7 @@ export default async function register(pi) {
       if (message?.type === "tool_catalog_update") {
         for (const spec of message.specs) registerTool(spec, true);
         pi.setActiveTools([
-          ...pi.getActiveTools(),
+          ...localSpecs.map((s) => s.name),
           ...message.specs.map((spec) => spec.name),
         ]);
       }
@@ -242,6 +276,7 @@ export default async function register(pi) {
       await harnessEvent("checkpoint", {
         messages: event.context.contextMessages,
         tokens: event.message?.usage?.totalTokens || 0,
+        message: event.message,
       });
     });
     pi.on("agent_before_settle", async (event) => {

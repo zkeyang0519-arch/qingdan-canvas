@@ -15,6 +15,7 @@ import {
   protocolDiagnostic,
 } from "./connector-policy.mjs";
 import { listCodexTurnItems } from "../../runner/film/codex.mjs";
+import { nativeActivityLine } from "../../shared/agent/task-activity.mjs";
 
 const promptSchema = z.strictObject({
   prompt: z.string().trim().min(1).max(32000),
@@ -150,7 +151,7 @@ async function main() {
       return blocked ? null : latest.thread;
     }
 
-    async function run(continuation, prompt, requestSignal) {
+    async function run(continuation, prompt, requestSignal, onProgress) {
       if (!db || !userMessageId) throw Error("本次连接只用于检测 Codex。");
       const signal = AbortSignal.any([
         requestSignal,
@@ -196,6 +197,10 @@ async function main() {
       active = job;
       function observe({ method, params }) {
         if (params?.threadId !== thread.id) return;
+        if (!job.turn || !params.turnId || params.turnId === job.turn) {
+          const line = nativeActivityLine({ method, params });
+          if (line) onProgress?.(line);
+        }
         if (method === "turn/started" && !job.turn) job.turn = params.turn?.id;
         if (method === "turn/completed" && params.turn?.id)
           completed.set(params.turn.id, params.turn);
@@ -209,6 +214,7 @@ async function main() {
       }
       native.on("notification", observe);
       try {
+        onProgress?.("Codex · turn/start");
         const started = await native.request("turn/start", {
           threadId: thread.id,
           clientUserMessageId: randomUUID(),
@@ -281,11 +287,27 @@ async function main() {
                 content: [{ type: "text", text: "Codex 正在处理上一条请求。" }],
               };
             busy = true;
+            let progress = 0;
+            const token = ctx.mcpReq._meta?.progressToken;
+            const onProgress = (message) => {
+              if (token !== undefined && !ctx.mcpReq.signal.aborted)
+                void ctx.mcpReq
+                  .notify({
+                    method: "notifications/progress",
+                    params: {
+                      progressToken: token,
+                      progress: ++progress,
+                      message,
+                    },
+                  })
+                  .catch(() => {});
+            };
             try {
               return await run(
                 name === "codex-reply",
                 prompt,
                 ctx.mcpReq.signal,
+                onProgress,
               );
             } catch (error) {
               const text =

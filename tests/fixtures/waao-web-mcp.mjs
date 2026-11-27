@@ -27,6 +27,12 @@ export function waaoFixture({ onUpload, onGenerate, onRead, video } = {}) {
   let task,
     submitted = 0;
   const tools = {
+    account_get: () => ({
+      user_id: "fixture-user",
+      client_id: "fixture-client",
+      display_name: "测试账号",
+      scopes: ["read", "canvas:write", "generate"],
+    }),
     project_list: () => ({
       projects: [
         { name: "试映", level: "write", project_id: webTarget.project },

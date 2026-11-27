@@ -2,6 +2,7 @@ import { createServer, request as httpRequest } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { validRequestId } from "./agent-experience-service.mjs";
 import { createDesktopOnlineApi } from "./desktop-online-api.mjs";
+import { isMcpOAuthNavigation } from "../../shared/agent/oauth-callback.mjs";
 
 const reject = (status, message) => Object.assign(Error(message), { status });
 function originFor(req, hostname = "127.0.0.1") {
@@ -21,6 +22,11 @@ function guard(req, local = false, extraOrigins, hostname = "127.0.0.1") {
     req.headers["sec-fetch-mode"] === "navigate" &&
     req.headers["sec-fetch-dest"] === "document" &&
     req.headers["sec-fetch-user"] === "?1";
+  const oauthNavigation = isMcpOAuthNavigation({
+    url: new URL(req.url, origin),
+    method: req.method,
+    headers: req.headers,
+  });
   if (
     !req.url.startsWith("/") ||
     req.url.startsWith("//") ||
@@ -30,7 +36,9 @@ function guard(req, local = false, extraOrigins, hostname = "127.0.0.1") {
   if (
     req.headers.host !== new URL(origin).host ||
     (req.headers.origin && !originAllowed) ||
-    (req.headers["sec-fetch-site"] === "cross-site" && !entryNavigation)
+    (req.headers["sec-fetch-site"] === "cross-site" &&
+      !entryNavigation &&
+      !oauthNavigation)
   )
     throw reject(403, "仅允许从本机轻单入口访问。");
   if (local && req.headers["x-qingdan-local"] !== "1")

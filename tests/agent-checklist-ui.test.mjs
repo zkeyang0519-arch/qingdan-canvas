@@ -351,6 +351,46 @@ async function mount(f) {
   return unmount;
 }
 
+test("所选待办交给轻单规划时保留执行要求，不直接提交原生执行或改写待办", async () => {
+  const f = fixture(),
+    plans = [];
+  const close = await mount({
+    ...f,
+    embedded: true,
+    onPlanTasks: async (tasks) => {
+      plans.push(tasks);
+      return true;
+    },
+  });
+  try {
+    assert.equal(button("交给轻单规划").disabled, true);
+    await click(field("全选待办"));
+    await click(button("交给轻单规划"));
+    assert.deepEqual(plans, [
+      [
+        { text: "写说明", instruction: "执行写说明", acceptance: "验收写说明" },
+        {
+          text: "创建示例",
+          instruction: "执行创建示例",
+          acceptance: "验收创建示例",
+        },
+      ],
+    ]);
+    assert.equal(
+      f.calls.some(
+        (c) =>
+          c.body?.name === "codex_create_run" ||
+          c.route.endsWith("/intents") ||
+          c.body?.action === "save",
+      ),
+      false,
+    );
+    assert.ok(button("直接交给 Codex"));
+  } finally {
+    await close();
+  }
+});
+
 test("execution defaults expose every model, cancel drafts, persist by account and freeze into retried intents", async () => {
   const f = fixture();
   const catalog = Array.from({ length: 37 }, (_, i) => ({

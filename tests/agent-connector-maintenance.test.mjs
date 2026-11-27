@@ -428,7 +428,7 @@ test("连接前失败可恢复原请求，成功回执复用，发送后丢回�
   }
 });
 
-test("WAAO 官网直连独立于 Codex，来源选择持久化且不会自动扩大工具勾选", async (t) => {
+test("WAAO 始终使用轻单独立授权，拒绝切换为 Codex 转接且不会扩大工具勾选", async (t) => {
   const dir = await folder(t);
   const remote = waaoFixture();
   let codexCalls = 0;
@@ -453,15 +453,14 @@ test("WAAO 官网直连独立于 Codex，来源选择持久化且不会自动扩
   await manager.initialCheck;
   const before = codexCalls;
   try {
-    assert.equal(
-      (
-        await manager.action("project", {
-          id: waaoMcpId,
-          action: "source",
-          source: "web",
-        })
-      ).status,
-      "ready",
+    assert.equal(before, 0);
+    await assert.rejects(
+      manager.action("project", {
+        id: waaoMcpId,
+        action: "source",
+        source: "codex",
+      }),
+      /轻单自己的授权/,
     );
     assert.equal(manager.list("project")[0].connectionSource, "web");
     assert.deepEqual(manager.list("project")[0].selected, []);
@@ -470,7 +469,7 @@ test("WAAO 官网直连独立于 Codex，来源选择持久化且不会自动扩
     manager = new McpConnections(dir, { waaoService: service });
     await manager.initialCheck;
     assert.equal(codexCalls, before);
-    assert.equal(manager.list("project")[0].connectionPreference, "web");
+    assert.equal(manager.list("project")[0].connectionSource, "web");
     assert.deepEqual(manager.list("project")[0].selected, []);
   } finally {
     await manager.close();

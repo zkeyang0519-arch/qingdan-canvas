@@ -566,6 +566,240 @@ test("预算跨恢复累计，取消后不能被结束检查改写为完成", as
   }
 });
 
+test("默认预算不限，持续有进展的任务超过原 token、总请求和单轮请求上限仍可推进", async (t) => {
+  const dir = await scratch(t);
+  const store = new TaskStore(dir);
+  const active = run(store, {
+    capabilities: { ...capabilities, readOnly: () => true },
+  });
+  try {
+    await active.control("update_task", { requirements: [requirement] });
+    assert.equal(active.boundary().continue, true);
+    for (let i = 0; i < 90; i++) {
+      await active.rpc({ kind: "request" });
+      await active.execute("reader", { page: i }, `page-${i}`, async () => ({
+        page: i,
+        text: `新资料 ${i}`,
+      }));
+      await active.rpc({ kind: "checkpoint", tokens: 60000, messages: [] });
+      assert.equal(active.boundary().continue, true);
+    }
+    assert.equal(active.task.status, "running");
+    assert.equal(active.task.budget.requests, 90);
+    assert.equal(active.task.budget.tokens, 5400000);
+    for (const key of ["maxTokens", "maxRequests", "maxRunRequests"])
+      assert.equal(store.get(active.task.id).budget[key], null);
+    active.fail(true);
+    assert.equal(active.boundary().continue, false);
+    assert.equal(active.task.status, "cancelled");
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("旧预算暂停任务在用户续跑时转为不限，保留累计用量、任务身份和已收回执", async (t) => {
+  const dir = await scratch(t);
+  let store = new TaskStore(dir);
+  let active = run(store, {
+    limits: { maxRequests: 80, maxTokens: 250000, maxRunRequests: 24 },
+  });
+  let calls = 0;
+  const execute = async () => {
+    calls++;
+    return { id: "original-remote-task", text: "原回执" };
+  };
+  try {
+    const receipt = await active.execute(
+      "writer",
+      { prompt: "fixture" },
+      "first",
+      execute,
+    );
+    const id = active.task.id;
+    active.task.budget.requests = 9;
+    active.task.budget.tokens = 260703;
+    active.save("checkpoint");
+    await assert.rejects(active.rpc({ kind: "request" }), /预算用尽/);
+    active.close();
+    store.close();
+    store = new TaskStore(dir);
+    assert.equal(store.get(id).status, "paused_budget");
+    active = run(store, {
+      scope: { ...scope, userMessageId: "m2", visible: ["m1"] },
+      input: { ...input, text: "继续" },
+    });
+    assert.equal(active.task.id, id);
+    assert.equal(active.task.budget.tokens, 260703);
+    assert.equal(active.task.budget.requests, 9);
+    for (const key of ["maxTokens", "maxRequests", "maxRunRequests"])
+      assert.equal(active.task.budget[key], null);
+    const recovered = await active.execute(
+      "writer",
+      { prompt: "fixture" },
+      "second",
+      execute,
+    );
+    assert.deepEqual(recovered, receipt);
+    assert.equal(calls, 1);
+    await active.rpc({ kind: "request" });
+    await active.rpc({ kind: "checkpoint", tokens: 60000, messages: [] });
+    assert.equal(active.task.budget.requests, 10);
+    assert.equal(active.task.budget.tokens, 320703);
+    assert.equal(active.boundary().continue, true);
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("调用方显式设置 token 预算时仍执行限额，null 不会被当成零", async (t) => {
+  const dir = await scratch(t);
+  const store = new TaskStore(dir);
+  const active = run(store, { limits: { maxTokens: 1000 } });
+  try {
+    await active.control("update_task", { requirements: [requirement] });
+    assert.equal(active.boundary().continue, true);
+    await active.rpc({ kind: "request" });
+    await active.rpc({ kind: "checkpoint", tokens: 1001, messages: [] });
+    await assert.rejects(active.rpc({ kind: "request" }), /预算用尽/);
+    assert.equal(active.task.status, "paused_budget");
+    assert.equal(active.task.budget.requests, 1);
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("相同只读结果的新回执编号不算进展，未结束的工具循环仍会保存检查点并暂停", async (t) => {
+  const dir = await scratch(t);
+  const store = new TaskStore(dir);
+  const active = run(store, {
+    capabilities: { ...capabilities, readOnly: () => true },
+  });
+  try {
+    await active.control("update_task", { requirements: [requirement] });
+    for (let i = 0; i < 4; i++) {
+      await active.rpc({ kind: "request" });
+      await active.execute("reader", {}, `read-${i}`, async () => ({
+        text: "同样的信息",
+      }));
+    }
+    assert.equal(new Set(active.task.evidence.map((e) => e.id)).size, 4);
+    await assert.rejects(active.rpc({ kind: "request" }), /没有新进展/);
+    assert.equal(active.task.status, "interrupted");
+    assert.equal(active.halted, true);
+    assert.match(active.finish("已完成"), /没有获得新信息/);
+    await assert.rejects(
+      active.execute("writer", {}, "too-late", async () => {
+        assert.fail("暂停后不得执行新操作");
+      }),
+      /没有新进展/,
+    );
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("逐页读取新资料属于有效进展，不被工具空转检查误停", async (t) => {
+  const dir = await scratch(t);
+  const store = new TaskStore(dir);
+  const active = run(store, {
+    context: [{ title: "长资料", text: "资料".repeat(40000) }],
+  });
+  try {
+    await active.control("update_task", { requirements: [requirement] });
+    for (let i = 0; i < 8; i++) {
+      await active.rpc({ kind: "request" });
+      await active.control("read_context", {
+        id: active.documents[0].id,
+        offset: i * 8000,
+      });
+    }
+    await active.rpc({ kind: "request" });
+    assert.equal(active.task.status, "running");
+    assert.equal(active.halted, false);
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("新的验收反馈与成功验收属于进展，不会在交付前被空转检测拦截", async (t) => {
+  const dir = await scratch(t);
+  const store = new TaskStore(dir);
+  const active = run(store);
+  try {
+    await active.control("update_task", { requirements: [requirement] });
+    const result = await active.execute(
+      "codex",
+      { action: "revise" },
+      "real",
+      async () => ({
+        text: "实际稿件",
+      }),
+    );
+    const submit = (evidenceIds) =>
+      active.control("submit_result", {
+        summary: "交付稿件",
+        checks: [
+          { requirementId: "draft", evidenceIds, explanation: "核对稿件回执" },
+        ],
+      });
+    for (let i = 0; i < 3; i++) {
+      await active.rpc({ kind: "request" });
+      assert.equal((await submit([])).accepted, false);
+    }
+    await active.rpc({ kind: "request" });
+    assert.equal((await submit([result.harnessEvidence])).accepted, true);
+    await active.rpc({ kind: "request" });
+    assert.equal(active.boundary().continue, false);
+    assert.equal(active.task.status, "completed");
+  } finally {
+    active.close();
+    store.close();
+  }
+});
+
+test("真实 Pi 连续重复调用缓存操作会暂停并说明原因，不重复执行外部副作用", async (t) => {
+  const dir = await scratch(t);
+  let effects = 0;
+  const fixture = await openResponsesFixture((_, n) =>
+    n === 1
+      ? callItem("update_task", { requirements: [requirement] }, "start-loop")
+      : callItem("codex", { action: "revise", brief: "同一任务" }, `loop-${n}`),
+  );
+  const chat = await openPiChat({
+    directory: dir,
+    taskHarness: true,
+    settings: fixture.settings,
+    tools: {
+      references: () => [],
+      fetch: async () => {
+        effects++;
+        return Response.json({
+          id: "one-receipt",
+          text: "同一结果",
+          source: "fixture",
+        });
+      },
+    },
+  });
+  try {
+    const response = await turn(chat);
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    assert.match(result.text, /没有获得新信息/);
+    assert.equal(chat.task(scope).status, "interrupted");
+    assert.equal(effects, 1);
+    assert.ok(fixture.requests.length <= 6);
+  } finally {
+    await chat.close();
+    await fixture.close();
+  }
+});
+
 test("外部等待在宿主重启后查询原回执，只在结果就绪时唤醒 Pi 验收", async (t) => {
   const dir = await scratch(t);
   let submitted = 0,

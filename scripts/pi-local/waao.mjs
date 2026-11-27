@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { configured, stableId } from "../../runner/film/journal.mjs";
 import { compilePrompt } from "../../runner/film/waao.mjs";
 import {
@@ -6,113 +7,101 @@ import {
   readCanvasTask,
 } from "../../runner/film/waao-canvas.mjs";
 import { openWaaoMcp, useWaaoTools } from "../../runner/film/waao-mcp.mjs";
+import { activityCommand } from "../../shared/agent/task-activity.mjs";
 
-export function webWaao(login, env, http = fetch, fromCodex) {
+export function webWaao(login, env, http = fetch) {
   const submitting = new Map();
-  let source = fromCodex ? null : "web";
-  let preference = "auto";
-  let healthy = false,
-    requestedWeb = false;
   const connection = {
     getToken: () => login.token(),
     onRejected: (token) => login.rejected?.(token),
     fetchImpl: http,
   };
-  // Choose credentials during a read-only probe. Pin the chosen provider for
-  // execution; an ambiguous write must never be retried through another account.
-  async function probe(signal) {
-    if (fromCodex && !requestedWeb && preference !== "web") {
-      try {
-        const client = await fromCodex.connect(signal);
-        source = "codex";
-        healthy = true;
-        return client;
-      } catch (error) {
-        signal.throwIfAborted();
-        healthy = false;
-        if (
-          preference === "codex" ||
-          source === "codex" ||
-          (!login.status?.().connected &&
-            ![
-              "ENOENT",
-              "WAAO_CODEX_MISSING",
-              "CODEX_VERSION_MISMATCH",
-            ].includes(error.code))
-        ) {
-          throw error;
-        }
-      }
-    }
-    const client = await openWaaoMcp(connection, signal);
-    try {
-      const catalog = await client.listTools({ signal });
-      source = "web";
-      healthy = true;
-      requestedWeb = false;
-      return { ...client, source, listTools: async () => catalog };
-    } catch (error) {
-      await client.close();
-      throw error;
-    }
+  async function open(signal, beforeDispatch, pinnedSource = "web") {
+    // Historical receipts must never move to a different account/transport.
+    if (pinnedSource !== "web")
+      throw Error("此历史任务使用已移除的转接连接，请在 WAAO 官网核对原任务。");
+    const client = await openWaaoMcp(connection, signal, beforeDispatch);
+    return { ...client, source: "web" };
   }
-  async function open(signal, beforeDispatch, pinnedSource = source) {
-    if (pinnedSource !== "codex") {
-      const client = await openWaaoMcp(connection, signal, beforeDispatch);
-      return { ...client, source: "web" };
-    }
-    if (!fromCodex)
-      throw Object.assign(Error("原任务的 Codex 授权连接不可用。"), {
-        code: "WAAO_CODEX_MISSING",
-      });
-    try {
-      return await fromCodex.connect(signal, beforeDispatch);
-    } catch (error) {
-      if (!signal.aborted) healthy = false;
-      throw error;
-    }
-  }
-  const connect = async (signal, run, access, pinnedSource = source) =>
+  const connect = async (signal, run, access, pinnedSource = "web") =>
     useWaaoTools(
-      await open(signal, access?.beforeDispatch, pinnedSource),
+      await open(
+        signal,
+        (packet) => {
+          access?.beforeDispatch?.(packet);
+          if (packet.method === "tools/call")
+            access?.onProgress?.({
+              message: activityCommand("mcp__waao__" + packet.params.name),
+            });
+        },
+        pinnedSource,
+      ),
       signal,
       (remote) => run({ ...remote, connectionSource: pinnedSource }),
       access?.allows,
+      access?.onProgress,
     );
   return {
-    setConnectionPreference(value) {
-      if (!["auto", "web", "codex"].includes(value))
-        throw Error("WAAO 连接来源无效。");
-      preference = value;
-      if (value !== "auto") {
-        source = value;
-        healthy = false;
-        requestedWeb = value === "web";
-      }
-    },
-    connectionPreference: () => preference,
-    maintenanceStatus: () =>
-      source === "web" ? null : fromCodex?.maintenanceStatus?.(),
-    retryMaintenance: () => fromCodex?.retryMaintenance?.(),
-    connect: (signal, beforeDispatch, scope) =>
-      !beforeDispatch && !scope ? probe(signal) : open(signal, beforeDispatch),
+    connect: (signal, beforeDispatch) => open(signal, beforeDispatch),
     statusOfConnection: () => ({
       kind: "web-mcp",
-      source,
-      connected: source === "codex" ? healthy : !!login.status?.().connected,
+      source: "web",
+      configured: !!(login.status?.().configured ?? login.status?.().connected),
+      connected: !!login.status?.().connected,
     }),
-    connectionSource: () => source,
-    async login() {
-      if (preference !== "web" && source === "codex" && healthy)
-        return { connected: true };
-      const out = await login.begin();
-      if (!out.url) requestedWeb = true;
-      return out;
+    connectionSource: () => "web",
+    async verifyAuthorization(client, catalog, signal) {
+      if (!catalog.some((tool) => tool.name === "account_get"))
+        throw Object.assign(
+          Error("WAAO 未提供账号核验工具，暂不能确认授权已生效。"),
+          { status: 401, code: "WAAO_AUTH_UNVERIFIED" },
+        );
+      const result = await client.callTool("account_get", {}, { signal });
+      let account = result.structuredContent;
+      if (!account) {
+        try {
+          account = JSON.parse(
+            (result.content || [])
+              .filter((p) => p.type === "text")
+              .map((p) => p.text)
+              .join("\n"),
+          );
+        } catch {}
+      }
+      if (result.isError || !account?.user_id || !account.client_id)
+        throw Object.assign(
+          Error("WAAO 尚未确认当前账号身份，请重新完成官网授权。"),
+          { status: 401, code: "WAAO_AUTH_UNVERIFIED" },
+        );
+      const expected = login.clientId?.();
+      if (expected && account.client_id !== expected)
+        throw Object.assign(
+          Error("WAAO 返回的客户端与当前轻单授权不一致，请重新连接。"),
+          { status: 401, code: "WAAO_CLIENT_MISMATCH" },
+        );
+      const scopes = Array.isArray(account.scopes)
+        ? account.scopes.filter((s) => typeof s === "string")
+        : [];
+      return {
+        verified: true,
+        clientId: account.client_id,
+        userId: account.user_id,
+        accountLabel: account.display_name || account.handle || "当前账号",
+        scopes,
+        checkedAt: new Date().toISOString(),
+        fingerprint: createHash("sha256")
+          .update(
+            JSON.stringify([
+              account.client_id,
+              account.user_id,
+              [...scopes].sort(),
+            ]),
+          )
+          .digest("hex"),
+      };
     },
-    async finish(params) {
-      await login.finish(params);
-      requestedWeb = true;
-    },
+    login: (returnTo) => login.begin(returnTo),
+    finish: (params) => login.finish(params),
     capabilities: (signal) =>
       connect(signal, (remote) => ({ tools: [...remote.catalog.keys()] })),
     targets: (args, signal, access) =>
@@ -206,7 +195,9 @@ export function webWaao(login, env, http = fetch, fromCodex) {
             originalSource &&
             originalSource.source !== remote.connectionSource
           )
-            throw Error("原生成请求使用另一授权连接，请切回原连接核对结果。");
+            throw Error(
+              "原生成请求使用另一授权连接，请在 WAAO 官网核对原任务。",
+            );
           if (!originalSource)
             journal.put(sourceKey, { source: remote.connectionSource });
           if (!submitting.has(id)) {

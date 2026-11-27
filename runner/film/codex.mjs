@@ -5,6 +5,7 @@ import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 import pin from "../protocol-version.json" with { type: "json" };
 import { stableId, StageFailure } from "./journal.mjs";
+import { nativeActivityLine } from "../../shared/agent/task-activity.mjs";
 
 export const filmCodexVersions = [
   pin.codexVersion,
@@ -174,6 +175,14 @@ export async function runFilmCodex(
   const liveItems = new Map();
   client.on("notification", ({ method, params }) => {
     if (!checkpoint || params?.threadId !== checkpoint.threadId) return;
+    if (
+      !checkpoint.turnId ||
+      !params.turnId ||
+      params.turnId === checkpoint.turnId
+    ) {
+      const line = nativeActivityLine({ method, params });
+      if (line) ctx.onProgress?.({ message: line });
+    }
     if (method === "turn/completed" && params.turn?.id) liveTurn = params.turn;
     if (
       method === "item/completed" &&

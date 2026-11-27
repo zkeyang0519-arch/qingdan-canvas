@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { mcpReturnPath } from "../../shared/agent/oauth-callback.mjs";
 import {
   WindowsCredentialManager,
   credentialTarget,
@@ -101,8 +102,15 @@ export async function waaoLogin(
   dir,
   origin,
   configuredToken,
-  { store, fetchImpl = fetch, credentialOrigin = origin } = {},
+  {
+    store,
+    fetchImpl = fetch,
+    credentialOrigin = origin,
+    clientName = "轻单 Pi",
+  } = {},
 ) {
+  origin = new URL(origin).origin;
+  credentialOrigin = new URL(credentialOrigin).origin;
   const file =
     store ??
     credentialFile(
@@ -135,7 +143,7 @@ export async function waaoLogin(
   const provider = {
     redirectUrl: origin + "/local/waao/callback",
     clientMetadata: {
-      client_name: "轻单 Pi",
+      client_name: clientName,
       redirect_uris: [origin + "/local/waao/callback"],
       scope: waaoScopes,
       grant_types: ["authorization_code", "refresh_token"],
@@ -192,7 +200,10 @@ export async function waaoLogin(
     }
   }
   return {
+    clientId: () =>
+      usableConfigured() ? null : saved.client?.client_id || null,
     status: () => ({
+      configured: !!(configuredToken || saved.tokens || pending),
       connected: !!(
         usableConfigured() ||
         (saved.tokens?.access_token &&
@@ -201,15 +212,42 @@ export async function waaoLogin(
       ),
       kind: "web-mcp",
     }),
-    begin: () =>
+    begin: (returnTo) =>
       exclusive(async () => {
         if (usableConfigured()) return { connected: true };
         if (configuredRejected) saved.rejectedConfigured = configuredDigest;
+        const registered = saved.client?.redirect_uris;
+        if (
+          saved.client &&
+          (!Array.isArray(registered) ||
+            !registered.includes(provider.redirectUrl))
+        ) {
+          // Starting a fresh login may replace an incomplete registration, but
+          // must not silently destroy a working connection owned by another entry.
+          if (saved.tokens?.access_token || saved.tokens?.refresh_token)
+            throw Error(
+              "这份 WAAO 授权属于另一个入口，请在当前入口使用独立连接。",
+            );
+          delete saved.client;
+          delete saved.pending;
+          pending = null;
+          await file.save(saved);
+        }
+        if (
+          pending?.url &&
+          new URL(pending.url).searchParams.get("redirect_uri") !==
+            provider.redirectUrl
+        ) {
+          pending = null;
+          delete saved.pending;
+          await file.save(saved);
+        }
         if (pending?.url && pending.until > Date.now())
           return { url: pending.url };
         pending = {
           nonce: randomBytes(32).toString("base64url"),
           until: Date.now() + 10 * 60000,
+          returnTo: mcpReturnPath(returnTo),
         };
         try {
           const result = await auth(provider, {
@@ -239,6 +277,7 @@ export async function waaoLogin(
           params.get("state") !== pending.nonce
         )
           throw Error("WAAO 登录请求已过期，请从轻单重新连接。");
+        const returnTo = mcpReturnPath(pending.returnTo);
         try {
           if (params.has("error") || !params.get("code"))
             throw Error("本次 WAAO 授权未完成。");
@@ -252,6 +291,7 @@ export async function waaoLogin(
           delete saved.pending;
           await file.save(saved);
         }
+        return { returnTo };
       }),
     rejected(token) {
       if (token === configuredToken) configuredRejected = true;

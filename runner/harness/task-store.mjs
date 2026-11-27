@@ -21,6 +21,9 @@ export const scopeKey = (scope) =>
   digest([scope.accountId, scope.bindingId, scope.chatId]);
 const statuses = new Set([
   "running",
+  "waiting_plan",
+  "blocked",
+  "waiting_model",
   "waiting_user",
   "waiting_auth",
   "waiting_external",
@@ -43,6 +46,12 @@ export class TaskStore {
       CREATE TABLE IF NOT EXISTS task_capabilities(scope TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,name));`);
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS task_retention_outbox(task TEXT PRIMARY KEY,value TEXT NOT NULL)",
+    );
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS task_archive(sequence INTEGER PRIMARY KEY, task TEXT NOT NULL, source TEXT NOT NULL, hash TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(task,hash)); CREATE INDEX IF NOT EXISTS task_archive_task ON task_archive(task,sequence)",
+    );
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS task_answers(id TEXT PRIMARY KEY, task TEXT NOT NULL, question TEXT NOT NULL, status TEXT NOT NULL, value TEXT NOT NULL, UNIQUE(task,question))",
     );
     for (const row of this.db
       .prepare("SELECT scope,pid FROM task_leases")
@@ -116,6 +125,19 @@ export class TaskStore {
     const row = this.db.prepare("SELECT state FROM tasks WHERE id=?").get(id);
     return row ? JSON.parse(row.state) : null;
   }
+  forMessage(scope, messageId) {
+    if (!messageId) return null;
+    for (const row of this.db
+      .prepare(
+        "SELECT state FROM tasks WHERE scope=? ORDER BY updated DESC LIMIT 100",
+      )
+      .all(scopeKey(scope))) {
+      const task = JSON.parse(row.state);
+      if (this.visible(scope, task) && task.messageIds.includes(messageId))
+        return task;
+    }
+    return null;
+  }
   waiting() {
     return this.db
       .prepare(
@@ -123,6 +145,88 @@ export class TaskStore {
       )
       .all()
       .map((row) => JSON.parse(row.state));
+  }
+  queueAnswer(scope, input) {
+    const { requestId, taskId, questionId } = input || {};
+    const text = typeof input?.text === "string" ? input.text.trim() : "";
+    if (
+      ![requestId, taskId, questionId].every(
+        (s) => typeof s === "string" && s.length > 0 && s.length <= 100,
+      ) ||
+      !text ||
+      text.length > 2000
+    )
+      throw Error("无效的任务回答。");
+    const task = this.latest(scope);
+    if (
+      !task ||
+      task.id !== taskId ||
+      ["completed", "cancelled"].includes(task.status)
+    )
+      throw Error("这次提问已失效，请刷新任务状态后回答。");
+    const old = this.db
+      .prepare(
+        "SELECT value FROM task_answers WHERE id=? OR (task=? AND question=?)",
+      )
+      .all(requestId, taskId, questionId);
+    if (old.length) {
+      const prior = JSON.parse(old[0].value);
+      if (
+        prior.scope !== scopeKey(scope) ||
+        prior.taskId !== taskId ||
+        prior.questionId !== questionId ||
+        prior.text !== text
+      )
+        throw Error("这个问题已经收到另一份回答，请刷新后继续。");
+      return { accepted: true, requestId: prior.id };
+    }
+    const question = task.questions.find(
+      (q) => q.id === questionId && !q.answer,
+    );
+    if (!question) throw Error("这次提问已失效，请刷新任务状态后回答。");
+    if (
+      question.kind === "plan_confirmation" &&
+      (task.plan?.questionId !== questionId || task.plan.canConfirm === false)
+    )
+      throw Error("这份计划还不能执行，请查看最新任务卡。");
+    const event = {
+      id: requestId,
+      taskId,
+      questionId,
+      text,
+      scope: scopeKey(scope),
+      memoryEpoch: scope.memoryEpoch,
+      projectSourceDigest:
+        task.projectSourceDigest ??
+        digest(task.resume?.scope?.projectSource ?? null),
+      receivedAt: Date.now(),
+    };
+    this.db
+      .prepare("INSERT INTO task_answers VALUES(?,?,?,?,?)")
+      .run(requestId, taskId, questionId, "queued", JSON.stringify(event));
+    return { accepted: true, requestId };
+  }
+  pendingAnswers(taskId) {
+    return this.db
+      .prepare(
+        "SELECT value FROM task_answers WHERE task=? AND status='queued' ORDER BY rowid",
+      )
+      .all(taskId)
+      .map((r) => JSON.parse(r.value));
+  }
+  acknowledgeAnswer(scope, owner, id, status = "applied") {
+    this.assertLease(scope, owner);
+    this.db
+      .prepare("UPDATE task_answers SET status=? WHERE id=?")
+      .run(status, id);
+  }
+  answersWaiting() {
+    return this.db
+      .prepare(
+        "SELECT DISTINCT tasks.state FROM task_answers JOIN tasks ON tasks.id=task_answers.task WHERE task_answers.status='queued'",
+      )
+      .all()
+      .map((r) => JSON.parse(r.state));
   }
   create(scope, owner, goal, limits) {
     this.assertLease(scope, owner);
@@ -202,6 +306,38 @@ export class TaskStore {
         "INSERT INTO task_effects VALUES(?,?,?) ON CONFLICT(task,key) DO UPDATE SET state=excluded.state",
       )
       .run(task, key, JSON.stringify(state));
+  }
+  archive(scope, owner, task, source, messages) {
+    this.assertLease(scope, owner);
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO task_archive(task,source,hash,value) VALUES(?,?,?,?)",
+    );
+    for (const message of messages)
+      insert.run(
+        task,
+        source,
+        digest([source, message]),
+        JSON.stringify(message),
+      );
+  }
+  archived(task, query = "") {
+    return this.db
+      .prepare(
+        "SELECT sequence,length(value) AS length,substr(value,1,600) AS excerpt FROM task_archive WHERE task=? AND (?='' OR instr(lower(value),lower(?))>0) ORDER BY sequence DESC LIMIT 24",
+      )
+      .all(task, query, query)
+      .map((row) => ({
+        id: "history_" + row.sequence,
+        title: "历史调用记录 " + row.sequence,
+        ...row,
+      }));
+  }
+  readArchived(task, id) {
+    if (!/^history_\d+$/.test(id)) return null;
+    const row = this.db
+      .prepare("SELECT value FROM task_archive WHERE task=? AND sequence=?")
+      .get(task, Number(id.slice(8)));
+    return row?.value || null;
   }
   close() {
     this.db.close();

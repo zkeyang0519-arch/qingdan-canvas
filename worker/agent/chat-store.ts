@@ -255,6 +255,16 @@ export class ChatStore {
     );
     return this.thread(bindingId, chatId);
   }
+  replaceModelProfile(previous: string, next: string) {
+    this.sql.exec(
+      "UPDATE agent_chat_threads SET model_profile_id=? WHERE model_profile_id=?",
+      next,
+      previous,
+    );
+  }
+  modelProfileFor(bindingId: string, chatId: string) {
+    return this.thread(bindingId, chatId).modelProfileId;
+  }
   listThreads(bindingId: string) {
     return this.sql
       .exec<ChatThread>(

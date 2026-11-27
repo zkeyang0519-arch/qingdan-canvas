@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { build } from "esbuild";
 import { openMainPi } from "../scripts/pi-main/server.mjs";
+import { navigationRequest } from "./fixtures/http-navigation.mjs";
 import {
   callItem,
   textItem,
@@ -80,9 +81,18 @@ test(
           requirements: [
             { id: "query", description: "查询真实能力", check: "tool_result" },
           ],
+          steps: [
+            {
+              id: "query",
+              title: "查询真实能力",
+              description: "查询真实能力",
+              status: "pending",
+            },
+          ],
         });
-      if (n === 2) return call("mcp__codex__query", {});
-      if (n === 3)
+      if (n === 2) return textItem("已准备任务计划，请在卡片中确认后开始。");
+      if (n === 3) return call("mcp__codex__query", {});
+      if (n === 4)
         return call("propose_reply", {
           tasks: [
             {
@@ -92,7 +102,18 @@ test(
             },
           ],
         });
-      if (n === 4)
+      if (n === 5)
+        return call("update_task", {
+          steps: [
+            {
+              id: "query",
+              title: "查询真实能力",
+              description: "查询真实能力",
+              status: "done",
+            },
+          ],
+        });
+      if (n === 6)
         return call("submit_result", {
           summary: "已查询",
           checks: [
@@ -125,12 +146,38 @@ test(
     INSERT INTO selections VALUES('pi-local-binding','builtin-codex','["query"]');`);
     old.close();
     let mcpCalls = 0;
+    let waaoGranted = false,
+      waaoCallbackCount = 0,
+      waaoReturnTo;
     const noTools = {
       connect: async () => ({
-        listTools: async () => [],
+        listTools: async () =>
+          waaoGranted
+            ? [
+                {
+                  name: "project_list",
+                  description: "读取项目",
+                  inputSchema: { type: "object", properties: {} },
+                  annotations: { readOnlyHint: true },
+                },
+              ]
+            : [],
         close: async () => {},
       }),
       statusOfConnection: () => ({ connected: false }),
+      login: async (returnTo) => {
+        waaoReturnTo = returnTo;
+        return {
+          url: "https://account.poppin.cn/authorize?state=expected-auth-state",
+        };
+      },
+      finish: async (params) => {
+        if (waaoGranted || params.get("state") !== "expected-auth-state")
+          throw Error("授权请求已过期");
+        waaoGranted = true;
+        waaoCallbackCount++;
+        return { returnTo: waaoReturnTo };
+      },
     };
     const toolModule = {
       openTools: () => ({
@@ -396,6 +443,53 @@ test(
       503,
     );
     assert.equal((await call("/local/mcp?bindingId=foreign")).status, 403);
+    await call("/local/mcp?bindingId=binding", {
+      action: "login",
+      id: "builtin-waao",
+      returnTo: "/app?room=canvas",
+    });
+    const oauthHeaders = {
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Dest": "document",
+      Cookie: "qd_session=" + tokens.alice,
+    };
+    const callbackUrl = new URL(
+      "/local/waao/callback?state=expected-auth-state&code=fixture-auth-code",
+      await mf.ready,
+    ).href;
+    const missingSession = await navigationRequest(callbackUrl, {
+      headers: { ...oauthHeaders, Cookie: "" },
+      redirect: "manual",
+    });
+    assert.equal(missingSession.status, 401);
+    const wrongState = await navigationRequest(
+      callbackUrl.replace("expected-auth-state", "wrong-state"),
+      { headers: oauthHeaders, redirect: "manual" },
+    );
+    assert.ok(wrongState.status >= 400);
+    assert.equal(waaoCallbackCount, 0);
+    const returned = await navigationRequest(callbackUrl, {
+      headers: oauthHeaders,
+      redirect: "manual",
+    });
+    assert.equal(returned.status, 200);
+    const returnHtml = await returned.text();
+    assert.match(returnHtml, /\/app\?room=canvas#mcp=waao/);
+    assert.doesNotMatch(returnHtml, /fixture-auth-code/);
+    assert.equal(waaoCallbackCount, 1);
+    const connected = (await call("/local/mcp?bindingId=binding")).servers.find(
+      (s) => s.id === "builtin-waao",
+    );
+    assert.equal(connected.status, "ready");
+    assert.equal(connected.tools.length, 1);
+    assert.deepEqual(connected.selected, []);
+    const replayed = await navigationRequest(callbackUrl, {
+      headers: oauthHeaders,
+      redirect: "manual",
+    });
+    assert.ok(replayed.status >= 400);
+    assert.equal(waaoCallbackCount, 1);
     assert.equal(
       (await call("/api/internal/pi/context", { jobId: "fake" })).status,
       403,
@@ -414,6 +508,21 @@ test(
       bindingRevision: 1,
       chatId: thread.id,
       text: "查询当前工具能力并给我一个待办",
+    });
+    const planned = await settle();
+    assert.equal(planned.job.status, "succeeded", JSON.stringify(planned.job));
+    assert.equal(planned.harnessTask.status, "waiting_plan");
+    assert.equal(mcpCalls, 0);
+    await call("/api/agent/chat/send", {
+      requestId: "confirm-main-plan",
+      bindingId: "binding",
+      bindingRevision: 1,
+      chatId: thread.id,
+      text: "确认计划并开始执行。",
+      taskReply: {
+        taskId: planned.harnessTask.id,
+        questionId: planned.harnessTask.plan.questionId,
+      },
     });
     const first = await settle();
     assert.equal(first.job.status, "succeeded", JSON.stringify(first.job));

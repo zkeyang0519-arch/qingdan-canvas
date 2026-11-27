@@ -459,6 +459,7 @@ function BoundChecklist({
   onReopenTodo,
   onSetTodoDone,
   onFilmTodo,
+  onPlanTasks,
   onCountsChange,
   collection,
   centralSettings,
@@ -1887,7 +1888,7 @@ function BoundChecklist({
                 </div>
                 <div className="agent-actions">
                   <button
-                    className="primary"
+                    className={onPlanTasks ? undefined : "primary"}
                     disabled={!picked.length || !!dispatchDisabledReason}
                     title={
                       dispatchDisabledReason ||
@@ -1900,8 +1901,33 @@ function BoundChecklist({
                     }
                     onClick={() => perform(dispatch)}
                   >
-                    提交所选待办
+                    {onPlanTasks ? "直接交给 Codex" : "提交所选待办"}
                   </button>
+                  {onPlanTasks && (
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={!picked.length || busy || !!editing}
+                      title="先生成整体任务卡，确认后开始执行"
+                      onClick={() =>
+                        perform(async () => {
+                          const accepted = await onPlanTasks(
+                            picked.map(({ text, instruction, acceptance }) => ({
+                              text,
+                              instruction,
+                              acceptance,
+                            })),
+                          );
+                          if (!accepted)
+                            throw Error(
+                              "尚未生成待办计划，请查看聊天中的提示。",
+                            );
+                        }, false)
+                      }
+                    >
+                      交给轻单规划
+                    </button>
+                  )}
                   <span className="agent-note">
                     已选 {picked.length} 项
                     {!embedded && "，按清单顺序在同一个会话执行"}
@@ -2029,6 +2055,7 @@ function UnboundChecklist({
   onReopenTodo,
   onSetTodoDone,
   onFilmTodo,
+  onPlanTasks,
   onRefresh,
   onCountsChange,
   collection,
@@ -2258,6 +2285,7 @@ function ChecklistSection({
   onReopenTodo,
   onSetTodoDone,
   onFilmTodo,
+  onPlanTasks,
   onCountsChange,
   collection,
   centralSettings,
@@ -2340,6 +2368,7 @@ function ChecklistSection({
               onReopenTodo,
               onSetTodoDone,
               onFilmTodo,
+              onPlanTasks,
               onCountsChange,
               collection,
             }}
@@ -2394,6 +2423,7 @@ function ChecklistSection({
         onReopenTodo,
         onSetTodoDone,
         onFilmTodo,
+        onPlanTasks,
         onCountsChange,
         collection,
         centralSettings,
@@ -2418,6 +2448,7 @@ export default function ChecklistPanel({
   onReopenTodo,
   onSetTodoDone,
   onFilmTodo,
+  onPlanTasks,
   onCountsChange,
   collection,
   centralSettings = false,
@@ -2470,6 +2501,7 @@ export default function ChecklistPanel({
                 onReopenTodo,
                 onSetTodoDone,
                 onFilmTodo,
+                onPlanTasks,
                 onCountsChange,
                 collection,
                 centralSettings,

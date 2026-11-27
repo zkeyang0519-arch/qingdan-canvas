@@ -371,6 +371,151 @@ async function mount(f, extra = {}) {
   return close;
 }
 
+test("批量规划进入新聊天并保留原草稿，确认卡使用原计划标识发送", async () => {
+  const f = fixture({ existing: true }),
+    original = f.requestCloud;
+  let handler,
+    planning = false;
+  const pendingTask = {
+    id: "plan-batch",
+    status: "waiting_plan",
+    goal: "处理两项待办",
+    plan: { status: "pending", questionId: "confirm-v1", revision: 1 },
+    steps: [
+      {
+        id: "a",
+        title: "检查说明",
+        description: "检查说明",
+        status: "pending",
+      },
+      {
+        id: "b",
+        title: "更新示例",
+        description: "更新示例",
+        status: "pending",
+      },
+    ],
+    questions: [],
+    activities: [],
+  };
+  f.requestCloud = async (route, options = {}) => {
+    const value = await original(route, options);
+    if (route.endsWith("/send") && options.body.chatId === "new-chat") {
+      planning = true;
+      return {
+        ...value,
+        thread: { ...thread, id: "new-chat" },
+        message: { ...value.message, chatId: "new-chat" },
+        job: { ...value.job, chatId: "new-chat", status: "succeeded" },
+      };
+    }
+    if (
+      planning &&
+      route.startsWith("/api/agent/chat/state") &&
+      route.includes("chatId=new-chat")
+    )
+      return {
+        ...value,
+        thread: { ...thread, id: "new-chat" },
+        messages: [],
+        job: null,
+        harnessTask: pendingTask,
+      };
+    return value;
+  };
+  const close = await mount(f, {
+    onPlanHandler: (submit) => {
+      handler = submit;
+    },
+  });
+  try {
+    await edit("聊天消息", "保留原聊天草稿");
+    assert.equal(typeof handler, "function");
+    let accepted;
+    await act(async () => {
+      accepted = await handler([
+        {
+          text: "检查说明",
+          instruction: "读取 README",
+          acceptance: "安装步骤准确",
+        },
+        { text: "更新示例", acceptance: "示例可运行" },
+      ]);
+    });
+    assert.equal(accepted, true);
+    const sent = f.calls.filter((c) => c.route.endsWith("/send"));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].body.chatId, "new-chat");
+    assert.match(sent[0].body.text, /安装步骤准确/);
+    assert.match(sent[0].body.text, /示例可运行/);
+    assert.ok(button("确认并开始执行"));
+    assert.equal(document.querySelectorAll(".agent-task-activity").length, 2);
+    assert.ok(
+      Object.values(window.localStorage).some((value) =>
+        value.includes("保留原聊天草稿"),
+      ),
+    );
+    await click("确认并开始执行");
+    const confirm = f.calls.filter((c) => c.route.endsWith("/send")).at(-1);
+    assert.deepEqual(confirm.body.taskReply, {
+      taskId: "plan-batch",
+      questionId: "confirm-v1",
+    });
+    assert.equal(
+      f.calls.some((c) => c.body?.name === "codex_create_run"),
+      false,
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("harness waiting can be stopped from the composer without an inline stop button", async () => {
+  const f = fixture({ existing: true });
+  const original = f.requestCloud;
+  let status = "waiting_external";
+  const stops = [];
+  f.requestCloud = async (route, options = {}) => {
+    if (route === "/local/task/stop") {
+      stops.push(options.body);
+      status = "cancelled";
+      return { ok: true };
+    }
+    const value = await original(route, options);
+    if (
+      route.startsWith("/api/agent/chat/state") &&
+      route.includes("bindingId=")
+    )
+      value.harnessTask = {
+        id: "task-live",
+        status,
+        goal: "等待生成图片",
+        steps: [],
+        questions: [],
+        activities: [],
+        progress: "等待原任务",
+        automaticWait: true,
+      };
+    return value;
+  };
+  const close = await mount(f, { embedded: true });
+  try {
+    assert.equal(button("停止任务推进"), undefined);
+    assert.equal(document.querySelectorAll('[data-state="stop"]').length, 1);
+    assert.ok(button("停止").closest(".agent-chat-composer"));
+    await edit("聊天消息", "补充要求");
+    assert.equal(document.querySelectorAll('[data-state="stop"]').length, 0);
+    await edit("聊天消息", "");
+    await click("停止");
+    assert.deepEqual(stops, [
+      { bindingId: "bound", chatId: "chat", taskId: "task-live" },
+    ]);
+    assert.equal(button("停止任务推进"), undefined);
+  } finally {
+    await close();
+  }
+});
+
 test("a completed summary appears automatically with the drawer closed and keeps the chat draft", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const f = fixture({ existing: true });

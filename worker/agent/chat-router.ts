@@ -465,7 +465,17 @@ export class AgentChatRouter extends DurableObject<Env> {
           400,
         );
         return json(
-          this.ctx.storage.transactionSync(() => this.models.change(input)),
+          this.ctx.storage.transactionSync(() => {
+            const result = this.models.change(input);
+            if (
+              "updated" in result &&
+              result.updated &&
+              "replaced" in result &&
+              result.replaced
+            )
+              this.store.replaceModelProfile(result.replaced, result.updated);
+            return result;
+          }),
         );
       }
       const p = await this.principal(
@@ -644,6 +654,14 @@ export class AgentChatRouter extends DurableObject<Env> {
           input.defaultProfileId = this.models.defaultId;
           if (input.modelProfileId)
             this.models.requireConfigured(input.modelProfileId);
+          else {
+            const profileId =
+              (input.chatId
+                ? this.store.modelProfileFor(input.bindingId, input.chatId)
+                : null) ?? this.models.defaultId;
+            if (profileId !== "xingchi")
+              this.models.requireConfigured(profileId);
+          }
         }
         const result = this.ctx.storage.transactionSync(() => {
           if (input.retryOf) {
@@ -1599,13 +1617,11 @@ export class AgentChatRouter extends DurableObject<Env> {
     await this.ctx.storage.sync();
     return {
       tasks: [
-        ...this.store
-          .listPendingJobs()
-          .map((job) => ({
-            id: job.id,
-            label: "主聊天任务",
-            status: job.status,
-          })),
+        ...this.store.listPendingJobs().map((job) => ({
+          id: job.id,
+          label: "主聊天任务",
+          status: job.status,
+        })),
         ...this.retention
           .pending()
           .filter((job) => job.status === "reviewing")

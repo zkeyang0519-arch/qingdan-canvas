@@ -285,3 +285,217 @@ test("失败重试禁止选用失败连接，原来的重试操作仍然独立�
     await act(async () => root.unmount());
   }
 });
+
+test("编辑预填已有连接，密钥不回显，保存失败保留表单，成功同步当前与默认选择", async () => {
+  const root = createRoot(document.getElementById("root")),
+    requests = [],
+    selections = [];
+  const profile = {
+    id: "custom",
+    service: "我的模型",
+    model: "model-one",
+    baseUrl: "https://one.example.com/v1",
+    apiFormat: "responses",
+    configured: true,
+  };
+  function App() {
+    const [catalog, setCatalog] = useState({
+      ...initial,
+      defaultId: "custom",
+      apiFormats: ["responses", "chat_completions"],
+      profiles: [initial.profiles[0], profile],
+    });
+    const [selected, setSelected] = useState("custom");
+    return React.createElement(Picker, {
+      inline: true,
+      catalog,
+      selected,
+      onChoose: (id) => selections.push(id),
+      onCatalog: (next) => {
+        setCatalog(next);
+        if (next.updated) setSelected(next.updated);
+      },
+      call: async (_route, { body }) => {
+        requests.push(body);
+        if (requests.length === 1) throw Error("保存失败，请重试");
+        return {
+          ...catalog,
+          updated: "updated",
+          replaced: body.id,
+          defaultId: "updated",
+          profiles: [
+            catalog.profiles[0],
+            {
+              ...profile,
+              id: "updated",
+              service: body.service,
+              model: body.model,
+              apiFormat: body.apiFormat,
+            },
+          ],
+        };
+      },
+    });
+  }
+  await act(async () => root.render(React.createElement(App)));
+  try {
+    await act(async () =>
+      document.querySelector('button[aria-controls$="-connections"]').click(),
+    );
+    await act(async () => button("编辑 我的模型 model-one").click());
+    const form = document.querySelector(".qd-model-form");
+    assert.equal(form.querySelector('[name="service"]').value, "我的模型");
+    assert.equal(form.querySelector('[name="baseUrl"]').value, profile.baseUrl);
+    assert.equal(form.querySelector('[name="model"]').value, "model-one");
+    assert.equal(form.querySelector('[name="apiKey"]').value, "");
+    assert.equal(form.querySelector('[name="apiKey"]').required, false);
+    form.querySelector('[name="model"]').value = "model-two";
+    form.querySelector('[name="apiFormat"]').value = "chat_completions";
+    const submit = () =>
+      act(async () =>
+        form.dispatchEvent(
+          new window.Event("submit", { bubbles: true, cancelable: true }),
+        ),
+      );
+    await submit();
+    assert.match(form.textContent, /保存失败/);
+    assert.equal(form.querySelector('[name="model"]').value, "model-two");
+    await submit();
+    assert.equal(document.querySelector(".qd-model-form"), null);
+    assert.equal(
+      document.querySelector('[aria-label="当前对话主模型"]').value,
+      "updated",
+    );
+    assert.equal(
+      document.querySelector('[aria-label="新对话默认模型"]').value,
+      "updated",
+    );
+    assert.deepEqual(selections, []);
+    assert.equal(requests[1].action, "update");
+    assert.equal(requests[1].id, "custom");
+    assert.equal(requests[1].apiKey, "");
+    assert.equal(requests[1].apiFormat, "chat_completions");
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test("删除连接需要明确点击，取消不发送，失败可重试且删除后不自动切换模型", async () => {
+  const root = createRoot(document.getElementById("root")),
+    requests = [],
+    selections = [];
+  function App() {
+    const [catalog, setCatalog] = useState({
+      ...initial,
+      defaultId: "deepseek",
+    });
+    return React.createElement(Picker, {
+      inline: true,
+      catalog,
+      selected: "deepseek",
+      onChoose: (id) => selections.push(id),
+      onCatalog: setCatalog,
+      call: async (_path, { body }) => {
+        requests.push(body);
+        if (requests.length === 1) throw Error("这个连接还有任务正在运行");
+        return {
+          ...catalog,
+          deleted: "deepseek",
+          defaultId: "unselected",
+          profiles: [catalog.profiles[0]],
+        };
+      },
+    });
+  }
+  await act(async () => root.render(React.createElement(App)));
+  try {
+    await act(async () =>
+      document.querySelector('button[aria-controls$="-connections"]').click(),
+    );
+    await act(async () => button("删除 DeepSeek 官方 deepseek-flash").click());
+    assert.equal(requests.length, 0);
+    assert.match(
+      document.querySelector(".qd-connection-confirm").textContent,
+      /聊天记录会保留/,
+    );
+    await act(async () => button("取消").click());
+    assert.equal(requests.length, 0);
+    await act(async () => button("删除 DeepSeek 官方 deepseek-flash").click());
+    await act(async () => button("删除连接").click());
+    assert.match(
+      document.querySelector('[role="alert"]').textContent,
+      /任务正在运行/,
+    );
+    await act(async () => button("删除连接").click());
+    assert.equal(button("删除 DeepSeek 官方 deepseek-flash"), undefined);
+    assert.equal(
+      document.querySelector('[aria-label="新对话默认模型"]').value,
+      "unselected",
+    );
+    assert.deepEqual(selections, []);
+    assert.deepEqual(requests[1], { action: "delete", id: "deepseek" });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+test("编辑到新域名需明确沿用密钥，继续修改地址会重置该选择", async () => {
+  const root = createRoot(document.getElementById("root"));
+  const catalog = {
+    ...initial,
+    profiles: [
+      initial.profiles[0],
+      {
+        id: "custom",
+        service: "测试",
+        model: "model",
+        baseUrl: "https://one.example.com/v1",
+        apiFormat: "responses",
+        configured: true,
+      },
+    ],
+  };
+  await act(async () =>
+    root.render(
+      React.createElement(Picker, {
+        inline: true,
+        catalog,
+        selected: "custom",
+        onCatalog() {},
+        onChoose() {},
+        call() {
+          throw Error("not submitted");
+        },
+      }),
+    ),
+  );
+  const fill = async (value) =>
+    act(async () => {
+      const field = document.querySelector('[name="baseUrl"]');
+      Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      ).set.call(field, value);
+      field.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+  try {
+    await act(async () =>
+      document.querySelector('button[aria-controls$="-connections"]').click(),
+    );
+    await act(async () => button("编辑 测试 model").click());
+    await fill("https://two.example.com/api/v3");
+    assert.equal(button("保存修改").disabled, true);
+    const checkbox = document.querySelector(".qd-model-key-reuse input");
+    assert.ok(checkbox);
+    await act(async () => checkbox.click());
+    assert.equal(button("保存修改").disabled, false);
+    await fill("https://three.example.com/api/v3");
+    assert.equal(
+      document.querySelector(".qd-model-key-reuse input").checked,
+      false,
+    );
+    assert.equal(button("保存修改").disabled, true);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

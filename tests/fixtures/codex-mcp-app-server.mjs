@@ -159,6 +159,32 @@ for await (const line of createInterface({ input: process.stdin })) {
       const turn = { id: randomUUID(), status: "inProgress", items: [] };
       record({ method, thread: thread.id, prompt });
       send({ id, result: { turn } });
+      if (prompt === "进度检查") {
+        send({
+          method: "item/started",
+          params: {
+            threadId: thread.id,
+            turnId: turn.id,
+            item: {
+              id: "command-fixture",
+              type: "commandExecution",
+              command: "rg --files",
+            },
+          },
+        });
+        send({
+          method: "item/started",
+          params: {
+            threadId: thread.id,
+            turnId: turn.id,
+            item: {
+              id: "reasoning-fixture",
+              type: "reasoning",
+              text: "不应成为操作行",
+            },
+          },
+        });
+      }
       if (prompt !== "等我取消") {
         send({
           method: "item/completed",
